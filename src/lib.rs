@@ -22,6 +22,19 @@ where
 {
     workflow_guard::validate_source(input)?;
     let value = workflow_yaml::parse_yaml(input).map_err(|error| error.to_string())?;
-    workflow_guard::validate_document(&value)?;
+    if let Err(error) = workflow_guard::validate_document(&value) {
+        // The guard estimates only well-formed static matrices. Defer malformed
+        // matrix semantics to the typed planner so its stable `invalid_matrix`
+        // and `matrix_too_large` error classes remain part of the public API.
+        // Aggregate workflow limits and unsupported execution fields still fail
+        // here, before any concrete jobs or repeated step bodies are allocated.
+        if !is_deferred_matrix_error(&error) {
+            return Err(error);
+        }
+    }
     serde_json::from_value(value).map_err(|error| error.to_string())
+}
+
+fn is_deferred_matrix_error(error: &str) -> bool {
+    error.starts_with("job ") && error.contains(" matrix ")
 }
