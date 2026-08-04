@@ -6,10 +6,8 @@ use crate::*;
 
 const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 const OTHER_COMMIT: &str = "1123456789abcdef0123456789abcdef01234567";
-const RUST_DIGEST: &str =
-    "sha256:1111111111111111111111111111111111111111111111111111111111111111";
-const NODE_DIGEST: &str =
-    "sha256:2222222222222222222222222222222222222222222222222222222222222222";
+const RUST_DIGEST: &str = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+const NODE_DIGEST: &str = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
 
 fn empty_step() -> PlannedStep {
     PlannedStep {
@@ -155,7 +153,10 @@ fn request_identity_binds_commit_profile_context_and_matrix() {
     let mut different_commit = base_bindings.clone();
     different_commit.commit_sha = OTHER_COMMIT.to_string();
     let changed_commit = bind_plan(&workflow, &catalog, &different_commit).unwrap();
-    assert_ne!(base.requests[0].request_id, changed_commit.requests[0].request_id);
+    assert_ne!(
+        base.requests[0].request_id,
+        changed_commit.requests[0].request_id
+    );
 
     let mut different_context = base_bindings.clone();
     different_context.jobs.get_mut("build").unwrap().context_dir =
@@ -195,7 +196,9 @@ fn rejects_inconsistent_incomplete_or_backward_dependencies() {
     let mut missing_base = plan();
     missing_base.jobs[2].needs.clear();
     assert_eq!(
-        bind_plan(&missing_base, &catalog, &bindings).unwrap_err().code,
+        bind_plan(&missing_base, &catalog, &bindings)
+            .unwrap_err()
+            .code,
         "dependency_shape_mismatch"
     );
 
