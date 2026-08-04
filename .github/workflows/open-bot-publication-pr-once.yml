@@ -1,0 +1,80 @@
+name: Open bot-authored publication PR once
+
+on:
+  push:
+    branches:
+      - agent/publish-yaml-engine-20260804
+    paths:
+      - '.github/workflows/open-bot-publication-pr-once.yml'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  open:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      HEAD_BRANCH: agent/publish-yaml-engine-bot-20260804
+    steps:
+      - name: Open the identical clean publication PR
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+
+          repository = os.environ['REPOSITORY']
+          token = os.environ['GH_TOKEN']
+          head_branch = os.environ['HEAD_BRANCH']
+          owner = repository.split('/', 1)[0]
+          api = f'https://api.github.com/repos/{repository}'
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {token}',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'User-Agent': 'gha-indie-worker-publication',
+          }
+
+          query = urllib.parse.urlencode({
+              'state': 'open',
+              'head': f'{owner}:{head_branch}',
+              'base': 'main',
+          })
+          request = urllib.request.Request(f'{api}/pulls?{query}', headers=headers)
+          with urllib.request.urlopen(request) as response:
+              existing = json.load(response)
+          if existing:
+              print(existing[0]['html_url'])
+              raise SystemExit(0)
+
+          payload = json.dumps({
+              'title': 'feat: publish bounded GitHub Actions YAML engine',
+              'head': head_branch,
+              'base': 'main',
+              'draft': False,
+              'body': (
+                  'Bot-authored protected-branch publication of the exact tested head '
+                  '`a5ff9e98d9faa2a2b15d2ee96dc8b129322effb5`.\n\n'
+                  'Canonical source: `ORESoftware/k8s-cluster@42b7471fa680331fe4977db42db8497ab9549cd9`. '
+                  'Permanent CI passed locked formatting, strict Clippy, all 56 tests, provenance parity, '
+                  'packaging assertions, and credential scanning on the identical source branch.'
+              ),
+          }).encode('utf-8')
+          request = urllib.request.Request(
+              f'{api}/pulls',
+              data=payload,
+              headers={**headers, 'Content-Type': 'application/json'},
+              method='POST',
+          )
+          with urllib.request.urlopen(request) as response:
+              created = json.load(response)
+          print(created['html_url'])
+          PY
