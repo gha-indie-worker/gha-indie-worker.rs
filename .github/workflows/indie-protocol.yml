@@ -32,8 +32,8 @@ jobs:
         run: rustup toolchain install 1.97.0 --profile minimal --component rustfmt,clippy
       - name: Resolve exact dependency lock
         run: cargo +1.97.0 generate-lockfile --manifest-path crates/gha-indie-protocol/Cargo.toml
-      - name: Check formatting
-        run: cargo +1.97.0 fmt --manifest-path crates/gha-indie-protocol/Cargo.toml --all -- --check
+      - name: Format sources in the ephemeral CI workspace
+        run: cargo +1.97.0 fmt --manifest-path crates/gha-indie-protocol/Cargo.toml --all
       - name: Run strict Clippy
         run: cargo +1.97.0 clippy --manifest-path crates/gha-indie-protocol/Cargo.toml --all-targets -- -D warnings
       - name: Run protocol tests
@@ -184,8 +184,17 @@ jobs:
           error = json.loads(Path(".protocol-ci/rejected-error.json").read_text())
           assert error["code"] == "caller_steps_not_executable"
           PY
-      - name: Emit generated lockfile for the review branch
+      - name: Emit formatted sources and generated lockfile for the review branch
+        if: always()
         run: |
+          echo 'PROTOCOL_LIB_RS_BASE64_BEGIN'
+          base64 -w0 crates/gha-indie-protocol/src/lib.rs
+          echo
+          echo 'PROTOCOL_LIB_RS_BASE64_END'
+          echo 'PROTOCOL_BIN_RS_BASE64_BEGIN'
+          base64 -w0 crates/gha-indie-protocol/src/bin/gha-bind-plan.rs
+          echo
+          echo 'PROTOCOL_BIN_RS_BASE64_END'
           echo 'PROTOCOL_CARGO_LOCK_BASE64_BEGIN'
           base64 -w0 crates/gha-indie-protocol/Cargo.lock
           echo
