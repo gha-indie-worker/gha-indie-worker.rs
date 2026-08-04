@@ -437,7 +437,10 @@ fn topological_order(
             .collect::<Vec<_>>();
         return Err(WorkflowError::new(
             "dependency_cycle",
-            format!("workflow job dependency cycle includes: {}", cycle_jobs.join(", ")),
+            format!(
+                "workflow job dependency cycle includes: {}",
+                cycle_jobs.join(", ")
+            ),
         ));
     }
 
@@ -452,7 +455,10 @@ fn expand_matrix(
         return Ok(vec![BTreeMap::new()]);
     };
     if strategy.max_parallel == Some(0) {
-        return Err(matrix_error(job_id, "max-parallel must be greater than zero"));
+        return Err(matrix_error(
+            job_id,
+            "max-parallel must be greater than zero",
+        ));
     }
     if strategy.matrix.is_empty() {
         return Ok(vec![BTreeMap::new()]);
@@ -595,10 +601,7 @@ fn include_is_compatible(
     })
 }
 
-fn object_is_subset(
-    expected: &BTreeMap<String, Value>,
-    actual: &BTreeMap<String, Value>,
-) -> bool {
+fn object_is_subset(expected: &BTreeMap<String, Value>, actual: &BTreeMap<String, Value>) -> bool {
     expected
         .iter()
         .all(|(key, value)| actual.get(key) == Some(value))
@@ -614,9 +617,7 @@ fn matrix_error(job_id: &str, message: impl Into<String>) -> WorkflowError {
 fn matrix_too_large(job_id: &str, expanded: usize) -> WorkflowError {
     WorkflowError::new(
         "matrix_too_large",
-        format!(
-            "job {job_id:?} expands to {expanded} instances; maximum is {MAX_MATRIX_JOBS}"
-        ),
+        format!("job {job_id:?} expands to {expanded} instances; maximum is {MAX_MATRIX_JOBS}"),
     )
 }
 
@@ -658,9 +659,8 @@ fn valid_identifier(value: &str) -> bool {
         return false;
     };
     (first.is_ascii_alphabetic() || first == '_')
-        && characters.all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '_' | '-')
-        })
+        && characters
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
 }
 
 const fn default_true() -> bool {

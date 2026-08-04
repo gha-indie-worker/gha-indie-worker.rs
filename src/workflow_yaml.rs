@@ -61,7 +61,10 @@ pub(crate) fn parse_yaml(input: &str) -> Result<Value, YamlError> {
         ));
     }
 
-    let normalized = input.strip_prefix('\u{feff}').unwrap_or(input).replace("\r\n", "\n");
+    let normalized = input
+        .strip_prefix('\u{feff}')
+        .unwrap_or(input)
+        .replace("\r\n", "\n");
     let lines = normalized
         .split('\n')
         .map(str::to_owned)
@@ -180,10 +183,7 @@ impl Parser {
         if line.indent != indent {
             return Err(YamlError::new(
                 line.number,
-                format!(
-                    "unexpected indentation {}; expected {indent}",
-                    line.indent
-                ),
+                format!("unexpected indentation {}; expected {indent}", line.indent),
             ));
         }
         if sequence_item_text(&line.content).is_some() {
@@ -280,13 +280,7 @@ impl Parser {
                 self.parse_optional_child(indent, depth + 1)?
                     .unwrap_or(Value::Null)
             } else if let Some((key, remainder)) = split_mapping_entry(item_text) {
-                self.parse_sequence_mapping_item(
-                    indent,
-                    key,
-                    remainder,
-                    line.number,
-                    depth + 1,
-                )?
+                self.parse_sequence_mapping_item(indent, key, remainder, line.number, depth + 1)?
             } else if let Some(indicator) = block_indicator(item_text) {
                 Value::String(self.parse_block_scalar(indent, indicator, line.number)?)
             } else {
@@ -322,12 +316,8 @@ impl Parser {
                 "YAML merge keys are not supported",
             ));
         }
-        let value = self.parse_entry_value(
-            mapping_indent,
-            first_remainder,
-            line_number,
-            depth + 1,
-        )?;
+        let value =
+            self.parse_entry_value(mapping_indent, first_remainder, line_number, depth + 1)?;
         object.insert(key, value);
 
         while object.len() < MAX_COLLECTION_ITEMS {
@@ -341,9 +331,7 @@ impl Parser {
             if line.indent != mapping_indent {
                 return Err(YamlError::new(
                     line.number,
-                    format!(
-                        "sequence mapping fields must be indented {mapping_indent} spaces"
-                    ),
+                    format!("sequence mapping fields must be indented {mapping_indent} spaces"),
                 ));
             }
             if sequence_item_text(&line.content).is_some() {
@@ -584,7 +572,10 @@ fn split_mapping_entry(content: &str) -> Option<(&str, &str)> {
 fn parse_key(raw: &str, line: usize) -> Result<String, YamlError> {
     let raw = raw.trim();
     if raw.is_empty() || raw.starts_with('?') {
-        return Err(YamlError::new(line, "complex or empty mapping keys are not supported"));
+        return Err(YamlError::new(
+            line,
+            "complex or empty mapping keys are not supported",
+        ));
     }
     let value = parse_inline_value(raw, line)?;
     match value {
@@ -612,7 +603,10 @@ fn parse_inline_value(raw: &str, line: usize) -> Result<Value, YamlError> {
     if !parser.is_end() {
         return Err(YamlError::new(
             line,
-            format!("unexpected trailing flow content near {:?}", parser.remaining()),
+            format!(
+                "unexpected trailing flow content near {:?}",
+                parser.remaining()
+            ),
         ));
     }
     Ok(value)
@@ -715,7 +709,10 @@ impl<'a> FlowParser<'a> {
                 }
                 let key = self.input[start..self.position].trim();
                 if key.is_empty() {
-                    Err(YamlError::new(self.line, "flow mapping key cannot be empty"))
+                    Err(YamlError::new(
+                        self.line,
+                        "flow mapping key cannot be empty",
+                    ))
                 } else {
                     Ok(key.to_owned())
                 }
@@ -892,9 +889,9 @@ fn looks_like_float(value: &str) -> bool {
     let unsigned = value.strip_prefix(['-', '+']).unwrap_or(value);
     !unsigned.is_empty()
         && (unsigned.contains('.') || unsigned.contains('e') || unsigned.contains('E'))
-        && unsigned.bytes().all(|byte| {
-            byte.is_ascii_digit() || matches!(byte, b'.' | b'e' | b'E' | b'+' | b'-')
-        })
+        && unsigned
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'.' | b'e' | b'E' | b'+' | b'-'))
 }
 
 fn leading_spaces(value: &str) -> usize {
@@ -979,8 +976,7 @@ jobs:
         assert_eq!(parsed["name"], json!("CI"));
         assert_eq!(parsed["jobs"]["build"]["runs-on"][1], json!("linux"));
         assert_eq!(
-            parsed["jobs"]["build"]["strategy"]["matrix"]["include"][0]
-                ["experimental"],
+            parsed["jobs"]["build"]["strategy"]["matrix"]["include"][0]["experimental"],
             json!(true)
         );
         assert_eq!(parsed["jobs"]["build"]["env"]["RUST_BACKTRACE"], json!(1));

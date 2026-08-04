@@ -2,8 +2,8 @@
 
 extern crate self as serde_yaml;
 
-mod workflow_yaml;
 pub mod workflow;
+mod workflow_yaml;
 
 use serde::de::DeserializeOwned;
 
