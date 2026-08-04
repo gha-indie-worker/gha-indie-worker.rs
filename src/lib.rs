@@ -3,8 +3,13 @@
 extern crate self as serde_yaml;
 
 pub mod workflow;
+mod workflow_guard;
 mod workflow_yaml;
 
+pub use workflow_guard::{
+    MAX_BASE_JOBS, MAX_EXPANDED_PLAN_BYTES, MAX_FLOW_COLLECTION_DEPTH, MAX_PLANNED_JOBS,
+    MAX_PLANNED_STEP_CLONES, MAX_STEPS_PER_JOB, MAX_WORKFLOW_SOURCE_BYTES,
+};
 use serde::de::DeserializeOwned;
 
 /// Decodes the bounded workflow-YAML subset without adding a registry crate.
@@ -15,6 +20,8 @@ pub(crate) fn from_str<T>(input: &str) -> Result<T, String>
 where
     T: DeserializeOwned,
 {
+    workflow_guard::validate_source(input)?;
     let value = workflow_yaml::parse_yaml(input).map_err(|error| error.to_string())?;
+    workflow_guard::validate_document(&value)?;
     serde_json::from_value(value).map_err(|error| error.to_string())
 }
