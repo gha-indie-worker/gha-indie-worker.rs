@@ -1,4 +1,4 @@
-name: Publish validated standalone worker once
+name: Publish validated standalone source once
 
 on:
   push:
@@ -12,7 +12,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: publish-validated-standalone-worker-once
+  group: publish-validated-standalone-source-once
   cancel-in-progress: false
 
 jobs:
@@ -50,33 +50,37 @@ jobs:
           run-id: 30955530882
           github-token: ${{ github.token }}
 
-      - name: Verify artifact digest and replace the repository tree
+      - name: Verify artifact and install only non-workflow product files
         shell: bash
         run: |
           set -euo pipefail
           artifact_dir="$RUNNER_TEMP/validated-publication"
           archive="$artifact_dir/gha-indie-worker-publication.tar.gz"
           checksum="$artifact_dir/gha-indie-worker-publication.tar.gz.sha256"
+          expected='53fb5a98d16eb022cd1e1221d4d36a9c13c112f9629d7a266dff02ba905093c3'
           test -s "$archive"
           test -s "$checksum"
-          expected='53fb5a98d16eb022cd1e1221d4d36a9c13c112f9629d7a266dff02ba905093c3'
-          recorded="$(awk '{print $1}' "$checksum")"
-          actual="$(sha256sum "$archive" | awk '{print $1}')"
-          test "$recorded" = "$expected"
-          test "$actual" = "$expected"
+          test "$(awk '{print $1}' "$checksum")" = "$expected"
+          test "$(sha256sum "$archive" | awk '{print $1}')" = "$expected"
+
+          automation="$RUNNER_TEMP/publication-automation"
+          mkdir -p "$automation"
+          cp .github/workflows/stage-canonical-publication.yml "$automation/"
+          cp .github/workflows/publish-validated-publication-once.yml "$automation/"
 
           find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
           tar -xzf "$archive" -C "$GITHUB_WORKSPACE"
+          rm .github/workflows/ci.yml
+          mkdir -p .github/workflows
+          cp "$automation/stage-canonical-publication.yml" .github/workflows/
+          cp "$automation/publish-validated-publication-once.yml" .github/workflows/
 
-          test ! -e .github/workflows/stage-canonical-publication.yml
-          test ! -e .github/workflows/publish-validated-publication-once.yml
-          test -s .github/workflows/ci.yml
           test -s Cargo.lock
           test -s src/gha_workflow.rs
           grep -F '42b7471fa680331fe4977db42db8497ab9549cd9' SOURCE_PROVENANCE.md
-          test "$(find . -path ./.git -prune -o -type f -print | wc -l)" -eq 40
+          test "$(find . -path ./.git -prune -o -type f -print | wc -l)" -eq 41
 
-      - name: Commit the validated standalone publication
+      - name: Commit validated source without touching workflow paths
         shell: bash
         run: |
           set -euo pipefail
@@ -84,6 +88,9 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
           git diff --cached --check
-          test "$(git diff --cached --name-only | grep -c '^\.github/workflows/')" -ge 2
-          git commit -m 'feat: publish bounded GitHub Actions YAML engine'
+          if git diff --cached --name-only | grep -q '^\.github/workflows/'; then
+            echo 'source publication unexpectedly modified a workflow path' >&2
+            exit 1
+          fi
+          git commit -m 'feat: publish bounded GitHub Actions YAML engine source'
           git push origin HEAD:agent/publish-yaml-engine-20260804
