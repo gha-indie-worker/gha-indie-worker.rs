@@ -5,12 +5,10 @@ use crate::model::{
     BindingDocument, DispatchBatch, DispatchRequest, ProfileCatalog, ProtocolError, WorkflowPlan,
 };
 use crate::validate::{
-    validate_bindings_shape, validate_catalog, validate_context_dir, validate_digest, validate_plan,
-    validate_profile_name,
+    validate_bindings_shape, validate_catalog, validate_context_dir, validate_digest,
+    validate_plan, validate_profile_name,
 };
-use crate::{
-    profile_catalog_digest, workflow_plan_digest, DISPATCH_BATCH_SCHEMA, DISPATCH_SCHEMA,
-};
+use crate::{profile_catalog_digest, workflow_plan_digest, DISPATCH_BATCH_SCHEMA, DISPATCH_SCHEMA};
 
 pub fn bind_plan(
     plan: &WorkflowPlan,
