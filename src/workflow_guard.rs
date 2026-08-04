@@ -160,8 +160,7 @@ pub(crate) fn validate_document(value: &Value) -> Result<(), String> {
         }
 
         let cloned_steps = checked_mul(step_count, concrete_jobs, "planned step count")?;
-        planned_step_clones =
-            checked_add(planned_step_clones, cloned_steps, "planned step count")?;
+        planned_step_clones = checked_add(planned_step_clones, cloned_steps, "planned step count")?;
         if planned_step_clones > MAX_PLANNED_STEP_CLONES {
             return Err(format!(
                 "workflow conservatively expands to {planned_step_clones} step copies; maximum is {MAX_PLANNED_STEP_CLONES}"
@@ -294,7 +293,9 @@ fn validate_string_or_list(
         _ => return Err(format!("{context} must be a string or sequence")),
     };
     if count > maximum {
-        return Err(format!("{context} has {count} entries; maximum is {maximum}"));
+        return Err(format!(
+            "{context} has {count} entries; maximum is {maximum}"
+        ));
     }
     Ok(())
 }
@@ -520,9 +521,7 @@ mod tests {
     #[test]
     fn bounds_total_matrix_and_step_expansion() {
         let axis = (0..256).map(|value| json!(value)).collect::<Vec<_>>();
-        let steps = (0..65)
-            .map(|_| json!({"run": "true"}))
-            .collect::<Vec<_>>();
+        let steps = (0..65).map(|_| json!({"run": "true"})).collect::<Vec<_>>();
         let document = json!({
             "jobs": {
                 "build": {
