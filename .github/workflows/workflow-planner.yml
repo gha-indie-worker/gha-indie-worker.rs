@@ -1,0 +1,96 @@
+name: Workflow planner
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "src/lib.rs"
+      - "src/workflow.rs"
+      - "src/workflow_yaml.rs"
+      - "src/bin/gha-workflow-plan.rs"
+      - "src/bin/gha-workflow-server.rs"
+      - ".github/workflows/workflow-planner.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/lib.rs"
+      - "src/workflow.rs"
+      - "src/workflow_yaml.rs"
+      - "src/bin/gha-workflow-plan.rs"
+      - "src/bin/gha-workflow-server.rs"
+      - ".github/workflows/workflow-planner.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  planner:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal --component rustfmt,clippy
+      - name: Assemble standalone planner harness
+        run: |
+          rm -rf .planner-ci
+          mkdir -p .planner-ci/src/bin
+          cp src/lib.rs src/workflow.rs src/workflow_yaml.rs .planner-ci/src/
+          cp src/bin/gha-workflow-plan.rs src/bin/gha-workflow-server.rs .planner-ci/src/bin/
+          cat > .planner-ci/Cargo.toml <<'EOF'
+          [package]
+          name = "dd-build-server"
+          version = "0.1.0"
+          edition = "2021"
+          publish = false
+
+          [dependencies]
+          axum = { version = "0.7", features = ["macros"] }
+          serde = { version = "1", features = ["derive"] }
+          serde_json = "1"
+          tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal"] }
+          tracing = "0.1"
+          EOF
+      - name: Check formatting
+        run: cargo +1.97.0 fmt --manifest-path .planner-ci/Cargo.toml --all -- --check
+      - name: Run strict Clippy
+        run: cargo +1.97.0 clippy --manifest-path .planner-ci/Cargo.toml --all-targets -- -D warnings
+      - name: Run planner tests
+        run: cargo +1.97.0 test --manifest-path .planner-ci/Cargo.toml --all-targets
+      - name: Exercise CLI planning
+        run: |
+          cat > .planner-ci/sample.yml <<'EOF'
+          name: bounded-matrix
+          jobs:
+            build:
+              runs-on: ubuntu-latest
+              strategy:
+                matrix:
+                  rust: [stable, beta]
+              steps:
+                - run: cargo test
+            report:
+              needs: build
+              runs-on: ubuntu-latest
+              steps:
+                - run: echo complete
+          EOF
+          cargo +1.97.0 run --quiet --manifest-path .planner-ci/Cargo.toml --bin gha-workflow-plan -- .planner-ci/sample.yml > .planner-ci/plan.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          plan = json.loads(Path(".planner-ci/plan.json").read_text())
+          assert plan["schemaVersion"] == "gha-indie-worker.plan.v1"
+          assert plan["jobOrder"] == ["build", "report"]
+          assert len(plan["jobs"]) == 3
+          report = next(job for job in plan["jobs"] if job["baseJobId"] == "report")
+          assert report["needsInstances"] == ["build-1-rust-stable", "build-2-rust-beta"]
+          PY
