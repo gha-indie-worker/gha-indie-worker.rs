@@ -1,5 +1,6 @@
 use std::env;
-use std::fs;
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -75,19 +76,26 @@ fn read_json<T: DeserializeOwned>(
     maximum_bytes: usize,
     label: &str,
 ) -> Result<T, ProtocolError> {
-    let bytes = fs::read(path).map_err(|error| {
+    let file = File::open(path).map_err(|error| {
         cli_error(format!(
-            "failed to read {label} file {}: {error}",
+            "failed to open {label} file {}: {error}",
             path.display()
         ))
     })?;
-    if bytes.len() > maximum_bytes {
+    let metadata = file.metadata().map_err(|error| {
+        cli_error(format!(
+            "failed to inspect {label} file {}: {error}",
+            path.display()
+        ))
+    })?;
+    if metadata.len() > maximum_bytes as u64 {
         return Err(cli_error(format!(
             "{label} file {} is {} bytes; maximum is {maximum_bytes}",
             path.display(),
-            bytes.len()
+            metadata.len()
         )));
     }
+    let bytes = read_bounded(file, maximum_bytes, label)?;
     serde_json::from_slice(&bytes).map_err(|error| {
         cli_error(format!(
             "{label} file {} is not valid protocol JSON: {error}",
@@ -96,9 +104,49 @@ fn read_json<T: DeserializeOwned>(
     })
 }
 
+fn read_bounded<R: Read>(
+    reader: R,
+    maximum_bytes: usize,
+    label: &str,
+) -> Result<Vec<u8>, ProtocolError> {
+    let read_limit = maximum_bytes
+        .checked_add(1)
+        .ok_or_else(|| cli_error(format!("{label} admission limit overflow")))?;
+    let mut limited = reader.take(read_limit as u64);
+    let mut bytes = Vec::with_capacity(usize::min(8 * 1024, maximum_bytes));
+    limited
+        .read_to_end(&mut bytes)
+        .map_err(|error| cli_error(format!("failed to read {label}: {error}")))?;
+    if bytes.len() > maximum_bytes {
+        return Err(cli_error(format!(
+            "{label} input exceeds the {maximum_bytes}-byte admission limit"
+        )));
+    }
+    Ok(bytes)
+}
+
 fn cli_error(message: impl Into<String>) -> ProtocolError {
     ProtocolError {
         code: "cli_input",
         message: message.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn bounded_reader_accepts_exact_limit() {
+        let bytes = read_bounded(Cursor::new(vec![b'x'; 32]), 32, "fixture").unwrap();
+        assert_eq!(bytes.len(), 32);
+    }
+
+    #[test]
+    fn bounded_reader_rejects_limit_plus_one() {
+        let error = read_bounded(Cursor::new(vec![b'x'; 33]), 32, "fixture").unwrap_err();
+        assert_eq!(error.code, "cli_input");
+        assert!(error.message.contains("32-byte admission limit"));
     }
 }
