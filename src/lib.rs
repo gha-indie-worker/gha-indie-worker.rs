@@ -6,11 +6,11 @@ pub mod workflow;
 mod workflow_guard;
 mod workflow_yaml;
 
+use serde::de::DeserializeOwned;
 pub use workflow_guard::{
     MAX_BASE_JOBS, MAX_EXPANDED_PLAN_BYTES, MAX_FLOW_COLLECTION_DEPTH, MAX_PLANNED_JOBS,
     MAX_PLANNED_STEP_CLONES, MAX_STEPS_PER_JOB, MAX_WORKFLOW_SOURCE_BYTES,
 };
-use serde::de::DeserializeOwned;
 
 /// Decodes the bounded workflow-YAML subset without adding a registry crate.
 ///
