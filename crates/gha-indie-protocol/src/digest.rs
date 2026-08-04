@@ -39,9 +39,7 @@ pub(crate) fn stable_request_id(request: &DispatchRequest) -> Result<String, Pro
     Ok(format!("gha:{component}"))
 }
 
-pub(crate) fn dispatch_request_digest(
-    request: &DispatchRequest,
-) -> Result<String, ProtocolError> {
+pub(crate) fn dispatch_request_digest(request: &DispatchRequest) -> Result<String, ProtocolError> {
     let mut unsigned = request.clone();
     unsigned.request_digest.clear();
     digest_serializable(&unsigned, "request_serialization")
