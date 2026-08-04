@@ -92,5 +92,5 @@ jobs:
           assert plan["jobOrder"] == ["build", "report"]
           assert len(plan["jobs"]) == 3
           report = next(job for job in plan["jobs"] if job["baseJobId"] == "report")
-          assert report["needsInstances"] == ["build-1-rust-stable", "build-2-rust-beta"]
+          assert report["needsInstances"] == ["build[1]", "build[2]"]
           PY
