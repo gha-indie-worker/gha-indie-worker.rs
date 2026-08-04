@@ -64,9 +64,7 @@ fn read_bounded<R: Read>(reader: R) -> io::Result<String> {
 fn too_large_error() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,
-        format!(
-            "workflow input exceeds the {MAX_WORKFLOW_SOURCE_BYTES}-byte admission limit"
-        ),
+        format!("workflow input exceeds the {MAX_WORKFLOW_SOURCE_BYTES}-byte admission limit"),
     )
 }
 
@@ -93,8 +91,8 @@ mod tests {
 
     #[test]
     fn rejects_invalid_utf8() {
-        let error = read_bounded(Cursor::new(vec![0xff]))
-            .expect_err("workflow source must be valid UTF-8");
+        let error =
+            read_bounded(Cursor::new(vec![0xff])).expect_err("workflow source must be valid UTF-8");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 }
