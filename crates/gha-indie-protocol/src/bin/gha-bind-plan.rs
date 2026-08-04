@@ -3,7 +3,10 @@ use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
 
-use gha_indie_protocol::{bind_plan, BindingDocument, ProfileCatalog, ProtocolError, WorkflowPlan};
+use gha_indie_protocol::{
+    bind_plan, profile_catalog_digest, workflow_plan_digest, BindingDocument, ProfileCatalog,
+    ProtocolError, WorkflowPlan,
+};
 use serde::de::DeserializeOwned;
 
 const MAX_PLAN_BYTES: usize = 4 * 1024 * 1024;
@@ -29,23 +32,42 @@ fn main() -> ExitCode {
 
 fn run() -> Result<String, ProtocolError> {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
-    if arguments.len() != 3 {
-        return Err(cli_error(
-            "usage: gha-bind-plan <plan.json> <profile-catalog.json> <bindings.json>",
-        ));
+    match arguments.as_slice() {
+        [flag, catalog_path] if flag == "--catalog-digest" => {
+            let catalog: ProfileCatalog = read_json(
+                Path::new(catalog_path),
+                MAX_CATALOG_BYTES,
+                "profile catalog",
+            )?;
+            profile_catalog_digest(&catalog)
+        }
+        [flag, plan_path] if flag == "--plan-digest" => {
+            let plan: WorkflowPlan = read_json(Path::new(plan_path), MAX_PLAN_BYTES, "plan")?;
+            workflow_plan_digest(&plan)
+        }
+        [plan_path, catalog_path, bindings_path] => {
+            let plan: WorkflowPlan = read_json(Path::new(plan_path), MAX_PLAN_BYTES, "plan")?;
+            let catalog: ProfileCatalog = read_json(
+                Path::new(catalog_path),
+                MAX_CATALOG_BYTES,
+                "profile catalog",
+            )?;
+            let bindings: BindingDocument = read_json(
+                Path::new(bindings_path),
+                MAX_BINDINGS_BYTES,
+                "bindings",
+            )?;
+            let batch = bind_plan(&plan, &catalog, &bindings)?;
+            serde_json::to_string_pretty(&batch).map_err(|error| {
+                cli_error(format!(
+                    "failed to serialize bound dispatch batch as JSON: {error}"
+                ))
+            })
+        }
+        _ => Err(cli_error(
+            "usage: gha-bind-plan <plan.json> <profile-catalog.json> <bindings.json> | --catalog-digest <profile-catalog.json> | --plan-digest <plan.json>",
+        )),
     }
-
-    let plan: WorkflowPlan = read_json(Path::new(&arguments[0]), MAX_PLAN_BYTES, "plan")?;
-    let catalog: ProfileCatalog =
-        read_json(Path::new(&arguments[1]), MAX_CATALOG_BYTES, "profile catalog")?;
-    let bindings: BindingDocument =
-        read_json(Path::new(&arguments[2]), MAX_BINDINGS_BYTES, "bindings")?;
-    let batch = bind_plan(&plan, &catalog, &bindings)?;
-    serde_json::to_string_pretty(&batch).map_err(|error| {
-        cli_error(format!(
-            "failed to serialize bound dispatch batch as JSON: {error}"
-        ))
-    })
 }
 
 fn read_json<T: DeserializeOwned>(
