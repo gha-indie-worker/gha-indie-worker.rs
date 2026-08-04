@@ -108,6 +108,8 @@ jobs:
           pub const BUILD_SERVER_IMAGES_SUBJECT: &str = "dd.remote.build_server.images";
           pub const BUILD_SERVER_REQUESTS_SUBJECT: &str = "dd.remote.build_server.requests";
           pub const RUNTIME_CRITICAL_EVENTS_SUBJECT: &str = "dd.remote.events.critical";
+          pub const DD_REMOTE_BUILD_JOBS_STREAM_NAME: &str = "DD_REMOTE_BUILD_JOBS";
+          pub const BUILD_SERVER_REQUESTS_QUEUE_GROUP: &str = "dd-build-server-workers";
           EOF
 
           cat > "$publication/vendor/dd-runtime-config-client/Cargo.toml" <<'EOF'
@@ -116,8 +118,15 @@ jobs:
           version = "0.1.0"
           edition = "2021"
           publish = false
+
+          [dependencies]
+          axum = "0.7"
           EOF
           cat > "$publication/vendor/dd-runtime-config-client/src/lib.rs" <<'EOF'
+          pub fn router() -> axum::Router {
+              axum::Router::new()
+          }
+
           pub async fn register_with_control_plane() {}
           EOF
 
@@ -151,7 +160,7 @@ jobs:
           - Source parity: `src/`, `scripts/`, `generated/`, and `readme.md` are byte-for-byte canonical
           - Packaging adaptations: three monorepo path dependencies are replaced by local API-compatible crates under `vendor/`; `Dockerfile` copies those crates
 
-          The compatibility crates do not add execution authority: telemetry is an identity layer, runtime registration is a no-op in standalone mode, and NATS subjects are the canonical generated constants used by the worker.
+          The compatibility crates do not add execution authority: telemetry is an identity layer, runtime registration exposes an empty router and no-op registration in standalone mode, and NATS symbols are the canonical worker subjects, stream name, and queue group.
 
           This is an independent continuity lane, not a claim to reproduce GitHub's proprietary Actions control plane. Native workflow semantics remain GitHub-hosted Actions and Actions Runner Controller.
           EOF
