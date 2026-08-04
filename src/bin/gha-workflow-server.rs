@@ -7,19 +7,19 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use dd_build_server::workflow::{plan_workflow, MAX_MATRIX_JOBS};
+use dd_build_server::{
+    MAX_BASE_JOBS, MAX_EXPANDED_PLAN_BYTES, MAX_FLOW_COLLECTION_DEPTH, MAX_PLANNED_JOBS,
+    MAX_PLANNED_STEP_CLONES, MAX_STEPS_PER_JOB, MAX_WORKFLOW_SOURCE_BYTES,
+};
 use serde_json::json;
 
-const DEFAULT_HOST: &str = "0.0.0.0";
+const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 8090;
-const MAX_WORKFLOW_BYTES: usize = 1024 * 1024;
 
 #[tokio::main]
 async fn main() {
-    let host = env::var("GHA_WORKFLOW_HOST").unwrap_or_else(|_| DEFAULT_HOST.to_owned());
-    let port = env::var("GHA_WORKFLOW_PORT")
-        .ok()
-        .and_then(|value| value.parse::<u16>().ok())
-        .unwrap_or(DEFAULT_PORT);
+    let host = configured_host();
+    let port = configured_port();
     let address: SocketAddr = format!("{host}:{port}")
         .parse()
         .unwrap_or_else(|error| panic!("invalid workflow planner bind address: {error}"));
@@ -28,7 +28,7 @@ async fn main() {
         .route("/", get(descriptor))
         .route("/healthz", get(healthz))
         .route("/v1/workflows/plan", post(plan))
-        .layer(DefaultBodyLimit::max(MAX_WORKFLOW_BYTES));
+        .layer(DefaultBodyLimit::max(MAX_WORKFLOW_SOURCE_BYTES));
 
     let listener = tokio::net::TcpListener::bind(address)
         .await
@@ -38,6 +38,25 @@ async fn main() {
         .with_graceful_shutdown(shutdown_signal())
         .await
         .unwrap_or_else(|error| panic!("workflow planner server failed: {error}"));
+}
+
+fn configured_host() -> String {
+    match env::var("GHA_WORKFLOW_HOST") {
+        Ok(host) if !host.trim().is_empty() => host,
+        Ok(_) => panic!("GHA_WORKFLOW_HOST cannot be empty"),
+        Err(env::VarError::NotPresent) => DEFAULT_HOST.to_owned(),
+        Err(error) => panic!("GHA_WORKFLOW_HOST is not valid Unicode: {error}"),
+    }
+}
+
+fn configured_port() -> u16 {
+    match env::var("GHA_WORKFLOW_PORT") {
+        Ok(port) => port
+            .parse::<u16>()
+            .unwrap_or_else(|error| panic!("invalid GHA_WORKFLOW_PORT {port:?}: {error}")),
+        Err(env::VarError::NotPresent) => DEFAULT_PORT,
+        Err(error) => panic!("GHA_WORKFLOW_PORT is not valid Unicode: {error}"),
+    }
 }
 
 async fn descriptor() -> impl IntoResponse {
@@ -60,9 +79,18 @@ async fn descriptor() -> impl IntoResponse {
             "matrix include/exclude",
             "reusable workflow jobs"
         ],
+        "unsupportedFields": "rejected rather than ignored",
         "expressions": "preserved but not evaluated",
-        "maxMatrixJobs": MAX_MATRIX_JOBS,
-        "maxWorkflowBytes": MAX_WORKFLOW_BYTES
+        "limits": {
+            "maxWorkflowBytes": MAX_WORKFLOW_SOURCE_BYTES,
+            "maxFlowCollectionDepth": MAX_FLOW_COLLECTION_DEPTH,
+            "maxBaseJobs": MAX_BASE_JOBS,
+            "maxMatrixJobs": MAX_MATRIX_JOBS,
+            "maxPlannedJobs": MAX_PLANNED_JOBS,
+            "maxStepsPerJob": MAX_STEPS_PER_JOB,
+            "maxPlannedStepClones": MAX_PLANNED_STEP_CLONES,
+            "maxExpandedPlanBytes": MAX_EXPANDED_PLAN_BYTES
+        }
     }))
 }
 
