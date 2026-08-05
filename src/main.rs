@@ -1,5 +1,5 @@
-extern crate serde_yaml as serde_yaml_real;
 extern crate self as serde_yaml;
+extern crate serde_yaml as serde_yaml_real;
 
 use std::{
     collections::{HashMap, HashSet},
