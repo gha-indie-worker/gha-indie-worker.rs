@@ -1,6 +1,7 @@
 //! Reusable components for the independent GitHub Actions-compatible worker.
 
 extern crate self as serde_yaml;
+extern crate serde_yaml as serde_yaml_real;
 
 pub mod workflow;
 mod workflow_guard;
@@ -12,14 +13,31 @@ pub use workflow_guard::{
     MAX_PLANNED_STEP_CLONES, MAX_STEPS_PER_JOB, MAX_WORKFLOW_SOURCE_BYTES,
 };
 
-/// Decodes the bounded workflow-YAML subset through the shared strict
-/// admission layer.
+/// Preflights workflow YAML through the shared bounded parser, then decodes it
+/// with the canonical YAML value model expected by the fixed-profile engine.
 ///
-/// This is the only YAML decoder that executable and planner entry points may
-/// use. It rejects ambiguous YAML before deserialization, applies aggregate
-/// workflow limits, and preserves stable typed-planner error classes for
-/// malformed matrix semantics.
+/// The preflight rejects duplicate keys, aliases, anchors, merge keys, tags,
+/// multiple documents, tabs, malformed indentation, excessive source size,
+/// and excessive parser depth before the general decoder can normalize them.
+/// Executor-specific unsupported fields remain values in the resulting plan so
+/// callers receive an explicit non-executable compatibility report instead of
+/// a misleading YAML syntax error.
 pub fn strict_from_str<T>(input: &str) -> Result<T, String>
+where
+    T: DeserializeOwned,
+{
+    workflow_guard::validate_source(input)?;
+    workflow_yaml::parse_yaml(input).map_err(|error| error.to_string())?;
+    serde_yaml_real::from_str(input).map_err(|error| error.to_string())
+}
+
+/// Decodes the planner's bounded workflow subset and applies aggregate semantic
+/// limits before matrix or step expansion.
+///
+/// This crate-local alias intentionally matches the planner's narrow
+/// `serde_yaml::from_str` call site without granting those stricter planner
+/// semantics to the fixed-profile compatibility-report path.
+pub(crate) fn from_str<T>(input: &str) -> Result<T, String>
 where
     T: DeserializeOwned,
 {
@@ -36,15 +54,6 @@ where
         }
     }
     serde_json::from_value(value).map_err(|error| error.to_string())
-}
-
-/// Crate-local compatibility alias for the planner's narrow
-/// `serde_yaml::from_str` call site.
-pub(crate) fn from_str<T>(input: &str) -> Result<T, String>
-where
-    T: DeserializeOwned,
-{
-    strict_from_str(input)
 }
 
 fn is_deferred_matrix_error(error: &str) -> bool {
