@@ -12,11 +12,14 @@ pub use workflow_guard::{
     MAX_PLANNED_STEP_CLONES, MAX_STEPS_PER_JOB, MAX_WORKFLOW_SOURCE_BYTES,
 };
 
-/// Decodes the bounded workflow-YAML subset without adding a registry crate.
+/// Decodes the bounded workflow-YAML subset through the shared strict
+/// admission layer.
 ///
-/// This crate-local alias intentionally matches the narrow `serde_yaml::from_str`
-/// call site in the planner while preserving the repository's reviewed lockfile.
-pub(crate) fn from_str<T>(input: &str) -> Result<T, String>
+/// This is the only YAML decoder that executable and planner entry points may
+/// use. It rejects ambiguous YAML before deserialization, applies aggregate
+/// workflow limits, and preserves stable typed-planner error classes for
+/// malformed matrix semantics.
+pub fn strict_from_str<T>(input: &str) -> Result<T, String>
 where
     T: DeserializeOwned,
 {
@@ -33,6 +36,15 @@ where
         }
     }
     serde_json::from_value(value).map_err(|error| error.to_string())
+}
+
+/// Crate-local compatibility alias for the planner's narrow
+/// `serde_yaml::from_str` call site.
+pub(crate) fn from_str<T>(input: &str) -> Result<T, String>
+where
+    T: DeserializeOwned,
+{
+    strict_from_str(input)
 }
 
 fn is_deferred_matrix_error(error: &str) -> bool {

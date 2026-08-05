@@ -7,7 +7,6 @@ use std::{
     sync::Arc,
 };
 
-use serde::de::DeserializeOwned;
 pub use serde_yaml_real::{to_string, Mapping, Value};
 use tokio::{
     fs,
@@ -32,8 +31,6 @@ mod types;
 mod util;
 mod validation;
 mod webhooks;
-mod workflow_guard;
-mod workflow_yaml;
 
 use config::{config_from_env, env_u64, env_usize, env_value, Config};
 use exec::append_log;
@@ -46,19 +43,15 @@ use util::now_ms;
 /// Strict crate-local replacement for the executable engine's
 /// `serde_yaml::from_str` call.
 ///
-/// The independent worker must not let the general-purpose YAML decoder erase
-/// duplicate keys, resolve aliases, or normalize unsupported YAML features
-/// before the execution policy sees them. The bounded workflow reader rejects
-/// those forms first, then deserializes its JSON-compatible value into the
-/// existing `serde_yaml` value model so the fixed-profile planner remains
-/// unchanged.
+/// The binary delegates to the library's single strict admission layer so the
+/// planner and executor cannot drift or compile independent parser copies.
+/// Ambiguous or excessive YAML is rejected before the fixed-profile execution
+/// policy sees a deserialized value.
 pub(crate) fn from_str<T>(input: &str) -> Result<T, String>
 where
-    T: DeserializeOwned,
+    T: serde::de::DeserializeOwned,
 {
-    workflow_guard::validate_source(input)?;
-    let value = workflow_yaml::parse_yaml(input).map_err(|error| error.to_string())?;
-    serde_json::from_value(value).map_err(|error| error.to_string())
+    dd_build_server::strict_from_str(input)
 }
 
 #[tokio::main]

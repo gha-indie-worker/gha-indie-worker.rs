@@ -57,8 +57,8 @@ jobs:
           canonical_root = Path("canonical/remote/deployments/build-server-rs/src")
           standalone_root = Path("src")
           extension_hashes = {
-              "main.rs": "1709863d25deca70ec7f2aa850ac28a1ee575f35",
-              "lib.rs": "8c8098fe24be9cc827d8cf1a1bd4296dbeb97193",
+              "main.rs": "c9c6afdb499db519f3e8461e68d26d9435a5974b",
+              "lib.rs": "70bde4870d3d0571a41bdb7d035e27742d6e461c",
               "workflow.rs": "6d81faec78d3bc7286c5ecb2b59dadbe49d1722b",
               "workflow_guard.rs": "a9ef95d0128daa18356e08394e7f2166ca9f0dcf",
               "workflow_yaml.rs": "76ea4b31fa947bef87851969964014025d17e79f",
@@ -107,7 +107,8 @@ jobs:
           diff -ru "$source_root/generated" generated
           cmp "$source_root/readme.md" readme.md
           grep -F '42b7471fa680331fe4977db42db8497ab9549cd9' SOURCE_PROVENANCE.md
-          grep -F '1709863d25deca70ec7f2aa850ac28a1ee575f35' SOURCE_PROVENANCE.md
+          grep -F 'c9c6afdb499db519f3e8461e68d26d9435a5974b' SOURCE_PROVENANCE.md
+          grep -F '70bde4870d3d0571a41bdb7d035e27742d6e461c' SOURCE_PROVENANCE.md
           grep -F 'dd-telemetry = { path = "vendor/dd-telemetry" }' Cargo.toml
           grep -F 'dd-nats-subject-defs = { path = "vendor/dd-nats-subject-defs" }' Cargo.toml
           grep -F 'dd-runtime-config-client = { path = "vendor/dd-runtime-config-client" }' Cargo.toml
