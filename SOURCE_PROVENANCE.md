@@ -7,7 +7,7 @@ This repository is published from `ORESoftware/k8s-cluster` at immutable commit 
 - Published role: bounded GitHub Actions YAML planner and fixed-profile execution worker
 - Publication date: 2026-08-04
 - Canonical core parity: every canonical file under `src/` except `src/main.rs`, plus `scripts/`, `generated/`, and `readme.md`, remains byte-for-byte identical to the immutable source commit
-- Standalone entry-point integration: `src/main.rs` is pinned to Git blob `e94efb2662e551edb3d4420216e3534292a2a5bf`; it routes executable YAML through the strict bounded parser before the canonical fixed-profile policy
+- Standalone entry-point integration: `src/main.rs` is pinned to Git blob `1709863d25deca70ec7f2aa850ac28a1ee575f35`; it routes executable YAML through the strict bounded parser before the canonical fixed-profile policy while re-exporting only the YAML value/serialization surface used by that policy
 - Standalone planner extensions: `src/lib.rs`, `src/workflow.rs`, `src/workflow_guard.rs`, `src/workflow_yaml.rs`, and the two `src/bin/gha-workflow-*` entry points are pinned by exact Git blob hashes in `.github/workflows/ci.yml`
 - Immutable binding protocol: `crates/gha-indie-protocol` is independently locked and validated by `.github/workflows/indie-protocol.yml`
 - Packaging adaptations: three monorepo path dependencies are replaced by local API-compatible crates under `vendor/`; `Dockerfile` copies those crates

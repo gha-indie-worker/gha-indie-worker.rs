@@ -8,7 +8,7 @@ use std::{
 };
 
 use serde::de::DeserializeOwned;
-pub use serde_yaml_real::{Mapping, Value};
+pub use serde_yaml_real::{to_string, Mapping, Value};
 use tokio::{
     fs,
     sync::{RwLock, Semaphore},
