@@ -1,9 +1,14 @@
+extern crate serde_yaml as serde_yaml_real;
+extern crate self as serde_yaml;
+
 use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
     sync::Arc,
 };
 
+use serde::de::DeserializeOwned;
+pub use serde_yaml_real::{Mapping, Value};
 use tokio::{
     fs,
     sync::{RwLock, Semaphore},
@@ -27,6 +32,8 @@ mod types;
 mod util;
 mod validation;
 mod webhooks;
+mod workflow_guard;
+mod workflow_yaml;
 
 use config::{config_from_env, env_u64, env_usize, env_value, Config};
 use exec::append_log;
@@ -35,6 +42,24 @@ use jobs::{enqueue_build, submit_from_nats};
 use state::{AppState, Counters, DEFAULT_PORT, SERVICE_NAME};
 use types::{BuildJobRecord, BuildRequest, BuildStatus, DeployRequest, NatsSubmitError};
 use util::now_ms;
+
+/// Strict crate-local replacement for the executable engine's
+/// `serde_yaml::from_str` call.
+///
+/// The independent worker must not let the general-purpose YAML decoder erase
+/// duplicate keys, resolve aliases, or normalize unsupported YAML features
+/// before the execution policy sees them. The bounded workflow reader rejects
+/// those forms first, then deserializes its JSON-compatible value into the
+/// existing `serde_yaml` value model so the fixed-profile planner remains
+/// unchanged.
+pub(crate) fn from_str<T>(input: &str) -> Result<T, String>
+where
+    T: DeserializeOwned,
+{
+    workflow_guard::validate_source(input)?;
+    let value = workflow_yaml::parse_yaml(input).map_err(|error| error.to_string())?;
+    serde_json::from_value(value).map_err(|error| error.to_string())
+}
 
 #[tokio::main]
 async fn main() {
@@ -159,5 +184,40 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => {},
         _ = terminate => {},
+    }
+}
+
+#[cfg(test)]
+mod workflow_yaml_admission_tests {
+    use super::from_str;
+
+    #[test]
+    fn executable_decoder_accepts_the_static_workflow_subset() {
+        let value = from_str::<serde_json::Value>(
+            "jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: cargo test\n",
+        )
+        .expect("static workflow should parse");
+        assert!(value.get("jobs").is_some());
+    }
+
+    #[test]
+    fn executable_decoder_rejects_duplicate_keys_before_policy_evaluation() {
+        let error = from_str::<serde_json::Value>(
+            "jobs:\n  safe:\n    runs-on: ubuntu-latest\n    steps: [{ run: cargo test }]\njobs:\n  unsafe:\n    runs-on: ubuntu-latest\n    steps: [{ run: curl attacker.invalid }]\n",
+        )
+        .expect_err("duplicate keys must fail closed");
+        assert!(error.contains("duplicate mapping key"));
+    }
+
+    #[test]
+    fn executable_decoder_rejects_yaml_aliases_and_multiple_documents() {
+        assert!(from_str::<serde_json::Value>(
+            "defaults: &defaults\n  runs-on: ubuntu-latest\njobs:\n  test:\n    <<: *defaults\n    steps: [{ run: cargo test }]\n",
+        )
+        .is_err());
+        assert!(from_str::<serde_json::Value>(
+            "jobs: { test: { runs-on: ubuntu-latest, steps: [{ run: cargo test }] } }\n---\njobs: {}\n",
+        )
+        .is_err());
     }
 }
