@@ -88,9 +88,7 @@ fn rejects_profile_and_job_runner_target_mismatch() {
     let catalog = catalog();
     let bindings = bindings(&catalog);
     assert_eq!(
-        bind_plan(&workflow, &catalog, &bindings)
-            .unwrap_err()
-            .code,
+        bind_plan(&workflow, &catalog, &bindings).unwrap_err().code,
         "profile_runner_target_mismatch"
     );
 }
