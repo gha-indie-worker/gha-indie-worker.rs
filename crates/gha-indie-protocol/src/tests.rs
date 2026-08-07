@@ -8,6 +8,18 @@ const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 const OTHER_COMMIT: &str = "1123456789abcdef0123456789abcdef01234567";
 const RUST_DIGEST: &str = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
 const NODE_DIGEST: &str = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
+const MAC_DIGEST: &str = "sha256:3333333333333333333333333333333333333333333333333333333333333333";
+
+fn runner(platform: &str, architecture: &str, capabilities: &[&str]) -> RunnerTarget {
+    RunnerTarget {
+        platform: platform.to_string(),
+        architecture: architecture.to_string(),
+        capabilities: capabilities
+            .iter()
+            .map(|capability| (*capability).to_string())
+            .collect(),
+    }
+}
 
 fn empty_step() -> PlannedStep {
     PlannedStep {
@@ -43,7 +55,12 @@ fn job(id: &str, base_job_id: &str, needs_instances: &[&str]) -> PlannedJob {
             .iter()
             .map(|value| (*value).to_string())
             .collect(),
-        runs_on: vec!["self-hosted".to_string(), "linux".to_string()],
+        runs_on: vec![
+            "self-hosted".to_string(),
+            "gha-indie-worker".to_string(),
+            "linux".to_string(),
+            "x64".to_string(),
+        ],
         reusable_workflow: None,
         condition: None,
         matrix: BTreeMap::new(),
@@ -80,12 +97,12 @@ fn catalog() -> ProfileCatalog {
             ProfileRecord {
                 name: "rust-verify".to_string(),
                 digest: RUST_DIGEST.to_string(),
-                platform: "linux".to_string(),
+                runner: runner("linux", "x64", &["native", "cargo-cache"]),
             },
             ProfileRecord {
                 name: "node-verify".to_string(),
                 digest: NODE_DIGEST.to_string(),
-                platform: "linux".to_string(),
+                runner: runner("linux", "x64", &[]),
             },
         ],
     }
@@ -128,6 +145,12 @@ fn binds_matrix_jobs_to_exact_commit_and_reviewed_profiles() {
     assert_eq!(batch.commit_sha, COMMIT);
     assert_eq!(batch.requests.len(), 3);
     assert_eq!(batch.requests[0].profile, "rust-verify");
+    assert_eq!(batch.requests[0].runner.platform, "linux");
+    assert_eq!(batch.requests[0].runner.architecture, "x64");
+    assert_eq!(
+        batch.requests[0].runner.capabilities,
+        vec!["cargo-cache", "native"]
+    );
     assert_eq!(batch.requests[0].context_dir, "crates/core");
     assert_eq!(
         batch.requests[2].needs_instances,
@@ -140,6 +163,151 @@ fn binds_matrix_jobs_to_exact_commit_and_reviewed_profiles() {
     assert_eq!(
         batch.requests[0].request_id,
         bind_plan(&workflow, &catalog, &bindings).unwrap().requests[0].request_id
+    );
+}
+
+#[test]
+fn binds_native_macos_profile_to_apple_silicon_job() {
+    let mut mac_job = job("build", "build", &[]);
+    mac_job.runs_on = ["self-hosted", "gha-indie-worker", "macos", "arm64"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let workflow = WorkflowPlan {
+        schema_version: PLAN_SCHEMA.to_string(),
+        name: Some("macos-native".to_string()),
+        job_order: vec!["build".to_string()],
+        jobs: vec![mac_job],
+    };
+    let catalog = ProfileCatalog {
+        schema_version: PROFILE_CATALOG_SCHEMA.to_string(),
+        profiles: vec![ProfileRecord {
+            name: "macos-xcode".to_string(),
+            digest: MAC_DIGEST.to_string(),
+            runner: runner("macos", "arm64", &["xcode", "native", "ios-simulator"]),
+        }],
+    };
+    let bindings = BindingDocument {
+        schema_version: BINDINGS_SCHEMA.to_string(),
+        repository_url: "https://github.com/gha-indie-worker/example.git".to_string(),
+        commit_sha: COMMIT.to_string(),
+        profile_catalog_digest: profile_catalog_digest(&catalog).unwrap(),
+        jobs: BTreeMap::from([(
+            "build".to_string(),
+            JobBinding {
+                profile: "macos-xcode".to_string(),
+                profile_digest: MAC_DIGEST.to_string(),
+                context_dir: None,
+            },
+        )]),
+    };
+
+    let batch = bind_plan(&workflow, &catalog, &bindings).unwrap();
+    assert_eq!(batch.requests[0].runner.platform, "macos");
+    assert_eq!(batch.requests[0].runner.architecture, "arm64");
+    assert_eq!(
+        batch.requests[0].runner.capabilities,
+        vec!["ios-simulator", "native", "xcode"]
+    );
+}
+
+#[test]
+fn rejects_profile_and_job_runner_target_mismatch() {
+    let mut workflow = plan();
+    workflow.jobs[0].runs_on = ["self-hosted", "gha-indie-worker", "windows", "x64"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    assert_eq!(
+        bind_plan(&workflow, &catalog(), &bindings(&catalog()))
+            .unwrap_err()
+            .code,
+        "profile_runner_target_mismatch"
+    );
+}
+
+#[test]
+fn runner_labels_fail_closed() {
+    let catalog = catalog();
+    let bindings = bindings(&catalog);
+
+    let mut missing_indie = plan();
+    missing_indie.jobs[0].runs_on = ["self-hosted", "linux", "x64"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    assert_eq!(
+        bind_plan(&missing_indie, &catalog, &bindings)
+            .unwrap_err()
+            .code,
+        "missing_indie_runner_label"
+    );
+
+    let mut ambiguous_platform = plan();
+    ambiguous_platform.jobs[0].runs_on.push("windows".to_string());
+    assert_eq!(
+        bind_plan(&ambiguous_platform, &catalog, &bindings)
+            .unwrap_err()
+            .code,
+        "ambiguous_runner_platform"
+    );
+
+    let mut ambiguous_architecture = plan();
+    ambiguous_architecture.jobs[0]
+        .runs_on
+        .push("arm64".to_string());
+    assert_eq!(
+        bind_plan(&ambiguous_architecture, &catalog, &bindings)
+            .unwrap_err()
+            .code,
+        "ambiguous_runner_architecture"
+    );
+
+    let mut unsupported = plan();
+    unsupported.jobs[0]
+        .runs_on
+        .push("ubuntu-latest".to_string());
+    assert_eq!(
+        bind_plan(&unsupported, &catalog, &bindings)
+            .unwrap_err()
+            .code,
+        "unsupported_runner_label"
+    );
+}
+
+#[test]
+fn profile_runner_targets_fail_closed() {
+    let valid = catalog();
+    let valid_bindings = bindings(&valid);
+
+    let mut missing_native = valid.clone();
+    missing_native.profiles[0].runner.platform = "macos".to_string();
+    missing_native.profiles[0].runner.architecture = "arm64".to_string();
+    missing_native.profiles[0].runner.capabilities.clear();
+    assert_eq!(
+        bind_plan(&plan(), &missing_native, &valid_bindings)
+            .unwrap_err()
+            .code,
+        "native_capability_required"
+    );
+
+    let mut unsupported_platform = valid.clone();
+    unsupported_platform.profiles[0].runner.platform = "freebsd".to_string();
+    assert_eq!(
+        bind_plan(&plan(), &unsupported_platform, &valid_bindings)
+            .unwrap_err()
+            .code,
+        "unsupported_runner_platform"
+    );
+
+    let mut duplicate_capability = valid;
+    duplicate_capability.profiles[0].runner.capabilities =
+        vec!["native".to_string(), "native".to_string()];
+    assert_eq!(
+        bind_plan(&plan(), &duplicate_capability, &valid_bindings)
+            .unwrap_err()
+            .code,
+        "duplicate_runner_capability"
     );
 }
 
@@ -291,6 +459,9 @@ fn digests_are_stable_under_semantically_unordered_inputs() {
     let first = catalog();
     let mut second = first.clone();
     second.profiles.reverse();
+    for profile in &mut second.profiles {
+        profile.runner.capabilities.reverse();
+    }
     assert_eq!(
         profile_catalog_digest(&first).unwrap(),
         profile_catalog_digest(&second).unwrap()
