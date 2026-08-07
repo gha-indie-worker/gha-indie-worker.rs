@@ -79,6 +79,55 @@ fn binds_native_macos_profile_to_apple_silicon_job() {
 }
 
 #[test]
+fn binds_native_windows_profile_to_x64_job() {
+    let mut windows_job = job("build", "build", &[]);
+    windows_job.runs_on = ["self-hosted", "gha-indie-worker", "windows", "x64"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let workflow = WorkflowPlan {
+        schema_version: PLAN_SCHEMA.to_string(),
+        name: Some("windows-native".to_string()),
+        job_order: vec!["build".to_string()],
+        jobs: vec![windows_job],
+    };
+    let catalog = ProfileCatalog {
+        schema_version: PROFILE_CATALOG_SCHEMA.to_string(),
+        profiles: vec![ProfileRecord {
+            name: "windows-msvc".to_string(),
+            digest: WINDOWS_DIGEST.to_string(),
+            runner: runner(
+                "windows",
+                "x64",
+                &["windows-sdk", "native", "msvc", "powershell"],
+            ),
+        }],
+    };
+    let bindings = BindingDocument {
+        schema_version: BINDINGS_SCHEMA.to_string(),
+        repository_url: "https://github.com/gha-indie-worker/example.git".to_string(),
+        commit_sha: COMMIT.to_string(),
+        profile_catalog_digest: profile_catalog_digest(&catalog).unwrap(),
+        jobs: BTreeMap::from([(
+            "build".to_string(),
+            JobBinding {
+                profile: "windows-msvc".to_string(),
+                profile_digest: WINDOWS_DIGEST.to_string(),
+                context_dir: None,
+            },
+        )]),
+    };
+
+    let batch = bind_plan(&workflow, &catalog, &bindings).unwrap();
+    assert_eq!(batch.requests[0].runner.platform, "windows");
+    assert_eq!(batch.requests[0].runner.architecture, "x64");
+    assert_eq!(
+        batch.requests[0].runner.capabilities,
+        vec!["msvc", "native", "powershell", "windows-sdk"]
+    );
+}
+
+#[test]
 fn rejects_profile_and_job_runner_target_mismatch() {
     let mut workflow = plan();
     workflow.jobs[0].runs_on = ["self-hosted", "gha-indie-worker", "windows", "x64"]
