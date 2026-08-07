@@ -4,7 +4,7 @@ use super::identifiers::validate_digest;
 use crate::model::{ProfileCatalog, ProtocolError, RunnerTarget};
 use crate::{
     ALLOWED_RUNNER_ARCHITECTURES, ALLOWED_RUNNER_PLATFORMS, MAX_CAPABILITY_NAME_BYTES,
-    MAX_PROFILE_CAPABILITIES, MAX_PROFILES, MAX_PROFILE_NAME_BYTES, PROFILE_CATALOG_SCHEMA,
+    MAX_PROFILES, MAX_PROFILE_CAPABILITIES, MAX_PROFILE_NAME_BYTES, PROFILE_CATALOG_SCHEMA,
 };
 
 pub(crate) fn validate_catalog(catalog: &ProfileCatalog) -> Result<(), ProtocolError> {
