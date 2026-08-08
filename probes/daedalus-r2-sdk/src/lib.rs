@@ -92,12 +92,7 @@ pub async fn probe_conditional_write_and_error_surface(
     Ok((head_status, put_status))
 }
 
-pub type DecodedHead = (
-    u64,
-    Option<String>,
-    Option<String>,
-    HashMap<String, String>,
-);
+pub type DecodedHead = (u64, Option<String>, Option<String>, HashMap<String, String>);
 
 pub fn decode_head(output: &HeadObjectOutput) -> Result<DecodedHead, Box<dyn Error + Send + Sync>> {
     let byte_count = output
