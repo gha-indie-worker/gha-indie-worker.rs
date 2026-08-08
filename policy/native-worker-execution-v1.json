@@ -10,9 +10,22 @@
     "scheme": "https",
     "host": "github.com",
     "embeddedAuthentication": false,
+    "explicitPort": false,
     "queryOrFragment": false,
     "urlRewrites": false,
     "additionalRemotes": false
+  },
+  "gitEnvironment": {
+    "isolatedHome": true,
+    "systemConfig": false,
+    "systemAttributes": false,
+    "inheritedInjectedConfig": false,
+    "inheritedExecPath": false,
+    "inheritedTemplateDirectory": false,
+    "inheritedSshOrAskpass": false,
+    "replaceObjects": false,
+    "fileTransport": false,
+    "terminalPrompts": false
   },
   "checkout": {
     "exactLowercaseCommitSha": true,
@@ -47,6 +60,7 @@
     "fixedProfileOnly": true
   },
   "evidence": {
+    "exactFieldSet": true,
     "requestedAndResolvedCommit": true,
     "treeSha": true,
     "detachedHead": true,
@@ -54,7 +68,7 @@
     "remoteSet": true,
     "contextDir": true,
     "profileAndRunner": true,
-    "contentDigest": true,
+    "contentDigestCoversEveryField": true,
     "containsAuthenticationMaterial": false
   },
   "productionReadinessClaimed": false
