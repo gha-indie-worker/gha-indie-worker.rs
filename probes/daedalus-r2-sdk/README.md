@@ -9,8 +9,9 @@ It deliberately contains no Daedalus business logic, credentials, endpoint, buck
 - custom endpoint plus S3 path-style configuration;
 - `ByteStream::from_path`;
 - conditional `PutObject.if_none_match("*")`;
-- metadata and content-type setters;
-- `HeadObjectOutput` content-length, content-type, and metadata accessors;
+- server-validated `PutObject.checksum_sha256(...)`;
+- checksum-enabled `HeadObject` through `ChecksumMode::Enabled`;
+- `HeadObjectOutput.checksum_sha256()` plus content-length, content-type, and metadata accessors;
 - `SdkError::as_service_error`, `HeadObjectError::is_not_found`, `SdkError::raw_response`, and HTTP status extraction.
 
 The probe does not contact R2, consume Meshy credits, or contain secrets. Passing it establishes SDK surface compatibility, not full Daedalus archive correctness; the private PR retains the immutable/idempotency tests and release-boundary contract.
