@@ -9,6 +9,7 @@ use aws_sdk_s3::{
     config::{Credentials, Region},
     operation::head_object::HeadObjectOutput,
     primitives::ByteStream,
+    types::ChecksumMode,
     Client,
 };
 
@@ -42,6 +43,7 @@ pub async fn probe_conditional_write_and_error_surface(
     object_key: &str,
     path: PathBuf,
     byte_count: u64,
+    checksum_sha256: &str,
     media_type: Option<&str>,
     metadata: HashMap<String, String>,
 ) -> Result<(Option<u16>, Option<u16>), Box<dyn Error + Send + Sync>> {
@@ -49,6 +51,7 @@ pub async fn probe_conditional_write_and_error_surface(
         .head_object()
         .bucket(bucket)
         .key(object_key)
+        .checksum_mode(ChecksumMode::Enabled)
         .send()
         .await
     {
@@ -73,6 +76,7 @@ pub async fn probe_conditional_write_and_error_surface(
         .key(object_key)
         .body(body)
         .content_length(i64::try_from(byte_count)?)
+        .checksum_sha256(checksum_sha256)
         .if_none_match("*")
         .set_metadata(Some(metadata));
     if let Some(media_type) = media_type {
@@ -88,16 +92,22 @@ pub async fn probe_conditional_write_and_error_surface(
     Ok((head_status, put_status))
 }
 
-pub fn decode_head(
-    output: &HeadObjectOutput,
-) -> Result<(u64, Option<String>, HashMap<String, String>), Box<dyn Error + Send + Sync>> {
+pub type DecodedHead = (
+    u64,
+    Option<String>,
+    Option<String>,
+    HashMap<String, String>,
+);
+
+pub fn decode_head(output: &HeadObjectOutput) -> Result<DecodedHead, Box<dyn Error + Send + Sync>> {
     let byte_count = output
         .content_length()
         .and_then(|value| u64::try_from(value).ok())
         .ok_or("missing content length")?;
     let media_type = output.content_type().map(str::to_ascii_lowercase);
+    let checksum_sha256 = output.checksum_sha256().map(str::to_string);
     let metadata = output.metadata().cloned().unwrap_or_default();
-    Ok((byte_count, media_type, metadata))
+    Ok((byte_count, media_type, checksum_sha256, metadata))
 }
 
 #[cfg(test)]
@@ -109,11 +119,17 @@ mod tests {
         let output = HeadObjectOutput::builder()
             .content_length(17)
             .content_type("model/gltf-binary")
+            .checksum_sha256("YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE=")
             .metadata("daedalus-sha256", "a".repeat(64))
             .build();
-        let (byte_count, media_type, metadata) = decode_head(&output).expect("decode head");
+        let (byte_count, media_type, checksum_sha256, metadata) =
+            decode_head(&output).expect("decode head");
         assert_eq!(byte_count, 17);
         assert_eq!(media_type.as_deref(), Some("model/gltf-binary"));
+        assert_eq!(
+            checksum_sha256.as_deref(),
+            Some("YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE=")
+        );
         assert_eq!(
             metadata.get("daedalus-sha256").map(String::as_str),
             Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
