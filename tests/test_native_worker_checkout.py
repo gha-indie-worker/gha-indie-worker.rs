@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import os
 import tempfile
 import unittest
@@ -23,6 +24,7 @@ class NativeWorkerCheckoutTests(unittest.TestCase):
         self.assertEqual(evidence["resolvedCommitSha"], COMMIT)
         self.assertTrue(evidence["detachedHead"])
         self.assertEqual(evidence["remotes"], ["origin"])
+        execution.validate_checkout_evidence(evidence)
         fetches = [command for command in fake.commands if "fetch" in command]
         self.assertEqual(len(fetches), 1)
         self.assertEqual(fetches[0][-1], COMMIT)
@@ -32,8 +34,25 @@ class NativeWorkerCheckoutTests(unittest.TestCase):
         for environment in fake.environments:
             self.assertEqual(environment["GIT_TERMINAL_PROMPT"], "0")
             self.assertEqual(environment["GIT_LFS_SKIP_SMUDGE"], "1")
+            self.assertEqual(environment["GIT_ATTR_NOSYSTEM"], "1")
+            self.assertEqual(environment["GIT_NO_REPLACE_OBJECTS"], "1")
             self.assertNotIn("GIT_SSH_COMMAND", environment)
             self.assertNotIn("GIT_ASKPASS", environment)
+
+    def test_evidence_digest_covers_every_field(self):
+        with tempfile.TemporaryDirectory() as parent:
+            evidence = execution.execute_exact_checkout(
+                self.handoff(), workspace=Path(parent) / "checkout", now=NOW, runner=FakeGit()
+            )
+        execution.validate_checkout_evidence(evidence)
+        tampered = copy.deepcopy(evidence)
+        tampered["treeSha"] = "c" * 40
+        with self.assertRaisesRegex(execution.ExecutionError, "evidence_digest_mismatch"):
+            execution.validate_checkout_evidence(tampered)
+        extended = copy.deepcopy(evidence)
+        extended["referenceHost"] = "unbound-field"
+        with self.assertRaisesRegex(execution.ExecutionError, "field_unknown"):
+            execution.validate_checkout_evidence(extended)
 
     def test_sha_mismatch_deletes_new_workspace(self):
         with tempfile.TemporaryDirectory() as parent:
@@ -86,15 +105,31 @@ class NativeWorkerCheckoutTests(unittest.TestCase):
             original = os.environ.copy()
             try:
                 os.environ.update({
-                    "GIT_DIR": "/attacker", "GIT_SSH_COMMAND": "echo leaked",
-                    "GIT_CONFIG_KEY_0": "http.x.extraheader", "GIT_CONFIG_VALUE_0": "secret",
+                    "GIT_DIR": "/attacker",
+                    "GIT_SSH_COMMAND": "echo leaked",
+                    "GIT_CONFIG_PARAMETERS": "'http.x.extraheader=secret'",
+                    "GIT_CONFIG_KEY_0": "http.x.extraheader",
+                    "GIT_CONFIG_VALUE_0": "secret",
+                    "GIT_EXEC_PATH": "/attacker/bin",
+                    "GIT_TEMPLATE_DIR": "/attacker/templates",
+                    "GIT_REPLACE_REF_BASE": "refs/attacker/",
+                    "GIT_SSL_NO_VERIFY": "1",
+                    "GIT_TRACE_PACKET": "1",
                 })
                 environment = execution.git_environment(Path(parent))
             finally:
                 os.environ.clear()
                 os.environ.update(original)
-        for key in ("GIT_DIR", "GIT_SSH_COMMAND", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"):
+        for key in (
+            "GIT_DIR", "GIT_SSH_COMMAND", "GIT_CONFIG_PARAMETERS",
+            "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_EXEC_PATH",
+            "GIT_TEMPLATE_DIR", "GIT_REPLACE_REF_BASE", "GIT_SSL_NO_VERIFY",
+            "GIT_TRACE_PACKET",
+        ):
             self.assertNotIn(key, environment)
+        self.assertEqual(environment["GIT_CONFIG_NOSYSTEM"], "1")
+        self.assertEqual(environment["GIT_ATTR_NOSYSTEM"], "1")
+        self.assertEqual(environment["GIT_NO_REPLACE_OBJECTS"], "1")
 
 
 if __name__ == "__main__":
