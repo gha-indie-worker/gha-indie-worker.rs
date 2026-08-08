@@ -101,8 +101,12 @@ def validate_repository_url(value: Any) -> str:
 
     if not isinstance(value, str) or len(value) > 300 or any(ord(ch) < 32 for ch in value):
         raise ExecutionError("repository_invalid", "repositoryUrl must be a bounded string")
-    parsed = urlsplit(value)
-    if parsed.scheme != "https" or parsed.hostname != "github.com" or parsed.port is not None:
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError as error:
+        raise ExecutionError("repository_authority_invalid", "repository URL authority is invalid") from error
+    if parsed.scheme != "https" or parsed.hostname != "github.com" or port is not None:
         raise ExecutionError("repository_transport_forbidden", "only HTTPS github.com repositories are allowed")
     if parsed.username is not None or parsed.password is not None:
         raise ExecutionError("repository_credentials_forbidden", "repository URLs must not contain credentials")
