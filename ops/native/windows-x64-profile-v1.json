@@ -1,0 +1,18 @@
+{
+  "schema": "gha-indie-worker.native-profile/v1",
+  "profile_id": "windows-x64-untrusted-v1",
+  "os": "windows",
+  "architecture": "x86_64",
+  "trust_tier": "untrusted",
+  "dedicated_user": {"required": true, "administrator": false},
+  "connectivity": {"control_plane": "outbound-only", "mutual_authentication": true},
+  "isolation": {"boundary": "disposable-hyper-v-vm-or-reimageable-host", "snapshot_required": true},
+  "signing": {"certificates_available": false, "release_credentials_available": false},
+  "shells": {"powershell": "native", "cmd": "native", "msys2": "unsupported-unless-profile-declared"},
+  "toolchains": {"visual_studio_build_tools": "pinned-by-image", "windows_sdk": "pinned-by-image", "rust_msvc": "pinned-by-profile", "flutter": "pinned-by-profile", "node": "pinned-by-profile"},
+  "filesystem": {"long_paths": true, "case_sensitive_assumptions": false, "symlinks": "explicit-capability-only"},
+  "cleanup": ["credential-manager", "user-profile", "temp", "package-caches", "scheduled-tasks", "services", "registry", "mounted-volumes", "process-trees", "workspace"],
+  "quarantine_on": ["cleanup-failure", "integrity-failure", "patch-stale", "capability-drift", "antivirus-interference", "locked-file-cleanup-failure"],
+  "terminal_receipts": ["success", "failure", "canceled", "timed-out", "rebooted", "host-lost"],
+  "minimum_independent_slots_before_production": 2
+}
