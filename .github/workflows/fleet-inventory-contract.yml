@@ -3,7 +3,7 @@ on:
   pull_request:
     paths: [".github/workflows/fleet-inventory-contract.yml", "ops/fleet/inventory-v1.schema.json", "tools/validate_fleet_inventory.py"]
   push:
-    branches: [main]
+    branches: [dev, main]
     paths: [".github/workflows/fleet-inventory-contract.yml", "ops/fleet/inventory-v1.schema.json", "tools/validate_fleet_inventory.py"]
   workflow_dispatch:
 permissions: {contents: read}
