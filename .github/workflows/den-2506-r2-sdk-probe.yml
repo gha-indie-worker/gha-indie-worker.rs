@@ -1,16 +1,17 @@
-name: DEN-2506 R2 SDK surface probe
+name: DEN-2506 R2 SDK and worker lockgraph probe
 
 on:
   pull_request:
     paths:
       - "probes/daedalus-r2-sdk/**"
+      - "probes/daedalus-meshy-worker-lockgraph/**"
       - ".github/workflows/den-2506-r2-sdk-probe.yml"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  compile-and-test:
+  compile-and-test-sdk-surface:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -19,7 +20,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if grep -R -nE 'ghp_|lin_api_|cfat_|sk-svcacct-|r2\.cloudflarestorage\.com' probes/daedalus-r2-sdk; then
+          if grep -R -nE 'ghp_|lin_api_|cfat_|sk-svcacct-|[0-9a-f]{32}\.r2\.cloudflarestorage\.com' probes/daedalus-r2-sdk; then
             echo "credential-like or account-specific material found in public SDK probe" >&2
             exit 1
           fi
@@ -29,3 +30,44 @@ jobs:
         run: cargo check --manifest-path probes/daedalus-r2-sdk/Cargo.toml --all-targets
       - name: Run SDK accessor tests
         run: cargo test --manifest-path probes/daedalus-r2-sdk/Cargo.toml --all-targets
+
+  resolve-worker-lockgraph:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 1
+      - name: Verify lockgraph is dependency-only and credential-free
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -R -nE 'ghp_|lin_api_|cfat_|sk-svcacct-|[0-9a-f]{32}\.r2\.cloudflarestorage\.com' probes/daedalus-meshy-worker-lockgraph; then
+            echo "credential-like or account-specific material found in worker lockgraph" >&2
+            exit 1
+          fi
+          if find probes/daedalus-meshy-worker-lockgraph -type f ! -name 'Cargo.toml' ! -name 'Cargo.lock' ! -name '*.rs' ! -name 'README.md' -print -quit | grep -q .; then
+            echo "unexpected file type in dependency-only worker lockgraph" >&2
+            exit 1
+          fi
+      - name: Resolve exact worker dependency graph
+        run: cargo generate-lockfile --manifest-path probes/daedalus-meshy-worker-lockgraph/crates/meshy-worker/Cargo.toml
+      - name: Validate locked metadata and compile dependency graph
+        run: |
+          cargo metadata --locked --manifest-path probes/daedalus-meshy-worker-lockgraph/crates/meshy-worker/Cargo.toml --format-version 1 > /tmp/den-2506-metadata.json
+          cargo check --locked --manifest-path probes/daedalus-meshy-worker-lockgraph/crates/meshy-worker/Cargo.toml --all-targets
+      - name: Commit reproducible worker lockfile to the validation branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          lock=probes/daedalus-meshy-worker-lockgraph/crates/meshy-worker/Cargo.lock
+          git add "$lock"
+          if git diff --cached --quiet; then
+            echo "worker resolver artifact already current"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "DEN-2506 record Meshy worker resolver artifact"
+          git push origin HEAD:${{ github.head_ref }}
