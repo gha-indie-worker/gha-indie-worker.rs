@@ -1,0 +1,31 @@
+name: DEN-2506 R2 SDK surface probe
+
+on:
+  pull_request:
+    paths:
+      - "probes/daedalus-r2-sdk/**"
+      - ".github/workflows/den-2506-r2-sdk-probe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  compile-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify no credential-like material is present
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -R -nE 'ghp_|lin_api_|cfat_|sk-svcacct-|r2\.cloudflarestorage\.com' probes/daedalus-r2-sdk; then
+            echo "credential-like or account-specific material found in public SDK probe" >&2
+            exit 1
+          fi
+      - name: Rustfmt probe
+        run: cargo fmt --manifest-path probes/daedalus-r2-sdk/Cargo.toml -- --check
+      - name: Compile all probe targets
+        run: cargo check --manifest-path probes/daedalus-r2-sdk/Cargo.toml --all-targets
+      - name: Run SDK accessor tests
+        run: cargo test --manifest-path probes/daedalus-r2-sdk/Cargo.toml --all-targets
