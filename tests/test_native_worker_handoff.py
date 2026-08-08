@@ -58,6 +58,8 @@ class NativeWorkerHandoffTests(unittest.TestCase):
             "ssh://github.com/owner/repo.git", "git://github.com/owner/repo.git",
             "file:///tmp/repo", "https://token@github.com/owner/repo.git",
             "https://github.com.evil.example/owner/repo.git",
+            "https://github.com:443/owner/repo.git",
+            "https://github.com:invalid/owner/repo.git",
             "https://github.com/owner/repo.git?ref=main",
             "https://github.com/owner/repo.git#main",
             "https://github.com/owner/repo.git/",
