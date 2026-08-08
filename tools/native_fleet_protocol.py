@@ -6,7 +6,13 @@ from __future__ import annotations
 from typing import Any, Iterable
 
 from .native_fleet_validation import *  # noqa: F401,F403
+from .native_fleet_persistence import (
+    CHECKPOINT_SCHEMA,
+    CHECKPOINT_STATE_SCHEMA,
+    seal_checkpoint_state,
+)
 from .native_fleet_runtime import NativeFleet
+
 
 def capability_payload(
     *,

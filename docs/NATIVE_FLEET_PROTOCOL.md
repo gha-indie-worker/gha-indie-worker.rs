@@ -4,9 +4,9 @@ This slice implements the executable laboratory contract for **DEN-2583** on top
 
 ## Boundaries
 
-The implementation is a dependency-free protocol simulator and validator. It proves state-machine, matching, replay, and lease semantics on Linux, Windows, and macOS reference runners. It does not claim that physical machines, production mTLS, platform secure storage, OS sandboxes, or reimage pipelines are already provisioned.
+The implementation is a dependency-free protocol simulator and validator. It proves state-machine, matching, replay, lease, checkpoint, and restart semantics on Linux, Windows, and macOS reference runners. It does not claim that physical machines, production mTLS, platform secure storage, transactional databases, OS sandboxes, or reimage pipelines are already provisioned.
 
-Production agents must replace the simulator HMAC with a platform-bound asymmetric device identity. The capability envelope, payload digest, expiry, identity binding, one-use bootstrap, rotation, revocation, and fail-closed verification semantics remain the same.
+Production agents must replace simulator HMACs with managed integrity keys and platform-bound asymmetric device identities. The capability envelope, payload digest, expiry, identity binding, one-use bootstrap, rotation, revocation, exact matching, checkpoint integrity, and fail-closed verification semantics remain the same.
 
 ## Enrollment and attestation
 
@@ -43,9 +43,22 @@ A lease binds the request/digest, repository and immutable commit, host/key iden
 - Conflicting terminal receipts fail closed.
 - Heartbeat loss, identity revocation, quarantine, and lease expiry create terminal outcomes without issuing a second authority.
 
+## Checkpoint and restart semantics
+
+The laboratory can seal its control-plane state in `gha-indie-worker.fleet-checkpoint.v1` around a canonical `gha-indie-worker.fleet-state.v1` payload.
+
+- The checkpoint includes configuration, one-use grant metadata, identity metadata, host/capability snapshots, active and terminal leases, request authority mappings, receipts, and scheduler sequence state.
+- Raw identity secrets are deliberately excluded. Restore requires a separate external resolver for currently valid identity secrets, so state storage does not become a credential store.
+- The envelope binds a key ID, creation time, and SHA-256 state digest with an external integrity key. Any state, digest, signature, schema, or key mismatch fails closed.
+- Restore exact-validates every object and cross-reference: host-to-identity bindings, active lease ownership, request authority, terminal receipts, capability digests, concurrency, and assignment sequence.
+- Restored state is swept immediately by default. Stale heartbeats and expired leases become terminal outcomes before new work can be scheduled.
+- Replayed delivery after restart returns the same active lease or the durable terminal receipt; it never creates a second authority.
+
+The dependency-free HMAC checkpoint envelope is an executable lab contract, not a production key-management design. Production requires managed integrity/signing keys, encrypted transactional persistence, atomic compare-and-swap or equivalent concurrency control, backup/restore drills, retention policy, audit logging, and platform-bound public-key identities.
+
 ## Cross-agent profile coordination
 
-PRs #17 and #18 define macOS and Windows hardening profiles. They remain machine-operation policy documents. Before integration, their dispatch-facing projection must use the canonical PR #14 vocabulary:
+PRs #17 and #18 define macOS and Windows hardening profiles. They remain machine-operation policy documents. Their dispatch-facing projection uses the canonical PR #14 vocabulary:
 
 - `platform`: `macos` or `windows`;
 - `architecture`: `arm64` or `x64` (not `x86_64`);

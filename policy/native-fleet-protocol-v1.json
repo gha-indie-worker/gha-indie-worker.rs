@@ -57,6 +57,15 @@
     "terminalReceiptIdempotent": true,
     "hostLossTerminal": true
   },
+  "checkpoint": {
+    "schema": "gha-indie-worker.fleet-checkpoint.v1",
+    "stateSchema": "gha-indie-worker.fleet-state.v1",
+    "integrity": "external-key-hmac-sha256",
+    "identitySecretsStored": false,
+    "externalIdentitySecretResolverRequired": true,
+    "exactSchemaAndCrossReferenceValidation": true,
+    "restoreSweepsExpiredAuthority": true
+  },
   "runManifest": {
     "selectedHostCapabilitySnapshotRequired": true,
     "capabilityDigestRequired": true,
