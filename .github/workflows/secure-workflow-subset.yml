@@ -3,7 +3,7 @@ on:
   pull_request:
     paths: [".github/workflows/secure-workflow-subset.yml", "policy/workflow-subset-v1.json", "tools/validate_job_admission.py"]
   push:
-    branches: [main]
+    branches: [dev, main]
     paths: [".github/workflows/secure-workflow-subset.yml", "policy/workflow-subset-v1.json", "tools/validate_job_admission.py"]
   workflow_dispatch:
 permissions: {contents: read}

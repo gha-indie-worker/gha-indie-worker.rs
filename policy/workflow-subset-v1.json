@@ -9,6 +9,15 @@
     "write_tokens": false,
     "id_token": false
   },
+  "runner_target": {
+    "platforms": ["linux", "macos", "windows"],
+    "architectures": ["x64", "arm64"],
+    "trust_tiers": ["public-untrusted", "public-trusted", "private-build", "release-signing"],
+    "fixed_profile_name_and_sha256_digest_required": true,
+    "capabilities_sorted_unique_maximum": 64,
+    "native_required_for": ["macos", "windows"],
+    "aliases_fail_closed": ["x86_64", "amd64", "aarch64", "darwin", "win32"]
+  },
   "steps": {
     "maximum": 100,
     "kinds": ["run", "uses"],
@@ -32,6 +41,8 @@
   },
   "admission": {
     "repository_ref_sha_bound": true,
+    "dispatch_request_id_and_sha256_digest_required": true,
+    "fixed_profile_and_runner_target_required": true,
     "delivery_id_required": true,
     "idempotency_key_required": true,
     "lease_nonce_required": true,
