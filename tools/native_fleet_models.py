@@ -74,6 +74,14 @@ class FleetError(ValueError):
         self.message = message
 
 
+def format_time(value: datetime) -> str:
+    """Format a timezone-aware UTC timestamp without importing validation helpers."""
+
+    if value.tzinfo is None or value.utcoffset() != timedelta(0):
+        raise FleetError("timestamp_invalid", "timestamps must be timezone-aware UTC values")
+    return value.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
 @dataclass(frozen=True)
 class DeviceCredential:
     host_id: str
@@ -206,5 +214,3 @@ class AssignmentResult:
     terminal_receipt: TerminalReceipt | None
     duplicate: bool
     rejection_reasons: Mapping[str, tuple[str, ...]]
-
-
