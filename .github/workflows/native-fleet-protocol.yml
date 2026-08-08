@@ -50,4 +50,4 @@ jobs:
       - name: Run protocol and fault tests
         run: python -m unittest discover -s tests -p "test_native_fleet_*.py" -v
       - name: Compile protocol sources
-        run: python -m py_compile tools/native_fleet_*.py tests/native_fleet_test_support.py tests/test_native_fleet_*.py
+        run: python -c "import pathlib, py_compile; files=sorted(pathlib.Path('tools').glob('native_fleet_*.py')) + [pathlib.Path('tests/native_fleet_test_support.py')] + sorted(pathlib.Path('tests').glob('test_native_fleet_*.py')); [py_compile.compile(str(path), doraise=True) for path in files]"
