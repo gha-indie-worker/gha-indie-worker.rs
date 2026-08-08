@@ -8,14 +8,17 @@ on:
       - ".github/workflows/den-2506-r2-sdk-probe.yml"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   compile-and-test-sdk-surface:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out without retained credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
       - name: Verify no credential-like material is present
         shell: bash
         run: |
@@ -35,10 +38,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out without retained credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.head_ref }}
-          fetch-depth: 1
+          persist-credentials: false
       - name: Verify lockgraph is dependency-only and credential-free
         shell: bash
         run: |
@@ -51,33 +54,21 @@ jobs:
             echo "unexpected file type in dependency-only worker lockgraph" >&2
             exit 1
           fi
-      - name: Resolve exact worker dependency graph
+      - name: Resolve exact worker dependency graph in the ephemeral checkout
         run: cargo generate-lockfile --manifest-path probes/daedalus-meshy-worker-lockgraph/crates/meshy-worker/Cargo.toml
       - name: Validate locked metadata and compile dependency graph
         run: |
           cargo metadata --locked --manifest-path probes/daedalus-meshy-worker-lockgraph/crates/meshy-worker/Cargo.toml --format-version 1 > /tmp/den-2506-metadata.json
           cargo check --locked --manifest-path probes/daedalus-meshy-worker-lockgraph/crates/meshy-worker/Cargo.toml --all-targets
-      - name: Publish the reproducible worker lockfile
-        uses: actions/upload-artifact@v4
+      - name: Publish the resolved worker lockfile as evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: den-2506-meshy-worker-lock
+          name: den-2506-meshy-worker-lock-${{ github.run_id }}-${{ github.run_attempt }}
           path: probes/daedalus-meshy-worker-lockgraph/crates/meshy-worker/Cargo.lock
           if-no-files-found: error
           retention-days: 7
-      - name: Commit reproducible worker lockfile to the validation branch
-        shell: bash
+      - name: Prove the validation workflow did not mutate tracked state
         run: |
           set -euo pipefail
-          branch='${{ github.head_ref }}'
-          lock=probes/daedalus-meshy-worker-lockgraph/crates/meshy-worker/Cargo.lock
-          git add "$lock"
-          if git diff --cached --quiet; then
-            echo "worker resolver artifact already current"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "DEN-2506 record Meshy worker resolver artifact"
-          git fetch origin "$branch"
-          git rebase "origin/$branch"
-          git push origin "HEAD:$branch"
+          git diff --exit-code -- . ':!probes/daedalus-meshy-worker-lockgraph/crates/meshy-worker/Cargo.lock'
+          echo "The generated resolver artifact is evidence only; this workflow cannot write the reviewed branch."
