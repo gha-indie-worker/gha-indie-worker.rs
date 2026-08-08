@@ -22,6 +22,13 @@ except ImportError:
 MAX_GIT_OUTPUT_BYTES = 16 * 1024
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 120
 Runner = Callable[..., subprocess.CompletedProcess[str]]
+EVIDENCE_KEYS = {
+    "schemaVersion", "evidenceDigest", "handoffDigest", "requestId",
+    "requestDigest", "leaseId", "hostId", "repositoryUrl",
+    "requestedCommitSha", "resolvedCommitSha", "treeSha", "originUrl",
+    "remotes", "detachedHead", "submoduleGitlinks", "contextDir",
+    "profile", "profileDigest", "runner", "startedAt", "completedAt",
+}
 
 
 def git_environment(control_home: Path) -> dict[str, str]:
@@ -29,15 +36,27 @@ def git_environment(control_home: Path) -> dict[str, str]:
     dangerous = {
         "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
         "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CEILING_DIRECTORIES", "GIT_SSH",
-        "GIT_SSH_COMMAND", "GIT_ASKPASS", "SSH_ASKPASS", "GIT_CONFIG_GLOBAL",
-        "GIT_CONFIG_SYSTEM", "GIT_CONFIG_COUNT", "GIT_NAMESPACE", "GIT_COMMON_DIR",
+        "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "GIT_ASKPASS", "SSH_ASKPASS",
+        "GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM",
+        "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_NAMESPACE",
+        "GIT_COMMON_DIR", "GIT_EXEC_PATH", "GIT_TEMPLATE_DIR",
+        "GIT_REPLACE_REF_BASE", "GIT_SHALLOW_FILE", "GIT_QUARANTINE_PATH",
+        "GIT_PROXY_COMMAND", "GIT_SSL_NO_VERIFY", "GIT_SSL_CAINFO",
+        "GIT_PROTOCOL", "GIT_ALLOW_PROTOCOL", "GIT_PROTOCOL_FROM_USER",
+        "GIT_CURL_VERBOSE",
     }
     for key in list(environment):
-        if key in dangerous or key.startswith("GIT_CONFIG_KEY_") or key.startswith("GIT_CONFIG_VALUE_"):
+        if (
+            key in dangerous
+            or key.startswith("GIT_CONFIG_KEY_")
+            or key.startswith("GIT_CONFIG_VALUE_")
+            or key.startswith("GIT_TRACE")
+        ):
             environment.pop(key, None)
     environment.update({
         "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "Never",
         "GIT_LFS_SKIP_SMUDGE": "1", "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_ATTR_NOSYSTEM": "1", "GIT_NO_REPLACE_OBJECTS": "1",
         "HOME": str(control_home), "USERPROFILE": str(control_home),
         "XDG_CONFIG_HOME": str(control_home / ".config"),
     })
@@ -101,6 +120,48 @@ def parse_gitlinks(output: str) -> list[str]:
         if metadata.split(" ", 1)[0] == "160000":
             gitlinks.append(path)
     return sorted(gitlinks)
+
+
+def validate_checkout_evidence(value: Mapping[str, object]) -> dict[str, object]:
+    """Verify the complete exact-checkout evidence record and its digest."""
+
+    evidence = require_mapping(value, "checkout evidence")
+    require_exact_keys(evidence, EVIDENCE_KEYS, "checkout evidence")
+    reject_secret_fields(evidence)
+    if evidence["schemaVersion"] != EVIDENCE_SCHEMA:
+        raise ExecutionError("schema_unsupported", "unsupported checkout evidence schema")
+    unsigned = {key: copy.deepcopy(item) for key, item in evidence.items() if key != "evidenceDigest"}
+    if not isinstance(evidence["evidenceDigest"], str) or sha256_digest(unsigned) != evidence["evidenceDigest"]:
+        raise ExecutionError("evidence_digest_mismatch", "checkout evidence content does not match digest")
+    for field in ("handoffDigest", "requestDigest", "profileDigest"):
+        if not isinstance(evidence[field], str) or not SHA256_RE.fullmatch(evidence[field]):
+            raise ExecutionError("digest_invalid", f"{field} is invalid")
+    for field in ("requestId", "leaseId", "hostId"):
+        bounded_identifier(evidence[field], field)
+    repository = validate_repository_url(evidence["repositoryUrl"])
+    origin = validate_repository_url(evidence["originUrl"])
+    if origin != repository:
+        raise ExecutionError("origin_url_mismatch", "evidence origin differs from repository")
+    for field in ("requestedCommitSha", "resolvedCommitSha", "treeSha"):
+        if not isinstance(evidence[field], str) or not SHA1_RE.fullmatch(evidence[field]):
+            raise ExecutionError("commit_sha_invalid", f"{field} is invalid")
+    if evidence["requestedCommitSha"] != evidence["resolvedCommitSha"]:
+        raise ExecutionError("checkout_sha_mismatch", "requested and resolved commit differ")
+    if evidence["remotes"] != ["origin"]:
+        raise ExecutionError("additional_remote_forbidden", "evidence remote set is invalid")
+    if evidence["detachedHead"] is not True:
+        raise ExecutionError("checkout_not_detached", "evidence does not prove detached HEAD")
+    if evidence["submoduleGitlinks"] != []:
+        raise ExecutionError("submodule_gitlink_forbidden", "evidence contains unsupported gitlinks")
+    validate_context_dir(evidence["contextDir"])
+    if not isinstance(evidence["profile"], str) or not NAME_RE.fullmatch(evidence["profile"]):
+        raise ExecutionError("profile_invalid", "evidence profile is invalid")
+    validate_runner(evidence["runner"])
+    started = parse_time(evidence["startedAt"], "startedAt")
+    completed = parse_time(evidence["completedAt"], "completedAt")
+    if completed < started:
+        raise ExecutionError("timestamp_invalid", "checkout completed before it started")
+    return copy.deepcopy(dict(evidence))
 
 
 def execute_exact_checkout(
@@ -195,7 +256,8 @@ def execute_exact_checkout(
                 "profileDigest": handoff["profileDigest"], "runner": copy.deepcopy(handoff["runner"]),
                 "startedAt": format_time(started_at), "completedAt": format_time(completed),
             }
-            return {**unsigned, "evidenceDigest": sha256_digest(unsigned)}
+            evidence = {**unsigned, "evidenceDigest": sha256_digest(unsigned)}
+            return validate_checkout_evidence(evidence)
     except Exception:
         if not existed_before:
             shutil.rmtree(workspace, ignore_errors=True)
