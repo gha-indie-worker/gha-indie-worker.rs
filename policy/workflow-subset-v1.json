@@ -1,0 +1,41 @@
+{
+  "schema": "gha-indie-worker.capabilities/v1",
+  "events": {
+    "allowed": ["push", "pull_request", "workflow_dispatch"],
+    "denied": ["pull_request_target", "workflow_run"]
+  },
+  "permissions": {
+    "allowed": ["none", "read"],
+    "write_tokens": false,
+    "id_token": false
+  },
+  "steps": {
+    "maximum": 100,
+    "kinds": ["run", "uses"],
+    "actions_must_use_commit_sha": true,
+    "container_images_must_use_sha256_digest": true,
+    "unsupported_expressions_fail_before_execution": true
+  },
+  "resources": {
+    "timeout_seconds_max": 3600,
+    "log_bytes_max": 10485760,
+    "artifact_bytes_max": 1073741824,
+    "processes_max": 512
+  },
+  "isolation": {
+    "host_socket": false,
+    "privileged": false,
+    "ambient_credentials": false,
+    "host_devices": false,
+    "cross_job_workspace": false,
+    "cleanup_failure_terminal_state": "quarantined"
+  },
+  "admission": {
+    "repository_ref_sha_bound": true,
+    "delivery_id_required": true,
+    "idempotency_key_required": true,
+    "lease_nonce_required": true,
+    "replay_is_terminal_duplicate": true,
+    "terminal_receipt_required": true
+  }
+}
