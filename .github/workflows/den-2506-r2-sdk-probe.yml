@@ -57,6 +57,13 @@ jobs:
         run: |
           cargo metadata --locked --manifest-path probes/daedalus-meshy-worker-lockgraph/crates/meshy-worker/Cargo.toml --format-version 1 > /tmp/den-2506-metadata.json
           cargo check --locked --manifest-path probes/daedalus-meshy-worker-lockgraph/crates/meshy-worker/Cargo.toml --all-targets
+      - name: Publish the reproducible worker lockfile
+        uses: actions/upload-artifact@v4
+        with:
+          name: den-2506-meshy-worker-lock
+          path: probes/daedalus-meshy-worker-lockgraph/crates/meshy-worker/Cargo.lock
+          if-no-files-found: error
+          retention-days: 7
       - name: Commit reproducible worker lockfile to the validation branch
         shell: bash
         run: |
