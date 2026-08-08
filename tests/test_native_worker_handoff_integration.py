@@ -3,7 +3,7 @@ from __future__ import annotations
 from tools.native_fleet_protocol import dispatch_request
 from tools.native_worker_execution import ExecutionError, build_execution_handoff
 
-from native_fleet_test_support import MAC_DIGEST, NOW, NativeFleetTestCase
+from tests.native_fleet_test_support import MAC_DIGEST, NOW, NativeFleetTestCase
 
 
 class NativeWorkerHandoffIntegrationTests(NativeFleetTestCase):
