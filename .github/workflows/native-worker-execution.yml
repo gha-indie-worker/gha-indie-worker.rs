@@ -1,0 +1,126 @@
+name: Native worker exact checkout
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/native-worker-execution.yml"
+      - "docs/NATIVE_WORKER_EXECUTION.md"
+      - "policy/native-worker-execution-v1.json"
+      - "tools/native_worker_common.py"
+      - "tools/native_worker_handoff.py"
+      - "tools/native_worker_checkout.py"
+      - "tools/native_worker_execution.py"
+      - "tests/live_native_worker_checkout.py"
+      - "tests/native_worker_test_support.py"
+      - "tests/test_native_worker_handoff.py"
+      - "tests/test_native_worker_checkout.py"
+      - "tests/test_native_worker_handoff_integration.py"
+  push:
+    branches:
+      - dev
+      - main
+    paths:
+      - ".github/workflows/native-worker-execution.yml"
+      - "docs/NATIVE_WORKER_EXECUTION.md"
+      - "policy/native-worker-execution-v1.json"
+      - "tools/native_worker_common.py"
+      - "tools/native_worker_handoff.py"
+      - "tools/native_worker_checkout.py"
+      - "tools/native_worker_execution.py"
+      - "tests/live_native_worker_checkout.py"
+      - "tests/native_worker_test_support.py"
+      - "tests/test_native_worker_handoff.py"
+      - "tests/test_native_worker_checkout.py"
+      - "tests/test_native_worker_handoff_integration.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  exact-checkout:
+    name: Exact checkout (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux
+            architecture: x64
+          - os: windows-2025
+            platform: windows
+            architecture: x64
+          - os: macos-15
+            platform: macos
+            architecture: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Install pinned Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Validate machine-readable policy
+        run: python -m json.tool policy/native-worker-execution-v1.json
+
+      - name: Compile execution contract and tests
+        run: >-
+          python -c "import pathlib,py_compile;
+          files=[pathlib.Path('tools/native_worker_common.py'),
+          pathlib.Path('tools/native_worker_handoff.py'),
+          pathlib.Path('tools/native_worker_checkout.py'),
+          pathlib.Path('tools/native_worker_execution.py'),
+          pathlib.Path('tests/live_native_worker_checkout.py'),
+          pathlib.Path('tests/native_worker_test_support.py'),
+          pathlib.Path('tests/test_native_worker_handoff.py'),
+          pathlib.Path('tests/test_native_worker_checkout.py'),
+          pathlib.Path('tests/test_native_worker_handoff_integration.py')];
+          [py_compile.compile(str(path),doraise=True) for path in files]"
+
+      - name: Run fail-closed handoff and checkout tests
+        run: >-
+          python -m unittest -v
+          tests/test_native_worker_handoff.py
+          tests/test_native_worker_checkout.py
+          tests/test_native_worker_handoff_integration.py
+
+      - name: Checkout the exact candidate SHA through the worker boundary
+        run: >-
+          python tests/live_native_worker_checkout.py
+          --repository-url "https://github.com/${{ github.repository }}.git"
+          --commit-sha "${{ github.event.pull_request.head.sha || github.sha }}"
+          --workspace "${{ runner.temp }}/gha-indie-worker-exact-checkout"
+          --evidence "${{ runner.temp }}/gha-indie-worker-exact-checkout-evidence.json"
+          --platform "${{ matrix.platform }}"
+          --architecture "${{ matrix.architecture }}"
+
+      - name: Validate evidence and exact identity
+        run: >-
+          python -c "import json,os,pathlib;
+          p=pathlib.Path(os.environ['RUNNER_TEMP'])/'gha-indie-worker-exact-checkout-evidence.json';
+          value=json.loads(p.read_text(encoding='utf-8'));
+          expected='${{ github.event.pull_request.head.sha || github.sha }}';
+          assert value['schemaVersion']=='gha-indie-worker.exact-checkout-evidence.v1';
+          assert value['requestedCommitSha']==expected==value['resolvedCommitSha'];
+          assert value['detachedHead'] is True;
+          assert value['remotes']==['origin'];
+          assert value['submoduleGitlinks']==[];
+          assert value['evidenceDigest'].startswith('sha256:')"
+
+      - name: Verify tracked source remains unchanged
+        run: >-
+          python -c "import subprocess;
+          commands=[['git','diff','--exit-code'],['git','diff','--cached','--exit-code']];
+          [subprocess.run(command,check=True) for command in commands]"
