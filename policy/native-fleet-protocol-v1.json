@@ -1,0 +1,66 @@
+{
+  "schema": "gha-indie-worker.native-fleet-contract/v1",
+  "protocolVersion": 1,
+  "capabilityEnvelope": {
+    "schema": "gha-indie-worker.capability-envelope.v1",
+    "payloadSchema": "gha-indie-worker.host-capability.v1",
+    "payloadDigest": "sha256",
+    "productionSignature": "platform-bound asymmetric device identity",
+    "simulatorSignature": "hmac-sha256-simulator",
+    "maximumTtlSeconds": 600,
+    "forbidSecretFields": true
+  },
+  "dispatchInput": {
+    "schema": "gha-indie-worker.dispatch.v2",
+    "exactPlatform": ["linux", "macos", "windows"],
+    "exactArchitecture": ["x64", "arm64"],
+    "profileNameAndDigestRequired": true,
+    "requiredCapabilitiesMustBeAttested": true,
+    "repositoryAndCommitImmutable": true
+  },
+  "identity": {
+    "bootstrapOneUse": true,
+    "bootstrapMaximumTtlSeconds": 3600,
+    "deviceIdentityShortLived": true,
+    "rotationAndRevocationRequired": true,
+    "outboundOnlyTransport": true
+  },
+  "hostStates": [
+    "enrolling",
+    "healthy",
+    "busy",
+    "draining",
+    "maintenance",
+    "quarantined",
+    "offline",
+    "revoked"
+  ],
+  "trustTiers": [
+    "public-untrusted",
+    "public-trusted",
+    "private-build",
+    "release-signing"
+  ],
+  "scheduling": {
+    "fallbackAcrossTargets": false,
+    "eligibleStates": ["healthy", "busy"],
+    "fairness": "least-utilized-then-least-assigned",
+    "recordPerHostRejectionReasons": true,
+    "concurrencyEnforced": true
+  },
+  "lease": {
+    "schema": "gha-indie-worker.lease.v1",
+    "exclusive": true,
+    "nonceRotatesOnRenewal": true,
+    "duplicateRequestReturnsExistingAuthority": true,
+    "terminalReceiptSchema": "gha-indie-worker.terminal-receipt.v1",
+    "terminalReceiptIdempotent": true,
+    "hostLossTerminal": true
+  },
+  "runManifest": {
+    "selectedHostCapabilitySnapshotRequired": true,
+    "capabilityDigestRequired": true,
+    "profileDigestRequired": true,
+    "repositoryAndCommitRequired": true
+  }
+}
