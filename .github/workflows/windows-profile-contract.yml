@@ -3,7 +3,7 @@ on:
   pull_request:
     paths: [".github/workflows/windows-profile-contract.yml", "ops/native/windows-x64-profile-v1.json", "tools/validate_windows_profile.py"]
   push:
-    branches: [main]
+    branches: [dev, main]
     paths: [".github/workflows/windows-profile-contract.yml", "ops/native/windows-x64-profile-v1.json", "tools/validate_windows_profile.py"]
   workflow_dispatch:
 permissions: {contents: read}
