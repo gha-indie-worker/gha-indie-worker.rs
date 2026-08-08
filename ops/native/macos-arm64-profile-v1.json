@@ -3,7 +3,7 @@
   "profile_id": "macos-arm64-untrusted-v1",
   "os": "macos",
   "architecture": "arm64",
-  "trust_tier": "untrusted",
+  "trust_tier": "public-untrusted",
   "dedicated_user": {"required": true, "administrator": false},
   "connectivity": {"control_plane": "outbound-only", "mutual_authentication": true},
   "isolation": {"boundary": "disposable-vm-or-reimageable-host", "snapshot_required": true},

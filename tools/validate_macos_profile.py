@@ -9,7 +9,7 @@ def validate(profile):
         if not value: errors.append(code)
     need(profile.get('schema')=='gha-indie-worker.native-profile/v1','schema')
     need(profile.get('os')=='macos','os'); need(profile.get('architecture')=='arm64','architecture')
-    need(profile.get('trust_tier')=='untrusted','trust_tier')
+    need(profile.get('trust_tier')=='public-untrusted','trust_tier')
     user=profile.get('dedicated_user',{}); need(user.get('required') is True and user.get('administrator') is False,'dedicated_user')
     signing=profile.get('signing',{}); need(signing.get('identities_available') is False and signing.get('provisioning_profiles_available') is False,'signing_separation')
     need(profile.get('connectivity',{}).get('control_plane')=='outbound-only','connectivity')
