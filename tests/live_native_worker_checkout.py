@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
-import platform as host_platform
 import shutil
 import sys
 from datetime import datetime, timedelta, timezone
@@ -96,7 +95,7 @@ def main() -> int:
         shutil.rmtree(args.workspace)
     handoff = execution.build_execution_handoff(dispatch, lease, now=now)
     evidence = execution.execute_exact_checkout(handoff, workspace=args.workspace, now=now)
-    evidence["referenceHost"] = host_platform.platform()
+    evidence = execution.validate_checkout_evidence(evidence)
     args.evidence.parent.mkdir(parents=True, exist_ok=True)
     args.evidence.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(evidence, sort_keys=True))
