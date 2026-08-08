@@ -24,6 +24,7 @@ from .native_fleet_checkpoint_codec import _lease_from_dict, _receipt_from_dict
 class CheckpointRestoreMixin:
     """Restore exact schema and authority references from a sealed checkpoint."""
 
+    @classmethod
     def restore_checkpoint(
         cls,
         checkpoint: Mapping[str, Any],
