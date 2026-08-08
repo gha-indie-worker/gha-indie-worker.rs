@@ -7,7 +7,7 @@ def validate(profile):
     errors=[]
     def need(value,code):
         if not value: errors.append(code)
-    need(profile.get('schema')=='gha-indie-worker.native-profile/v1','schema'); need(profile.get('os')=='windows','os'); need(profile.get('architecture')=='x86_64','architecture'); need(profile.get('trust_tier')=='untrusted','trust_tier')
+    need(profile.get('schema')=='gha-indie-worker.native-profile/v1','schema'); need(profile.get('os')=='windows','os'); need(profile.get('architecture')=='x64','architecture'); need(profile.get('trust_tier')=='public-untrusted','trust_tier')
     user=profile.get('dedicated_user',{}); need(user.get('required') is True and user.get('administrator') is False,'dedicated_user')
     signing=profile.get('signing',{}); need(signing.get('certificates_available') is False and signing.get('release_credentials_available') is False,'signing_separation')
     shells=profile.get('shells',{}); need(shells.get('powershell')=='native' and shells.get('cmd')=='native','native_shells')
