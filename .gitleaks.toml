@@ -1,0 +1,10 @@
+title = "gha-indie-worker standalone secret rules"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Cargo.lock contains registry package names and immutable checksums, not runtime credential values."
+paths = [
+  '''(^|/)Cargo\.lock$''',
+]
