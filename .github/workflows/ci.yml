@@ -1,0 +1,114 @@
+name: gha-indie-worker standalone integrity CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: standalone-integrity-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-integrity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          show-progress: false
+
+      - name: Setup Rust 1.90.0 formatting tool
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: '1.90.0'
+          components: rustfmt
+
+      - name: Verify provenance, manifest boundary, and Rust formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s Cargo.toml
+          test -s Cargo.lock
+          test -s SOURCE_PROVENANCE.md
+          test -s STANDALONE-DEPENDENCIES.md
+          python3 <<'PY'
+          from pathlib import Path
+          import tomllib
+
+          manifest = tomllib.loads(Path('Cargo.toml').read_text(encoding='utf-8'))
+          dependencies = manifest.get('dependencies', {})
+          expected = {
+              'dd-telemetry': '../../libs/telemetry-rs',
+              'dd-nats-subject-defs': '../../libs/nats/subject-defs/generated/rust',
+              'dd-runtime-config-client': '../../libs/runtime-config-client-rs',
+          }
+          for package, expected_path in expected.items():
+              value = dependencies.get(package)
+              if not isinstance(value, dict) or value.get('path') != expected_path:
+                  raise SystemExit(
+                      f'{package}: expected reviewed path {expected_path!r}, found {value!r}'
+                  )
+              if any(key in value for key in ('git', 'branch', 'tag', 'rev')):
+                  raise SystemExit(f'{package}: unreviewed remote dependency selector present')
+
+          documentation = Path('STANDALONE-DEPENDENCIES.md').read_text(encoding='utf-8')
+          required_markers = [
+              '5cfac43c6900898f36f588d044ca34083da1c726',
+              '84d565eeb7e1e78ce0851a2e3c95966e5cc12e36',
+              *expected.values(),
+          ]
+          for marker in required_markers:
+              if marker not in documentation:
+                  raise SystemExit(f'missing dependency-boundary marker: {marker}')
+          PY
+          mapfile -d '' rust_files < <(find src generated -type f -name '*.rs' -print0 | sort -z)
+          test "${#rust_files[@]}" -gt 0
+          rustfmt --edition 2021 --check "${rust_files[@]}"
+
+      - name: Explain the intentionally blocked compile gate
+        run: |
+          cat <<'EOF'
+          Full Cargo/Clippy/test certification remains blocked until the three
+          private monorepo-relative libraries are published, vendored, or added
+          through an immutable reviewed gitlink layout. See
+          STANDALONE-DEPENDENCIES.md and DEN-1633. This job must not fabricate
+          standalone parity by substituting mutable or caller-selected sources.
+          EOF
+
+  secret-scan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install checksum-pinned Gitleaks OSS binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          version='8.30.1'
+          archive="gitleaks_${version}_linux_x64.tar.gz"
+          curl --fail --location --retry 5 --retry-all-errors \
+            --output "$RUNNER_TEMP/$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${version}/${archive}"
+          echo '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  '"$RUNNER_TEMP/$archive" \
+            | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" gitleaks
+          test "$("$RUNNER_TEMP/gitleaks" version)" = "$version"
+
+      - name: Scan complete Git history for committed secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/gitleaks" git --redact --no-banner --verbose .
