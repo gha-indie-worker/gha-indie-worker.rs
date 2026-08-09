@@ -111,4 +111,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          "$RUNNER_TEMP/gitleaks" git --redact --no-banner --verbose .
+          "$RUNNER_TEMP/gitleaks" git \
+            --config .gitleaks.toml \
+            --redact \
+            --no-banner \
+            --verbose \
+            .
