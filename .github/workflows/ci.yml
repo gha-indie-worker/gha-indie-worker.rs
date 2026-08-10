@@ -118,6 +118,10 @@ jobs:
           grep -F 'dd-nats-subject-defs = { path = "vendor/dd-nats-subject-defs" }' Cargo.toml
           grep -F 'dd-runtime-config-client = { path = "vendor/dd-runtime-config-client" }' Cargo.toml
           grep -F 'COPY vendor ./vendor' Dockerfile
+          test -s STANDALONE-DEPENDENCIES.md
+          grep -F '| `dd-telemetry` | `vendor/dd-telemetry` |' STANDALONE-DEPENDENCIES.md
+          grep -F '| `dd-nats-subject-defs` | `vendor/dd-nats-subject-defs` |' STANDALONE-DEPENDENCIES.md
+          grep -F '| `dd-runtime-config-client` | `vendor/dd-runtime-config-client` |' STANDALONE-DEPENDENCIES.md
       - name: Reject credential material
         run: |
           if grep -RIE \
