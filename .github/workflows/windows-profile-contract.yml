@@ -1,0 +1,24 @@
+name: Windows native profile contract
+on:
+  pull_request:
+    paths: [".github/workflows/windows-profile-contract.yml", "ops/native/windows-x64-profile-v1.json", "tools/validate_windows_profile.py"]
+  push:
+    branches: [dev, main]
+    paths: [".github/workflows/windows-profile-contract.yml", "ops/native/windows-x64-profile-v1.json", "tools/validate_windows_profile.py"]
+  workflow_dispatch:
+permissions: {contents: read}
+jobs:
+  contract:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with: {python-version: "3.12"}
+      - run: python tools/validate_windows_profile.py ops/native/windows-x64-profile-v1.json
+      - run: python -m py_compile tools/validate_windows_profile.py
+      - shell: pwsh
+        run: |
+          if ($PSVersionTable.PSEdition -ne 'Core') { throw 'PowerShell Core required' }
+          cmd /d /c "echo cmd-native-smoke"

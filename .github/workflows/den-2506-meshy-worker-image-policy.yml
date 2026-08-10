@@ -1,0 +1,45 @@
+name: DEN-2506 Meshy worker image policy probe
+
+on:
+  pull_request:
+    paths:
+      - "probes/daedalus-meshy-worker-image-policy/**"
+      - ".github/workflows/den-2506-meshy-worker-image-policy.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate-exact-publication-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the validation branch without retained credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Verify exact source blobs and credential-free fixture scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixture=probes/daedalus-meshy-worker-image-policy
+          if grep -R -nE 'ghp_|lin_api_|cfat_|sk-svcacct-|[0-9a-f]{32}\.r2\.cloudflarestorage\.com' "$fixture"; then
+            echo "credential-like or account-specific material found in public image-policy probe" >&2
+            exit 1
+          fi
+          test "$(git hash-object "$fixture/.github/workflows/meshy-worker-image.yml")" = 0ebd2a53482640c9ee5d228f92aad47bbdec135e
+          test "$(git hash-object "$fixture/scripts/ci/check_meshy_worker_image.py")" = 2a963a4f07434a177bc057f60a1e7d31a0e3900a
+          test "$(git hash-object "$fixture/crates/meshy-worker/Dockerfile")" = dc3735a023a0be509e587d98170712852365741f
+          test "$(git hash-object "$fixture/crates/meshy-worker/Cargo.toml")" = a288ecd371a01d266a799109ca5d7a5e5cc4fbef
+
+      - name: Parse workflow and compile policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixture=probes/daedalus-meshy-worker-image-policy
+          ruby -e 'require "yaml"; YAML.load_file(ARGV.fetch(0)); puts "workflow-yaml-ok"' "$fixture/.github/workflows/meshy-worker-image.yml"
+          python3 -m py_compile "$fixture/scripts/ci/check_meshy_worker_image.py"
+
+      - name: Execute exact credential-free publication policy
+        run: python3 probes/daedalus-meshy-worker-image-policy/scripts/ci/check_meshy_worker_image.py

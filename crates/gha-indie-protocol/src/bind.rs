@@ -5,8 +5,8 @@ use crate::model::{
     BindingDocument, DispatchBatch, DispatchRequest, ProfileCatalog, ProtocolError, WorkflowPlan,
 };
 use crate::validate::{
-    validate_bindings_shape, validate_catalog, validate_context_dir, validate_digest,
-    validate_plan, validate_profile_name,
+    runner_target_from_labels, validate_bindings_shape, validate_catalog, validate_context_dir,
+    validate_digest, validate_plan, validate_profile_name,
 };
 use crate::{profile_catalog_digest, workflow_plan_digest, DISPATCH_BATCH_SCHEMA, DISPATCH_SCHEMA};
 
@@ -61,7 +61,7 @@ pub fn bind_plan(
     for (base_job_id, binding) in &bindings.jobs {
         validate_profile_name(&binding.profile)?;
         validate_digest("profileDigest", &binding.profile_digest)?;
-        let Some(installed) = profile_by_name.get(binding.profile.as_str()) else {
+        let Some(installed) = profile_by_name.get(binding.profile.as_str()).copied() else {
             return Err(ProtocolError::new(
                 "unknown_profile",
                 format!(
@@ -94,12 +94,37 @@ pub fn bind_plan(
         let binding = bindings.jobs.get(&job.base_job_id).ok_or_else(|| {
             ProtocolError::new("internal_binding_error", "validated binding disappeared")
         })?;
+        let installed = profile_by_name
+            .get(binding.profile.as_str())
+            .copied()
+            .ok_or_else(|| {
+                ProtocolError::new("internal_profile_error", "validated profile disappeared")
+            })?;
+        let planned_runner = runner_target_from_labels(job)?;
+        if installed.runner.platform != planned_runner.platform
+            || installed.runner.architecture != planned_runner.architecture
+        {
+            return Err(ProtocolError::new(
+                "profile_runner_target_mismatch",
+                format!(
+                    "job {:?} targets {}/{} but profile {:?} targets {}/{}",
+                    job.id,
+                    planned_runner.platform,
+                    planned_runner.architecture,
+                    installed.name,
+                    installed.runner.platform,
+                    installed.runner.architecture
+                ),
+            ));
+        }
         let job_order_index = *order_index.get(job.base_job_id.as_str()).ok_or_else(|| {
             ProtocolError::new(
                 "invalid_job_order",
                 format!("base job {:?} is missing from jobOrder", job.base_job_id),
             )
         })?;
+        let mut runner = installed.runner.clone();
+        runner.capabilities.sort();
         let mut request = DispatchRequest {
             schema_version: DISPATCH_SCHEMA.to_string(),
             request_id: String::new(),
@@ -113,6 +138,7 @@ pub fn bind_plan(
             job_order_index,
             profile: binding.profile.clone(),
             profile_digest: binding.profile_digest.clone(),
+            runner,
             context_dir: binding
                 .context_dir
                 .clone()
