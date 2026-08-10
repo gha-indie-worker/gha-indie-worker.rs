@@ -772,7 +772,7 @@ fn build_plan(
             .to_string();
         if !valid_job_id(&id) {
             errors.push(format!(
-                "jobs.{id}: job ID must use letters, numbers, '_', or '-' and be at most 100 characters"
+                "jobs.{id}: job ID must start with a letter or '_' and then use only letters, numbers, '_', or '-' (maximum 100 characters)"
             ));
             continue;
         }
@@ -1339,11 +1339,15 @@ fn valid_workflow_path(value: &str) -> bool {
 }
 
 fn valid_job_id(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 100
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    if value.is_empty() || value.len() > 100 {
+        return false;
+    }
+    let mut bytes = value.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == b'_')
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
 }
 
 fn valid_runner_label(value: &str) -> bool {
@@ -1363,7 +1367,10 @@ fn valid_request_id(value: &str) -> bool {
 }
 
 fn is_full_commit_sha(value: &str) -> bool {
-    value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
 fn plan_id(request: &WorkflowRequest) -> String {
@@ -1660,6 +1667,11 @@ jobs:
         assert!(!plan.immutable_revision);
         assert!(!plan.executable);
         assert!(!plan.warnings.is_empty());
+
+        input.revision = "0123456789ABCDEF0123456789ABCDEF01234567".to_string();
+        let plan = build_plan(&input, &PlannerLimits::default()).expect("valid plan");
+        assert!(!plan.immutable_revision);
+        assert!(!plan.executable);
     }
 
     #[test]
@@ -1857,6 +1869,25 @@ jobs:
         assert!(reasons.contains("job-level mystery-job-key"));
         assert!(reasons.contains("mystery-step-key"));
         assert!(reasons.contains("exactly one of run or uses"));
+    }
+
+    #[test]
+    fn job_identifiers_match_github_actions_syntax() {
+        for invalid_id in ["1test", "-test", "test.job", "test job"] {
+            let yaml = format!(
+                "jobs:\n  {invalid_id}:\n    runs-on: ubuntu-latest\n    steps: [{{ run: cargo test }}]\n"
+            );
+            let errors = build_plan(&request(&yaml), &PlannerLimits::default())
+                .expect_err("invalid GitHub Actions job ID must be rejected");
+            assert!(errors.iter().any(|error| error.contains("job ID")));
+        }
+
+        for valid_id in ["test", "_test", "Test-1"] {
+            let yaml = format!(
+                "jobs:\n  {valid_id}:\n    runs-on: ubuntu-latest\n    steps: [{{ run: cargo test }}]\n"
+            );
+            assert!(build_plan(&request(&yaml), &PlannerLimits::default()).is_ok());
+        }
     }
 
     #[test]

@@ -26,7 +26,7 @@ jobs:
           toolchain: '1.90.0'
           components: rustfmt, clippy
       - name: Check canonical worker source formatting
-        run: rustfmt --edition 2021 --config skip_children=true --check src/main.rs src/gha_workflow.rs
+        run: rustfmt --edition 2021 --config skip_children=true --check src/main.rs src/gha_workflow.rs src/http.rs src/jobs.rs src/validation.rs
       - name: Check compatibility crate formatting
         run: rustfmt --edition 2021 --check vendor/dd-telemetry/src/lib.rs vendor/dd-nats-subject-defs/src/lib.rs vendor/dd-runtime-config-client/src/lib.rs
       - run: cargo clippy --locked --all-targets -- -D warnings
@@ -58,7 +58,11 @@ jobs:
           standalone_root = Path("src")
           extension_hashes = {
               "main.rs": "c9c6afdb499db519f3e8461e68d26d9435a5974b",
+              "gha_workflow.rs": "8f42204e1e2443974121203ca683bad26c0a0d26",
+              "http.rs": "6e7e559684ad544e2f05b542779b64c8439e5936",
+              "jobs.rs": "645078edf50bd8d7c024100bc4e1f748b483a4dd",
               "lib.rs": "7474ebbbd27f01d250b1c7614e18598a90dcb1c2",
+              "validation.rs": "a57366881c2dcf43e119e70cccd5a82527370227",
               "workflow.rs": "6d81faec78d3bc7286c5ecb2b59dadbe49d1722b",
               "workflow_guard.rs": "a9ef95d0128daa18356e08394e7f2166ca9f0dcf",
               "workflow_yaml.rs": "76ea4b31fa947bef87851969964014025d17e79f",
@@ -83,7 +87,7 @@ jobs:
               print("unexpected:", sorted(standalone_paths - expected_paths), file=sys.stderr)
               raise SystemExit(1)
 
-          for relative in sorted(canonical_paths - {"main.rs"}):
+          for relative in sorted(canonical_paths - set(extension_hashes)):
               canonical = canonical_root / relative
               standalone = standalone_root / relative
               if canonical.read_bytes() != standalone.read_bytes():
@@ -105,10 +109,11 @@ jobs:
           PY
           diff -ru "$source_root/scripts" scripts
           diff -ru "$source_root/generated" generated
-          cmp "$source_root/readme.md" readme.md
+          test "$(git hash-object readme.md)" = "446a84f97fcee88873e97ff3dcd3ab8bb1848ee5"
           grep -F '42b7471fa680331fe4977db42db8497ab9549cd9' SOURCE_PROVENANCE.md
           grep -F 'c9c6afdb499db519f3e8461e68d26d9435a5974b' SOURCE_PROVENANCE.md
           grep -F '7474ebbbd27f01d250b1c7614e18598a90dcb1c2' SOURCE_PROVENANCE.md
+          grep -F '446a84f97fcee88873e97ff3dcd3ab8bb1848ee5' SOURCE_PROVENANCE.md
           grep -F 'dd-telemetry = { path = "vendor/dd-telemetry" }' Cargo.toml
           grep -F 'dd-nats-subject-defs = { path = "vendor/dd-nats-subject-defs" }' Cargo.toml
           grep -F 'dd-runtime-config-client = { path = "vendor/dd-runtime-config-client" }' Cargo.toml

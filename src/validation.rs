@@ -36,7 +36,11 @@ pub(crate) fn ensure_allowed_prefix(
     }
 }
 
-pub(crate) fn validate_no_whitespace(name: &str, value: &str, max_len: usize) -> Result<(), String> {
+pub(crate) fn validate_no_whitespace(
+    name: &str,
+    value: &str,
+    max_len: usize,
+) -> Result<(), String> {
     if value.trim().is_empty() {
         return Err(format!("{name} must not be empty"));
     }
@@ -78,7 +82,11 @@ pub(crate) fn has_explicit_image_version(image: &str) -> bool {
     image.contains('@') || last_path.contains(':')
 }
 
-pub(crate) fn validate_image(config: &Config, image: &str, push: bool) -> Result<Option<EcrImage>, String> {
+pub(crate) fn validate_image(
+    config: &Config,
+    image: &str,
+    push: bool,
+) -> Result<Option<EcrImage>, String> {
     validate_no_whitespace("image", image, 512)?;
     // A leading dash would be parsed by nerdctl as a flag in the `-t <image>`
     // and `push <image>` positions; reject it before it reaches argv.
@@ -147,7 +155,9 @@ pub(crate) fn validate_relative_path(name: &str, value: &str) -> Result<PathBuf,
     Ok(clean)
 }
 
-pub(crate) fn validate_build_args(build_args: &Option<BTreeMap<String, String>>) -> Result<(), String> {
+pub(crate) fn validate_build_args(
+    build_args: &Option<BTreeMap<String, String>>,
+) -> Result<(), String> {
     let Some(build_args) = build_args else {
         return Ok(());
     };
@@ -231,7 +241,10 @@ pub(crate) fn validate_rollout_resource(value: &str) -> Result<String, String> {
     Ok(resource)
 }
 
-pub(crate) fn validate_deploy(config: &Config, deploy: &Option<DeployRequest>) -> Result<(), String> {
+pub(crate) fn validate_deploy(
+    config: &Config,
+    deploy: &Option<DeployRequest>,
+) -> Result<(), String> {
     let Some(deploy) = deploy else {
         return Ok(());
     };
@@ -254,7 +267,10 @@ pub(crate) fn validate_deploy(config: &Config, deploy: &Option<DeployRequest>) -
     Ok(())
 }
 
-pub(crate) fn validate_build_request(config: &Config, request: &BuildRequest) -> Result<(), String> {
+pub(crate) fn validate_build_request(
+    config: &Config,
+    request: &BuildRequest,
+) -> Result<(), String> {
     if let Some(schema_version) = clean_optional(request.schema_version.as_deref()) {
         if schema_version != "build-server.v1" {
             return Err("schemaVersion must be build-server.v1".to_string());
@@ -308,7 +324,18 @@ pub(crate) fn validate_build_request(config: &Config, request: &BuildRequest) ->
         }
         validate_image(config, &request.image, request.push.unwrap_or(false))?;
     }
-    if let Some(git_ref) = clean_optional(request.git_ref.as_deref()) {
+    if job_kind == "run-profile" {
+        let git_ref = clean_optional(request.git_ref.as_deref()).ok_or_else(|| {
+            "gitRef is required for run-profile and must be a lowercase 40-hex commit SHA"
+                .to_string()
+        })?;
+        if !is_full_commit_sha(&git_ref) {
+            return Err(
+                "gitRef is required for run-profile and must be a lowercase 40-hex commit SHA"
+                    .to_string(),
+            );
+        }
+    } else if let Some(git_ref) = clean_optional(request.git_ref.as_deref()) {
         validate_no_whitespace("gitRef", &git_ref, 180)?;
     }
     validate_relative_path("contextDir", request.context_dir.as_deref().unwrap_or("."))?;
@@ -351,6 +378,13 @@ pub(crate) fn request_job_kind(request: &BuildRequest) -> String {
     clean_optional(request.job_kind.as_deref()).unwrap_or_else(|| "build-image".to_string())
 }
 
+fn is_full_commit_sha(value: &str) -> bool {
+    value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -372,10 +406,7 @@ mod tests {
         assert!(validate_relative_path("contextDir", "c:d").is_err());
 
         // Rollout resource must be a clean TYPE/NAME positional, never a flag.
-        assert_eq!(
-            validate_rollout_resource("api").unwrap(),
-            "deployment/api"
-        );
+        assert_eq!(validate_rollout_resource("api").unwrap(), "deployment/api");
         assert_eq!(
             validate_rollout_resource("deployment.apps/api").unwrap(),
             "deployment.apps/api"
@@ -413,5 +444,19 @@ mod tests {
             assert!(names.contains(expected));
         }
         assert!(profiles::find("sh -c evil").is_none());
+    }
+
+    #[test]
+    fn immutable_profile_revision_accepts_only_lowercase_commit_ids() {
+        assert!(is_full_commit_sha(
+            "0123456789abcdef0123456789abcdef01234567"
+        ));
+        assert!(!is_full_commit_sha("main"));
+        assert!(!is_full_commit_sha(
+            "0123456789ABCDEF0123456789ABCDEF01234567"
+        ));
+        assert!(!is_full_commit_sha(
+            "0123456789abcdef0123456789abcdef0123456g"
+        ));
     }
 }

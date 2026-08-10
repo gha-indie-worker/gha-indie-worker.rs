@@ -8,9 +8,7 @@ use tokio::{fs, time::timeout};
 
 use crate::config::Config;
 use crate::ecr::login_to_ecr;
-use crate::exec::{
-    append_log, redacted_build_args, run_logged_command, run_logged_command_inner,
-};
+use crate::exec::{append_log, redacted_build_args, run_logged_command, run_logged_command_inner};
 use crate::state::{AppState, SERVICE_NAME};
 use crate::types::{BuildJobRecord, BuildRequest, BuildStatus, NatsSubmitError};
 use crate::util::{now_ms, sha256_hex};
@@ -99,26 +97,110 @@ pub(crate) async fn clone_repository(
     repo_dir: &Path,
     log_path: &Path,
 ) -> Result<(), String> {
-    let mut clone_args = vec![
+    let Some(git_ref) = clean_optional(request.git_ref.as_deref()) else {
+        return run_logged_command(
+            config,
+            log_path,
+            job_dir,
+            &config.git_bin,
+            clone_args(&request.repo_url, None, repo_dir),
+        )
+        .await;
+    };
+
+    if is_full_commit_sha(&git_ref) {
+        for args in exact_commit_checkout_args(&request.repo_url, &git_ref, repo_dir) {
+            run_logged_command(config, log_path, job_dir, &config.git_bin, args).await?;
+        }
+        return Ok(());
+    }
+
+    run_logged_command(
+        config,
+        log_path,
+        job_dir,
+        &config.git_bin,
+        clone_args(&request.repo_url, Some(&git_ref), repo_dir),
+    )
+    .await
+}
+
+fn restricted_git_args() -> Vec<String> {
+    vec![
         "-c".to_string(),
         "protocol.ext.allow=never".to_string(),
         "-c".to_string(),
         "protocol.file.allow=never".to_string(),
         "-c".to_string(),
         "protocol.local.allow=never".to_string(),
+    ]
+}
+
+fn clone_args(repo_url: &str, git_ref: Option<&str>, repo_dir: &Path) -> Vec<String> {
+    let mut args = restricted_git_args();
+    args.extend([
         "clone".to_string(),
         "--depth".to_string(),
         "1".to_string(),
         "--no-tags".to_string(),
-    ];
-    if let Some(git_ref) = clean_optional(request.git_ref.as_deref()) {
-        clone_args.push("--branch".to_string());
-        clone_args.push(git_ref);
+    ]);
+    if let Some(git_ref) = git_ref {
+        args.push("--branch".to_string());
+        args.push(git_ref.to_string());
     }
-    clone_args.push("--".to_string());
-    clone_args.push(request.repo_url.clone());
-    clone_args.push(repo_dir.to_string_lossy().to_string());
-    run_logged_command(config, log_path, job_dir, &config.git_bin, clone_args).await
+    args.push("--".to_string());
+    args.push(repo_url.to_string());
+    args.push(repo_dir.to_string_lossy().to_string());
+    args
+}
+
+fn exact_commit_checkout_args(repo_url: &str, revision: &str, repo_dir: &Path) -> Vec<Vec<String>> {
+    let repo_dir = repo_dir.to_string_lossy().to_string();
+
+    let mut init = restricted_git_args();
+    init.extend(["init".to_string(), "--".to_string(), repo_dir.clone()]);
+
+    let mut remote = restricted_git_args();
+    remote.extend([
+        "-C".to_string(),
+        repo_dir.clone(),
+        "remote".to_string(),
+        "add".to_string(),
+        "origin".to_string(),
+        repo_url.to_string(),
+    ]);
+
+    let mut fetch = restricted_git_args();
+    fetch.extend([
+        "-C".to_string(),
+        repo_dir.clone(),
+        "fetch".to_string(),
+        "--depth".to_string(),
+        "1".to_string(),
+        "--no-tags".to_string(),
+        "--no-recurse-submodules".to_string(),
+        "origin".to_string(),
+        revision.to_string(),
+    ]);
+
+    let mut checkout = restricted_git_args();
+    checkout.extend([
+        "-C".to_string(),
+        repo_dir,
+        "checkout".to_string(),
+        "--detach".to_string(),
+        "--force".to_string(),
+        revision.to_string(),
+    ]);
+
+    vec![init, remote, fetch, checkout]
+}
+
+fn is_full_commit_sha(value: &str) -> bool {
+    value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
 pub(crate) async fn execute_profile(state: &AppState, job: &BuildJobRecord) -> Result<(), String> {
@@ -633,7 +715,10 @@ pub(crate) async fn enqueue_build(
 }
 
 /// NATS intake: parse a build-server.v1 document and enqueue it.
-pub(crate) async fn submit_from_nats(state: &AppState, payload: &[u8]) -> Result<(), NatsSubmitError> {
+pub(crate) async fn submit_from_nats(
+    state: &AppState,
+    payload: &[u8],
+) -> Result<(), NatsSubmitError> {
     let request: BuildRequest = serde_json::from_slice(payload).map_err(|error| {
         NatsSubmitError::Invalid(format!("invalid build request JSON: {error}"))
     })?;
@@ -645,5 +730,70 @@ pub(crate) async fn submit_from_nats(state: &AppState, payload: &[u8]) -> Result
         }
         Err((StatusCode::SERVICE_UNAVAILABLE, message)) => Err(NatsSubmitError::Transient(message)),
         Err((_, message)) => Err(NatsSubmitError::Invalid(message)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_commit_checkout_fetches_and_detaches_the_requested_object() {
+        let revision = "0123456789abcdef0123456789abcdef01234567";
+        let commands = exact_commit_checkout_args(
+            "https://github.com/owner/repository.git",
+            revision,
+            Path::new("/work/job/repo"),
+        );
+
+        assert_eq!(commands.len(), 4);
+        assert!(commands[0].ends_with(&[
+            "init".to_string(),
+            "--".to_string(),
+            "/work/job/repo".to_string(),
+        ]));
+        assert!(commands[2].ends_with(&[
+            "fetch".to_string(),
+            "--depth".to_string(),
+            "1".to_string(),
+            "--no-tags".to_string(),
+            "--no-recurse-submodules".to_string(),
+            "origin".to_string(),
+            revision.to_string(),
+        ]));
+        assert!(commands[3].ends_with(&[
+            "checkout".to_string(),
+            "--detach".to_string(),
+            "--force".to_string(),
+            revision.to_string(),
+        ]));
+        assert!(commands
+            .iter()
+            .all(|args| args.contains(&"protocol.file.allow=never".to_string())));
+    }
+
+    #[test]
+    fn mutable_refs_keep_the_shallow_branch_clone_path() {
+        let args = clone_args(
+            "https://github.com/owner/repository.git",
+            Some("release/v1"),
+            Path::new("/work/job/repo"),
+        );
+
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--branch", "release/v1"]));
+        assert!(args.ends_with(&[
+            "--".to_string(),
+            "https://github.com/owner/repository.git".to_string(),
+            "/work/job/repo".to_string(),
+        ]));
+        assert!(is_full_commit_sha(
+            "0123456789abcdef0123456789abcdef01234567"
+        ));
+        assert!(!is_full_commit_sha(
+            "0123456789ABCDEF0123456789ABCDEF01234567"
+        ));
+        assert!(!is_full_commit_sha("main"));
     }
 }
