@@ -63,7 +63,16 @@ pub struct ProfileCatalog {
 pub struct ProfileRecord {
     pub name: String,
     pub digest: String,
+    pub runner: RunnerTarget,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RunnerTarget {
     pub platform: String,
+    pub architecture: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
@@ -111,6 +120,7 @@ pub struct DispatchRequest {
     pub job_order_index: usize,
     pub profile: String,
     pub profile_digest: String,
+    pub runner: RunnerTarget,
     pub context_dir: String,
     pub needs_instances: Vec<String>,
     pub matrix: BTreeMap<String, Value>,

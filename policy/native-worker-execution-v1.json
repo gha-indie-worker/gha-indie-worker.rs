@@ -1,0 +1,75 @@
+{
+  "schemaVersion": "gha-indie-worker.native-worker-execution-policy.v1",
+  "inputSchemas": {
+    "dispatch": "gha-indie-worker.dispatch.v2",
+    "lease": "gha-indie-worker.lease.v1"
+  },
+  "handoffSchema": "gha-indie-worker.native-execution-handoff.v1",
+  "evidenceSchema": "gha-indie-worker.exact-checkout-evidence.v1",
+  "repositoryTransport": {
+    "scheme": "https",
+    "host": "github.com",
+    "embeddedAuthentication": false,
+    "explicitPort": false,
+    "queryOrFragment": false,
+    "urlRewrites": false,
+    "additionalRemotes": false
+  },
+  "gitEnvironment": {
+    "isolatedHome": true,
+    "systemConfig": false,
+    "systemAttributes": false,
+    "inheritedInjectedConfig": false,
+    "inheritedExecPath": false,
+    "inheritedTemplateDirectory": false,
+    "inheritedSshOrAskpass": false,
+    "replaceObjects": false,
+    "fileTransport": false,
+    "terminalPrompts": false
+  },
+  "checkout": {
+    "exactLowercaseCommitSha": true,
+    "detachedHead": true,
+    "fallbackBranchOrTag": false,
+    "fetchTags": false,
+    "recurseSubmodules": false,
+    "gitLfsSmudge": false,
+    "persistAuthentication": false,
+    "executeHooks": false,
+    "allowDirtyTrackedFiles": false
+  },
+  "leaseBinding": {
+    "requestIdentity": true,
+    "requestDigest": true,
+    "repositoryUrl": true,
+    "commitSha": true,
+    "hostIdentity": true,
+    "leaseNonce": true,
+    "profileDigest": true,
+    "capabilityDigest": true,
+    "rejectExpired": true,
+    "rejectCanceled": true,
+    "rejectTerminal": true
+  },
+  "executionAuthority": {
+    "callerCommands": false,
+    "callerActions": false,
+    "callerImages": false,
+    "callerShellSelection": false,
+    "callerTransportFallback": false,
+    "fixedProfileOnly": true
+  },
+  "evidence": {
+    "exactFieldSet": true,
+    "requestedAndResolvedCommit": true,
+    "treeSha": true,
+    "detachedHead": true,
+    "originUrl": true,
+    "remoteSet": true,
+    "contextDir": true,
+    "profileAndRunner": true,
+    "contentDigestCoversEveryField": true,
+    "containsAuthenticationMaterial": false
+  },
+  "productionReadinessClaimed": false
+}

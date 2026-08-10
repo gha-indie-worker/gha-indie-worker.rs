@@ -3,10 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::Value;
 
 use super::identifiers::{validate_base_job_id, validate_instance_id};
-use crate::model::{PlannedJob, ProtocolError, WorkflowPlan};
+use crate::model::{PlannedJob, ProtocolError, RunnerTarget, WorkflowPlan};
 use crate::{
-    ALLOWED_RUNNER_LABELS, MAX_BASE_JOBS, MAX_DEPENDENCIES, MAX_MATRIX_JSON_BYTES, MAX_MATRIX_KEYS,
-    MAX_PLAN_JOBS, PLAN_SCHEMA,
+    ALLOWED_RUNNER_ARCHITECTURES, ALLOWED_RUNNER_LABELS, ALLOWED_RUNNER_PLATFORMS, MAX_BASE_JOBS,
+    MAX_DEPENDENCIES, MAX_MATRIX_JSON_BYTES, MAX_MATRIX_KEYS, MAX_PLAN_JOBS, PLAN_SCHEMA,
 };
 
 pub(crate) fn validate_plan(plan: &WorkflowPlan) -> Result<(), ProtocolError> {
@@ -261,12 +261,18 @@ fn validate_profile_only_job(job: &PlannedJob) -> Result<(), ProtocolError> {
             format!("job {:?} contains an invalid maxParallel", job.id),
         ));
     }
+    runner_target_from_labels(job)?;
+    validate_matrix(&job.id, &job.matrix)
+}
+
+pub(crate) fn runner_target_from_labels(job: &PlannedJob) -> Result<RunnerTarget, ProtocolError> {
     if job.runs_on.is_empty() {
         return Err(ProtocolError::new(
             "missing_runner_labels",
             format!("job {:?} has no runner labels", job.id),
         ));
     }
+
     let mut labels = BTreeSet::new();
     for label in &job.runs_on {
         if !labels.insert(label.as_str()) {
@@ -285,17 +291,55 @@ fn validate_profile_only_job(job: &PlannedJob) -> Result<(), ProtocolError> {
             ));
         }
     }
-    if !job
-        .runs_on
-        .iter()
-        .any(|label| matches!(label.as_str(), "linux" | "gha-indie-worker"))
-    {
+
+    if !labels.contains("self-hosted") {
         return Err(ProtocolError::new(
-            "non_linux_runner",
-            format!("job {:?} must explicitly target Linux", job.id),
+            "missing_self_hosted_runner_label",
+            format!("job {:?} must explicitly select self-hosted", job.id),
         ));
     }
-    validate_matrix(&job.id, &job.matrix)
+    if !labels.contains("gha-indie-worker") {
+        return Err(ProtocolError::new(
+            "missing_indie_runner_label",
+            format!("job {:?} must explicitly select gha-indie-worker", job.id),
+        ));
+    }
+
+    let platforms = ALLOWED_RUNNER_PLATFORMS
+        .iter()
+        .copied()
+        .filter(|platform| labels.contains(platform))
+        .collect::<Vec<_>>();
+    if platforms.len() != 1 {
+        return Err(ProtocolError::new(
+            "ambiguous_runner_platform",
+            format!(
+                "job {:?} must select exactly one runner platform from {ALLOWED_RUNNER_PLATFORMS:?}",
+                job.id
+            ),
+        ));
+    }
+
+    let architectures = ALLOWED_RUNNER_ARCHITECTURES
+        .iter()
+        .copied()
+        .filter(|architecture| labels.contains(architecture))
+        .collect::<Vec<_>>();
+    if architectures.len() != 1 {
+        return Err(ProtocolError::new(
+            "ambiguous_runner_architecture",
+            format!(
+                "job {:?} must select exactly one runner architecture from {ALLOWED_RUNNER_ARCHITECTURES:?}",
+                job.id
+            ),
+        ));
+    }
+
+    Ok(RunnerTarget {
+        platform: platforms[0].to_string(),
+        architecture: architectures[0].to_string(),
+        capabilities: Vec::new(),
+    })
 }
 
 fn validate_matrix(job_id: &str, matrix: &BTreeMap<String, Value>) -> Result<(), ProtocolError> {

@@ -59,7 +59,7 @@ jobs:
               "name": "build",
               "needs": [],
               "needsInstances": [],
-              "runsOn": ["self-hosted", "linux"],
+              "runsOn": ["self-hosted", "gha-indie-worker", "linux", "x64"],
               "reusableWorkflow": None,
               "condition": None,
               "matrix": {"rust": "stable"},
@@ -95,17 +95,25 @@ jobs:
               ],
           }
           catalog = {
-              "schemaVersion": "gha-indie-worker.profile-catalog.v1",
+              "schemaVersion": "gha-indie-worker.profile-catalog.v2",
               "profiles": [
                   {
                       "name": "rust-verify",
                       "digest": "sha256:" + "1" * 64,
-                      "platform": "linux",
+                      "runner": {
+                          "platform": "linux",
+                          "architecture": "x64",
+                          "capabilities": ["native", "cargo-cache"],
+                      },
                   },
                   {
                       "name": "node-verify",
                       "digest": "sha256:" + "2" * 64,
-                      "platform": "linux",
+                      "runner": {
+                          "platform": "linux",
+                          "architecture": "x64",
+                          "capabilities": [],
+                      },
                   },
               ],
           }
@@ -151,10 +159,15 @@ jobs:
           from pathlib import Path
 
           batch = json.loads(Path(".protocol-ci/dispatch.json").read_text())
-          assert batch["schemaVersion"] == "gha-indie-worker.dispatch-batch.v1"
+          assert batch["schemaVersion"] == "gha-indie-worker.dispatch-batch.v2"
           assert batch["planDigest"] == os.environ["EXPECTED_PLAN_DIGEST"]
           assert len(batch["requests"]) == 3
           assert batch["requests"][0]["profile"] == "rust-verify"
+          assert batch["requests"][0]["runner"] == {
+              "platform": "linux",
+              "architecture": "x64",
+              "capabilities": ["cargo-cache", "native"],
+          }
           assert batch["requests"][2]["needsInstances"] == ["build[1]", "build[2]"]
           assert [request["jobOrderIndex"] for request in batch["requests"]] == [0, 0, 1]
           assert all(request["commitSha"] == "0123456789abcdef0123456789abcdef01234567" for request in batch["requests"])
@@ -225,3 +238,27 @@ jobs:
           PY
       - name: Verify validation did not mutate committed inputs
         run: git diff --exit-code -- crates/gha-indie-protocol
+
+  native-target-contract:
+    name: Native target contract (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - windows-2025
+          - macos-15
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal --component rustfmt,clippy
+      - name: Run protocol tests on the native operating system
+        run: cargo +1.97.0 test --locked --manifest-path crates/gha-indie-protocol/Cargo.toml --all-targets

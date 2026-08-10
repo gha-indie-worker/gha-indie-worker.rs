@@ -10,6 +10,9 @@ use crate::validate::{validate_catalog, validate_plan};
 pub fn profile_catalog_digest(catalog: &ProfileCatalog) -> Result<String, ProtocolError> {
     validate_catalog(catalog)?;
     let mut profiles = catalog.profiles.clone();
+    for profile in &mut profiles {
+        profile.runner.capabilities.sort();
+    }
     profiles.sort_by(|left, right| left.name.cmp(&right.name));
     digest_serializable(
         &ProfileCatalog {
