@@ -66,11 +66,7 @@ pub(crate) struct AdmissionClassification {
 }
 
 impl AdmissionClassification {
-    const fn new(
-        kind: AdmissionFailureKind,
-        fallback_allowed: bool,
-        reason: &'static str,
-    ) -> Self {
+    const fn new(kind: AdmissionFailureKind, fallback_allowed: bool, reason: &'static str) -> Self {
         Self {
             kind,
             fallback_allowed,
@@ -100,18 +96,19 @@ pub(crate) fn classify_admission_failure(
     let messages = normalized_platform_messages(evidence);
     let steps_started = evidence.steps_observed.is_some_and(|steps| steps > 0);
 
-    if matches!(conclusion.as_str(), "cancelled" | "canceled" | "skipped" | "stale")
-        || contains_any(
-            &messages,
-            &[
-                "superseded",
-                "cancelled because a higher priority",
-                "canceled because a higher priority",
-                "cancelled due to concurrency",
-                "canceled due to concurrency",
-            ],
-        )
-    {
+    if matches!(
+        conclusion.as_str(),
+        "cancelled" | "canceled" | "skipped" | "stale"
+    ) || contains_any(
+        &messages,
+        &[
+            "superseded",
+            "cancelled because a higher priority",
+            "canceled because a higher priority",
+            "cancelled due to concurrency",
+            "canceled due to concurrency",
+        ],
+    ) {
         return AdmissionClassification::new(
             AdmissionFailureKind::CanceledOrSuperseded,
             false,
