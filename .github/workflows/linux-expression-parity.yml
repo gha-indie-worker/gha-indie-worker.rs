@@ -91,7 +91,7 @@ jobs:
           endsWith(steps.producer.outputs.word, 'LO') &&
           matrix.missing == ''
         continue-on-error: ${{ fromJSON(env.CONTINUE) }}
-        run: 'false'
+        run: false
 
       - id: after
         name: Observe official outcome and conclusion contexts

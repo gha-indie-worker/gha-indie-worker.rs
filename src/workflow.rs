@@ -8,7 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 /// Maximum number of concrete jobs produced by one matrix definition.
@@ -139,7 +140,7 @@ struct RawJob {
     runs_on: Option<StringOrList>,
     uses: Option<String>,
     #[serde(rename = "if")]
-    condition: Option<String>,
+    condition: Option<ScalarString>,
     strategy: Option<RawStrategy>,
     #[serde(default)]
     env: BTreeMap<String, Value>,
@@ -156,9 +157,9 @@ struct RawStep {
     id: Option<String>,
     name: Option<String>,
     #[serde(rename = "if")]
-    condition: Option<String>,
+    condition: Option<ScalarString>,
     uses: Option<String>,
-    run: Option<String>,
+    run: Option<ScalarString>,
     shell: Option<String>,
     working_directory: Option<String>,
     #[serde(default)]
@@ -196,6 +197,27 @@ struct RawStrategy {
 enum StringOrList {
     One(String),
     Many(Vec<String>),
+}
+
+#[derive(Debug, Clone)]
+struct ScalarString(String);
+
+impl<'de> Deserialize<'de> for ScalarString {
+    fn deserialize<DeserializerType>(
+        deserializer: DeserializerType,
+    ) -> Result<Self, DeserializerType::Error>
+    where
+        DeserializerType: Deserializer<'de>,
+    {
+        match Value::deserialize(deserializer)? {
+            Value::String(value) => Ok(Self(value)),
+            Value::Bool(value) => Ok(Self(value.to_string())),
+            Value::Number(value) => Ok(Self(value.to_string())),
+            Value::Null | Value::Array(_) | Value::Object(_) => Err(
+                DeserializerType::Error::custom("expected a scalar string, boolean, or number"),
+            ),
+        }
+    }
 }
 
 impl StringOrList {
@@ -283,7 +305,10 @@ pub fn plan_workflow(yaml: &str) -> Result<WorkflowPlan, WorkflowError> {
                     .map(StringOrList::into_vec)
                     .unwrap_or_default(),
                 reusable_workflow: raw_job.uses.clone(),
-                condition: raw_job.condition.clone(),
+                condition: raw_job
+                    .condition
+                    .as_ref()
+                    .map(|condition| condition.0.clone()),
                 matrix,
                 env: job_environment.clone(),
                 steps: raw_job
@@ -294,9 +319,9 @@ pub fn plan_workflow(yaml: &str) -> Result<WorkflowPlan, WorkflowError> {
                         index: step_index,
                         id: step.id.clone(),
                         name: step.name.clone(),
-                        condition: step.condition.clone(),
+                        condition: step.condition.as_ref().map(|condition| condition.0.clone()),
                         uses: step.uses.clone(),
-                        run: step.run.clone(),
+                        run: step.run.as_ref().map(|run| run.0.clone()),
                         shell: step
                             .shell
                             .clone()
@@ -834,6 +859,28 @@ jobs:
         assert_eq!(job.steps[0].working_directory.as_deref(), Some("job-dir"));
         assert_eq!(job.steps[1].shell.as_deref(), Some("bash"));
         assert_eq!(job.steps[1].working_directory.as_deref(), Some("step-dir"));
+    }
+
+    #[test]
+    fn normalizes_boolean_and_numeric_condition_and_run_scalars() {
+        let yaml = r#"
+jobs:
+  test:
+    if: true
+    runs-on: ubuntu-latest
+    steps:
+      - if: false
+        run: false
+      - if: 1
+        run: 42
+"#;
+        let plan = plan_workflow(yaml).unwrap_or_else(|error| panic!("plan failed: {error}"));
+        let job = &plan.jobs[0];
+        assert_eq!(job.condition.as_deref(), Some("true"));
+        assert_eq!(job.steps[0].condition.as_deref(), Some("false"));
+        assert_eq!(job.steps[0].run.as_deref(), Some("false"));
+        assert_eq!(job.steps[1].condition.as_deref(), Some("1"));
+        assert_eq!(job.steps[1].run.as_deref(), Some("42"));
     }
 
     #[test]

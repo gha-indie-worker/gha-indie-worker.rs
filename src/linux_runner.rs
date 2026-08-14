@@ -1195,7 +1195,7 @@ jobs:
           endsWith(steps.producer.outputs.word, 'LO') &&
           matrix.missing == ''
         continue-on-error: ${{ fromJSON(env.CONTINUE) }}
-        run: 'false'
+        run: false
       - id: after
         if: >-
           success() &&
@@ -1232,9 +1232,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - id: fail
-        run: 'false'
+        run: false
       - id: literal_true
-        if: 'true'
+        if: true
         run: echo wrong > result.txt
       - id: context_true
         if: env.FLAG == 'yes'
