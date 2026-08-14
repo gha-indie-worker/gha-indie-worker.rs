@@ -106,8 +106,9 @@ official-hosted differential cover:
 - per-matrix `max-parallel: 2`, measured from official job timestamps and from
   the indie scheduler's own maximum-observed counter;
 - expression-valued job `continue-on-error` using a static matrix boolean;
-- preservation of the failed experimental instance's raw outcome while its job
-  conclusion and matrix aggregate remain successful;
+- preservation of the failed experimental instance's raw outcome and concrete
+  job conclusion while its explicit effective conclusion and matrix aggregate
+  remain successful;
 - non-triggering of `fail-fast` by that tolerated instance;
 - default execution of a job that needs the successful matrix aggregate;
 - a false job condition producing `skipped`, followed by an `always()` job that
