@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -22,14 +22,15 @@ use crate::expression::{
     ExpressionContext, ExpressionError, StatusContext,
 };
 use crate::linux_runner::{
-    execute_trusted_linux_job, preflight_trusted_linux_job, JobConclusion, LinuxJobResult,
-    LinuxRunnerError, TrustedLinuxRunnerConfig,
+    execute_trusted_linux_job_with_context, preflight_trusted_linux_job_syntax, JobConclusion,
+    LinuxJobResult, LinuxRunnerError, TrustedLinuxJobContext, TrustedLinuxRunnerConfig,
 };
-use crate::workflow::{PlannedJob, WorkflowPlan};
+use crate::workflow::{expand_dynamic_matrix, materialize_dynamic_jobs, PlannedJob, WorkflowPlan};
 
-pub const LINUX_WORKFLOW_SCHEMA_VERSION: &str = "gha-indie-worker.linux-workflow.v1";
+pub const LINUX_WORKFLOW_SCHEMA_VERSION: &str = "gha-indie-worker.linux-workflow.v2";
 
 const DEFAULT_OUTPUT_LIMIT: usize = 10 * 1024 * 1024;
+const MAX_WORKFLOW_OUTPUT_UTF16_BYTES: usize = 50 * 1024 * 1024;
 
 /// Operator policy and filesystem location for one trusted workflow run.
 #[derive(Debug, Clone)]
@@ -117,6 +118,7 @@ pub struct LinuxWorkflowJobResult {
     pub started_sequence: Option<usize>,
     pub completed_sequence: usize,
     pub workspace: PathBuf,
+    pub outputs: BTreeMap<String, String>,
     pub runner_result: Option<LinuxJobResult>,
 }
 
@@ -128,6 +130,7 @@ pub struct LinuxWorkflowJobGroupResult {
     pub instance_ids: Vec<String>,
     pub conclusion: WorkflowJobConclusion,
     pub max_observed_parallel: usize,
+    pub outputs: BTreeMap<String, String>,
 }
 
 /// Complete scheduler result in deterministic planner order.
@@ -174,9 +177,7 @@ impl From<ExpressionError> for LinuxWorkflowError {
     }
 }
 
-struct PreparedWorkflow {
-    continue_on_error: BTreeMap<String, bool>,
-}
+struct PreparedWorkflow;
 
 struct RunningJob {
     abort: AbortHandle,
@@ -193,10 +194,12 @@ struct JobCompletion {
 /// Executes a complete trusted Linux workflow plan.
 ///
 /// Every concrete job is structurally and expression-preflighted before the
-/// first shell process starts. Jobs receive isolated empty workspaces, matching
-/// a hosted runner before an explicit checkout or artifact action. The current
-/// contract supports static matrices and `run` steps only; actions, reusable
-/// workflows, dynamic matrices, job outputs, and job timeouts fail closed.
+/// first shell process starts. Deferred values are resolved after their direct
+/// dependencies finish and before the dependent job starts. Jobs receive
+/// isolated empty workspaces, matching a hosted runner before an explicit
+/// checkout or artifact action. The current contract supports static and
+/// output-driven matrices plus `run` steps; actions, reusable workflows,
+/// secret contexts, and job timeouts fail closed.
 ///
 /// # Security
 ///
@@ -212,8 +215,8 @@ pub async fn execute_trusted_linux_workflow(
     config: &TrustedLinuxWorkflowConfig,
 ) -> Result<LinuxWorkflowResult, LinuxWorkflowError> {
     let prepared = preflight_workflow(plan, config)?;
-    let workspaces = create_isolated_workspaces(plan, config).await?;
-    schedule_workflow(plan, config, prepared, workspaces).await
+    let run_directory = create_run_directory(config).await?;
+    schedule_workflow(plan, config, prepared, run_directory).await
 }
 
 fn preflight_workflow(
@@ -267,7 +270,6 @@ fn preflight_workflow(
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
-    let mut continue_on_error = BTreeMap::new();
     let mut controls_by_base = BTreeMap::<String, (bool, Option<usize>)>::new();
 
     for job in &plan.jobs {
@@ -309,13 +311,24 @@ fn preflight_workflow(
         if let Some(condition) = job.condition.as_deref() {
             validate_expression(unwrap_expression(condition), &["needs"], true)?;
         }
-        let tolerated = evaluate_job_continue_on_error(job)?;
-        continue_on_error.insert(job.id.clone(), tolerated);
+        validate_job_continue_on_error(job)?;
+        if let Some(source) = job.matrix_expression.as_deref() {
+            let expression = wrapped_expression(source).ok_or_else(|| {
+                LinuxWorkflowError::new(
+                    "invalid_matrix",
+                    format!(
+                        "job {:?} dynamic matrix must be one whole expression",
+                        job.id
+                    ),
+                )
+            })?;
+            validate_expression(expression, &["needs"], false)?;
+        }
 
         let mut runner_job = job.clone();
         runner_job.condition = None;
         runner_job.continue_on_error = None;
-        preflight_trusted_linux_job(&runner_job).map_err(|error| {
+        preflight_trusted_linux_job_syntax(&runner_job).map_err(|error| {
             LinuxWorkflowError::new(
                 error.code,
                 format!(
@@ -326,15 +339,15 @@ fn preflight_workflow(
         })?;
     }
 
-    Ok(PreparedWorkflow { continue_on_error })
+    Ok(PreparedWorkflow)
 }
 
-fn evaluate_job_continue_on_error(job: &PlannedJob) -> Result<bool, LinuxWorkflowError> {
+fn validate_job_continue_on_error(job: &PlannedJob) -> Result<(), LinuxWorkflowError> {
     let Some(value) = job.continue_on_error.as_ref() else {
-        return Ok(false);
+        return Ok(());
     };
-    if let Value::Bool(value) = value {
-        return Ok(*value);
+    if value.is_boolean() {
+        return Ok(());
     }
     let Value::String(source) = value else {
         return Err(LinuxWorkflowError::new(
@@ -354,8 +367,32 @@ fn evaluate_job_continue_on_error(job: &PlannedJob) -> Result<bool, LinuxWorkflo
             ),
         )
     })?;
-    validate_expression(expression, &["matrix"], false)?;
-    let context = ExpressionContext::new().with_root("matrix", matrix_value(&job.matrix));
+    validate_expression(expression, &["matrix", "needs"], false)?;
+    Ok(())
+}
+
+fn evaluate_job_continue_on_error(
+    job: &PlannedJob,
+    needs: Value,
+) -> Result<bool, LinuxWorkflowError> {
+    let Some(value) = job.continue_on_error.as_ref() else {
+        return Ok(false);
+    };
+    if let Value::Bool(value) = value {
+        return Ok(*value);
+    }
+    let Value::String(source) = value else {
+        return Err(LinuxWorkflowError::new(
+            "invalid_job_continue_on_error",
+            format!(
+                "job {:?} continue-on-error must be a boolean or whole expression",
+                job.id
+            ),
+        ));
+    };
+    let context = ExpressionContext::new()
+        .with_root("matrix", matrix_value(&job.matrix))
+        .with_root("needs", needs);
     let evaluated = evaluate_wrapped_expression(source, &context)?.ok_or_else(|| {
         LinuxWorkflowError::new(
             "invalid_job_continue_on_error",
@@ -373,10 +410,9 @@ fn evaluate_job_continue_on_error(job: &PlannedJob) -> Result<bool, LinuxWorkflo
     })
 }
 
-async fn create_isolated_workspaces(
-    plan: &WorkflowPlan,
+async fn create_run_directory(
     config: &TrustedLinuxWorkflowConfig,
-) -> Result<Vec<PathBuf>, LinuxWorkflowError> {
+) -> Result<PathBuf, LinuxWorkflowError> {
     fs::create_dir_all(&config.run_root)
         .await
         .map_err(|error| {
@@ -412,88 +448,145 @@ async fn create_isolated_workspaces(
         )
     })?;
 
-    let mut workspaces = Vec::with_capacity(plan.jobs.len());
-    for (index, job) in plan.jobs.iter().enumerate() {
-        let workspace = run_directory.join(format!(
-            "job-{index:04}-{}",
-            filesystem_component(&job.base_job_id)
-        ));
-        fs::create_dir(&workspace).await.map_err(|error| {
-            LinuxWorkflowError::new(
-                "job_workspace_unavailable",
-                format!("could not create workspace for job {:?}: {error}", job.id),
-            )
-        })?;
-        workspaces.push(workspace);
-    }
-    Ok(workspaces)
+    Ok(run_directory)
+}
+
+async fn create_job_workspace(
+    run_directory: &Path,
+    index: usize,
+    job: &PlannedJob,
+) -> Result<PathBuf, LinuxWorkflowError> {
+    let workspace = run_directory.join(format!(
+        "job-{index:04}-{}",
+        filesystem_component(&job.base_job_id)
+    ));
+    fs::create_dir(&workspace).await.map_err(|error| {
+        LinuxWorkflowError::new(
+            "job_workspace_unavailable",
+            format!("could not create workspace for job {:?}: {error}", job.id),
+        )
+    })?;
+    Ok(workspace)
 }
 
 async fn schedule_workflow(
     plan: &WorkflowPlan,
     config: &TrustedLinuxWorkflowConfig,
-    prepared: PreparedWorkflow,
-    workspaces: Vec<PathBuf>,
+    _prepared: PreparedWorkflow,
+    run_directory: PathBuf,
 ) -> Result<LinuxWorkflowResult, LinuxWorkflowError> {
-    let run_directory = workspaces
-        .first()
-        .and_then(|workspace| workspace.parent())
-        .map(PathBuf::from)
-        .ok_or_else(|| {
-            LinuxWorkflowError::new(
-                "internal_scheduler_error",
-                "workflow workspaces have no run directory",
-            )
-        })?;
-    let workspace_by_id = plan
-        .jobs
+    let mut jobs = plan.jobs.clone();
+    let mut workspace_by_id = BTreeMap::new();
+    let mut workspace_sequence = 0usize;
+    for job in jobs.iter().filter(|job| job.matrix_expression.is_none()) {
+        let workspace = create_job_workspace(&run_directory, workspace_sequence, job).await?;
+        workspace_sequence += 1;
+        workspace_by_id.insert(job.id.clone(), workspace);
+    }
+    let mut expanded_groups = jobs
         .iter()
-        .zip(workspaces)
-        .map(|(job, workspace)| (job.id.clone(), workspace))
-        .collect::<BTreeMap<_, _>>();
-    let jobs_by_id = plan
-        .jobs
+        .filter(|job| job.matrix_expression.is_none())
+        .map(|job| job.base_job_id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut pending = jobs
         .iter()
-        .map(|job| (job.id.as_str(), job))
-        .collect::<BTreeMap<_, _>>();
-    let mut pending = plan
-        .jobs
-        .iter()
+        .filter(|job| job.matrix_expression.is_none())
         .map(|job| job.id.clone())
         .collect::<BTreeSet<_>>();
     let mut terminal = BTreeMap::<String, LinuxWorkflowJobResult>::new();
     let mut running = BTreeMap::<String, RunningJob>::new();
     let mut running_by_base = BTreeMap::<String, usize>::new();
     let mut max_by_base = BTreeMap::<String, usize>::new();
+    let mut continue_on_error = BTreeMap::<String, bool>::new();
     let mut tasks = JoinSet::<JobCompletion>::new();
     let mut intentionally_cancelled = HashSet::<Id>::new();
     let mut started_sequence = 0usize;
     let mut completed_sequence = 0usize;
     let mut max_observed_parallel = 0usize;
+    let mut workflow_output_utf16_bytes = 0usize;
 
-    while terminal.len() < plan.jobs.len() {
+    while !all_job_groups_terminal(plan, &jobs, &expanded_groups, &terminal) {
         let mut progressed = false;
-        for job in &plan.jobs {
-            if !pending.contains(&job.id)
-                || !job
-                    .needs_instances
-                    .iter()
-                    .all(|dependency| terminal.contains_key(dependency))
+
+        for base_job_id in &plan.job_order {
+            if expanded_groups.contains(base_job_id) {
+                continue;
+            }
+            let Some(template_index) = jobs.iter().position(|job| &job.base_job_id == base_job_id)
+            else {
+                abort_all(&mut tasks).await;
+                return Err(LinuxWorkflowError::new(
+                    "missing_dynamic_template",
+                    format!("deferred job {base_job_id:?} has no template"),
+                ));
+            };
+            let template = jobs[template_index].clone();
+            if !template
+                .needs
+                .iter()
+                .all(|dependency| group_is_terminal(dependency, &jobs, &expanded_groups, &terminal))
             {
                 continue;
             }
 
-            let should_run = evaluate_job_condition(job, plan, &terminal)?;
+            if !evaluate_job_condition(&template, &jobs, &terminal)? {
+                let workspace =
+                    create_job_workspace(&run_directory, workspace_sequence, &template).await?;
+                workspace_sequence += 1;
+                workspace_by_id.insert(template.id.clone(), workspace.clone());
+                completed_sequence += 1;
+                terminal.insert(
+                    template.id.clone(),
+                    terminal_job(
+                        &template,
+                        WorkflowJobOutcome::Skipped,
+                        WorkflowJobConclusion::Skipped,
+                        false,
+                        None,
+                        completed_sequence,
+                        workspace,
+                        None,
+                    ),
+                );
+                expanded_groups.insert(base_job_id.clone());
+                progressed = true;
+                continue;
+            }
+
+            let matrices = evaluate_dynamic_matrix(&template, &jobs, &terminal)?;
+            let instances = materialize_dynamic_jobs(&template, matrices);
+            jobs.splice(template_index..=template_index, instances.clone());
+            for instance in instances {
+                let workspace =
+                    create_job_workspace(&run_directory, workspace_sequence, &instance).await?;
+                workspace_sequence += 1;
+                workspace_by_id.insert(instance.id.clone(), workspace);
+                pending.insert(instance.id);
+            }
+            expanded_groups.insert(base_job_id.clone());
+            progressed = true;
+        }
+
+        for job in jobs.clone() {
+            if !pending.contains(&job.id)
+                || !job.needs.iter().all(|dependency| {
+                    group_is_terminal(dependency, &jobs, &expanded_groups, &terminal)
+                })
+            {
+                continue;
+            }
+
+            let should_run = evaluate_job_condition(&job, &jobs, &terminal)?;
             if !should_run {
                 pending.remove(&job.id);
                 completed_sequence += 1;
                 terminal.insert(
                     job.id.clone(),
                     terminal_job(
-                        job,
+                        &job,
                         WorkflowJobOutcome::Skipped,
                         WorkflowJobConclusion::Skipped,
-                        prepared.continue_on_error[&job.id],
+                        false,
                         None,
                         completed_sequence,
                         workspace_by_id[&job.id].clone(),
@@ -513,15 +606,24 @@ async fn schedule_workflow(
                 continue;
             }
 
+            let (needs, _) = needs_context(&job, &jobs, &terminal);
+            let tolerated = evaluate_job_continue_on_error(&job, needs.clone())?;
+            continue_on_error.insert(job.id.clone(), tolerated);
             let mut runner_job = job.clone();
             runner_job.condition = None;
             runner_job.continue_on_error = None;
             let workspace = workspace_by_id[&job.id].clone();
             let runner_config = config.job_config(workspace.clone());
+            let runner_context = TrustedLinuxJobContext { needs };
             let id = job.id.clone();
             let task_id = id.clone();
             let abort = tasks.spawn(async move {
-                let result = execute_trusted_linux_job(&runner_job, &runner_config).await;
+                let result = execute_trusted_linux_job_with_context(
+                    &runner_job,
+                    &runner_config,
+                    &runner_context,
+                )
+                .await;
                 JobCompletion {
                     id: task_id,
                     result,
@@ -549,7 +651,7 @@ async fn schedule_workflow(
             progressed = true;
         }
 
-        if terminal.len() == plan.jobs.len() {
+        if all_job_groups_terminal(plan, &jobs, &expanded_groups, &terminal) {
             break;
         }
 
@@ -583,7 +685,16 @@ async fn schedule_workflow(
                 ));
             };
             decrement_running(&mut running_by_base, &running_job.base_job_id);
-            let job = jobs_by_id[completion.id.as_str()];
+            let Some(job) = jobs.iter().find(|job| job.id == completion.id).cloned() else {
+                abort_all(&mut tasks).await;
+                return Err(LinuxWorkflowError::new(
+                    "unexpected_job_completion",
+                    format!(
+                        "completed job {:?} is absent from the runtime plan",
+                        completion.id
+                    ),
+                ));
+            };
             let runner_result = match completion.result {
                 Ok(result) => result,
                 Err(error) => {
@@ -599,18 +710,20 @@ async fn schedule_workflow(
                 JobConclusion::Failure => WorkflowJobOutcome::Failure,
                 JobConclusion::TimedOut => WorkflowJobOutcome::TimedOut,
             };
-            let tolerated = prepared.continue_on_error[&job.id];
+            let tolerated = continue_on_error.get(&job.id).copied().unwrap_or(false);
             let conclusion = match outcome {
                 WorkflowJobOutcome::Success => WorkflowJobConclusion::Success,
                 WorkflowJobOutcome::Failure => WorkflowJobConclusion::Failure,
                 WorkflowJobOutcome::TimedOut => WorkflowJobConclusion::TimedOut,
                 WorkflowJobOutcome::Skipped | WorkflowJobOutcome::Cancelled => unreachable!(),
             };
+            workflow_output_utf16_bytes =
+                add_output_size(workflow_output_utf16_bytes, &runner_result.outputs, &job.id)?;
             completed_sequence += 1;
             terminal.insert(
                 job.id.clone(),
                 terminal_job(
-                    job,
+                    &job,
                     outcome,
                     conclusion,
                     tolerated,
@@ -628,9 +741,9 @@ async fn schedule_workflow(
                 && job.fail_fast
             {
                 cancel_matrix_siblings(
-                    job,
-                    plan,
-                    &prepared,
+                    &job,
+                    &jobs,
+                    &continue_on_error,
                     &workspace_by_id,
                     &mut pending,
                     &mut running,
@@ -664,8 +777,7 @@ async fn schedule_workflow(
         }
     }
 
-    let jobs = plan
-        .jobs
+    let jobs = jobs
         .iter()
         .map(|job| {
             terminal.remove(&job.id).ok_or_else(|| {
@@ -688,9 +800,10 @@ async fn schedule_workflow(
                 base_job_id: base_job_id.clone(),
                 instance_ids: instances.iter().map(|job| job.id.clone()).collect(),
                 conclusion: aggregate_conclusion(
-                    instances.into_iter().map(|job| job.effective_conclusion),
+                    instances.iter().map(|job| job.effective_conclusion),
                 ),
                 max_observed_parallel: max_by_base.get(base_job_id).copied().unwrap_or(0),
+                outputs: aggregate_group_outputs(base_job_id, &jobs),
             }
         })
         .collect::<Vec<_>>();
@@ -718,10 +831,10 @@ async fn schedule_workflow(
 
 fn evaluate_job_condition(
     job: &PlannedJob,
-    plan: &WorkflowPlan,
+    jobs: &[PlannedJob],
     terminal: &BTreeMap<String, LinuxWorkflowJobResult>,
 ) -> Result<bool, LinuxWorkflowError> {
-    let (needs, status) = needs_context(job, plan, terminal);
+    let (needs, status) = needs_context(job, jobs, terminal);
     let Some(condition) = job.condition.as_deref() else {
         return Ok(status.success);
     };
@@ -736,7 +849,7 @@ fn evaluate_job_condition(
 
 fn needs_context(
     job: &PlannedJob,
-    plan: &WorkflowPlan,
+    jobs: &[PlannedJob],
     terminal: &BTreeMap<String, LinuxWorkflowJobResult>,
 ) -> (Value, StatusContext) {
     let mut needs = Map::new();
@@ -745,8 +858,7 @@ fn needs_context(
     let mut cancelled = false;
     for base_job_id in &job.needs {
         let conclusion = aggregate_conclusion(
-            plan.jobs
-                .iter()
+            jobs.iter()
                 .filter(|candidate| &candidate.base_job_id == base_job_id)
                 .filter_map(|candidate| terminal.get(&candidate.id))
                 .map(|result| result.effective_conclusion),
@@ -757,6 +869,7 @@ fn needs_context(
             WorkflowJobConclusion::Failure | WorkflowJobConclusion::TimedOut
         );
         cancelled |= conclusion == WorkflowJobConclusion::Cancelled;
+        let outputs = aggregate_terminal_group_outputs(base_job_id, terminal);
         needs.insert(
             base_job_id.clone(),
             Value::Object(Map::from_iter([
@@ -764,7 +877,15 @@ fn needs_context(
                     "result".to_string(),
                     Value::String(needs_result_name(conclusion).to_string()),
                 ),
-                ("outputs".to_string(), Value::Object(Map::new())),
+                (
+                    "outputs".to_string(),
+                    Value::Object(
+                        outputs
+                            .into_iter()
+                            .map(|(name, value)| (name, Value::String(value)))
+                            .collect(),
+                    ),
+                ),
             ])),
         );
     }
@@ -778,11 +899,123 @@ fn needs_context(
     )
 }
 
+fn evaluate_dynamic_matrix(
+    template: &PlannedJob,
+    jobs: &[PlannedJob],
+    terminal: &BTreeMap<String, LinuxWorkflowJobResult>,
+) -> Result<Vec<BTreeMap<String, Value>>, LinuxWorkflowError> {
+    let source = template.matrix_expression.as_deref().ok_or_else(|| {
+        LinuxWorkflowError::new(
+            "missing_dynamic_matrix",
+            format!("job {:?} has no deferred matrix expression", template.id),
+        )
+    })?;
+    let (needs, status) = needs_context(template, jobs, terminal);
+    let context = ExpressionContext::new()
+        .with_root("needs", needs)
+        .with_status(status);
+    let value = evaluate_wrapped_expression(source, &context)?.ok_or_else(|| {
+        LinuxWorkflowError::new(
+            "invalid_matrix",
+            format!(
+                "job {:?} dynamic matrix is not one whole expression",
+                template.id
+            ),
+        )
+    })?;
+    expand_dynamic_matrix(&template.base_job_id, &value)
+        .map_err(|error| LinuxWorkflowError::new(error.code, error.message))
+}
+
+fn all_job_groups_terminal(
+    plan: &WorkflowPlan,
+    jobs: &[PlannedJob],
+    expanded_groups: &BTreeSet<String>,
+    terminal: &BTreeMap<String, LinuxWorkflowJobResult>,
+) -> bool {
+    plan.job_order
+        .iter()
+        .all(|base_job_id| group_is_terminal(base_job_id, jobs, expanded_groups, terminal))
+}
+
+fn group_is_terminal(
+    base_job_id: &str,
+    jobs: &[PlannedJob],
+    expanded_groups: &BTreeSet<String>,
+    terminal: &BTreeMap<String, LinuxWorkflowJobResult>,
+) -> bool {
+    expanded_groups.contains(base_job_id)
+        && jobs
+            .iter()
+            .filter(|job| job.base_job_id == base_job_id)
+            .all(|job| terminal.contains_key(&job.id))
+}
+
+fn aggregate_terminal_group_outputs(
+    base_job_id: &str,
+    terminal: &BTreeMap<String, LinuxWorkflowJobResult>,
+) -> BTreeMap<String, String> {
+    let mut instances = terminal
+        .values()
+        .filter(|result| result.base_job_id == base_job_id)
+        .collect::<Vec<_>>();
+    instances.sort_by_key(|result| result.completed_sequence);
+    let mut outputs = BTreeMap::new();
+    for instance in instances {
+        outputs.extend(instance.outputs.clone());
+    }
+    outputs
+}
+
+fn aggregate_group_outputs(
+    base_job_id: &str,
+    jobs: &[LinuxWorkflowJobResult],
+) -> BTreeMap<String, String> {
+    let terminal = jobs
+        .iter()
+        .map(|job| (job.id.clone(), job.clone()))
+        .collect::<BTreeMap<_, _>>();
+    aggregate_terminal_group_outputs(base_job_id, &terminal)
+}
+
+fn add_output_size(
+    current: usize,
+    outputs: &BTreeMap<String, String>,
+    job_id: &str,
+) -> Result<usize, LinuxWorkflowError> {
+    let additional = outputs.iter().try_fold(0usize, |total, (name, value)| {
+        total
+            .checked_add(name.encode_utf16().count().saturating_mul(2))
+            .and_then(|sum| sum.checked_add(value.encode_utf16().count().saturating_mul(2)))
+            .ok_or_else(|| {
+                LinuxWorkflowError::new(
+                    "workflow_outputs_too_large",
+                    "workflow output size overflowed",
+                )
+            })
+    })?;
+    let total = current.checked_add(additional).ok_or_else(|| {
+        LinuxWorkflowError::new(
+            "workflow_outputs_too_large",
+            "workflow output size overflowed",
+        )
+    })?;
+    if total > MAX_WORKFLOW_OUTPUT_UTF16_BYTES {
+        return Err(LinuxWorkflowError::new(
+            "workflow_outputs_too_large",
+            format!(
+                "job {job_id:?} raised declared workflow outputs to {total} UTF-16 bytes; maximum is {MAX_WORKFLOW_OUTPUT_UTF16_BYTES}"
+            ),
+        ));
+    }
+    Ok(total)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cancel_matrix_siblings(
     failed: &PlannedJob,
-    plan: &WorkflowPlan,
-    prepared: &PreparedWorkflow,
+    jobs: &[PlannedJob],
+    continue_on_error: &BTreeMap<String, bool>,
     workspace_by_id: &BTreeMap<String, PathBuf>,
     pending: &mut BTreeSet<String>,
     running: &mut BTreeMap<String, RunningJob>,
@@ -791,8 +1024,7 @@ fn cancel_matrix_siblings(
     intentionally_cancelled: &mut HashSet<Id>,
     completed_sequence: &mut usize,
 ) {
-    for sibling in plan
-        .jobs
+    for sibling in jobs
         .iter()
         .filter(|job| job.base_job_id == failed.base_job_id && job.id != failed.id)
     {
@@ -804,7 +1036,7 @@ fn cancel_matrix_siblings(
                     sibling,
                     WorkflowJobOutcome::Cancelled,
                     WorkflowJobConclusion::Cancelled,
-                    prepared.continue_on_error[&sibling.id],
+                    continue_on_error.get(&sibling.id).copied().unwrap_or(false),
                     None,
                     *completed_sequence,
                     workspace_by_id[&sibling.id].clone(),
@@ -831,7 +1063,7 @@ fn cancel_matrix_siblings(
                     sibling,
                     WorkflowJobOutcome::Cancelled,
                     WorkflowJobConclusion::Cancelled,
-                    prepared.continue_on_error[&sibling.id],
+                    continue_on_error.get(&sibling.id).copied().unwrap_or(false),
                     Some(running_job.started_sequence),
                     *completed_sequence,
                     running_job.workspace,
@@ -862,6 +1094,10 @@ fn terminal_job(
     } else {
         conclusion
     };
+    let outputs = runner_result
+        .as_ref()
+        .map(|result| result.outputs.clone())
+        .unwrap_or_default();
     LinuxWorkflowJobResult {
         id: job.id.clone(),
         base_job_id: job.base_job_id.clone(),
@@ -875,6 +1111,7 @@ fn terminal_job(
         started_sequence,
         completed_sequence,
         workspace,
+        outputs,
         runner_result,
     }
 }
@@ -1231,6 +1468,151 @@ jobs:
             job(&result, "handler").conclusion,
             WorkflowJobConclusion::Success
         );
+    }
+
+    #[tokio::test]
+    async fn propagates_declared_outputs_and_expands_needs_driven_matrix() {
+        let plan = plan_workflow(
+            r#"
+jobs:
+  define:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.values.outputs.matrix }}
+      runner: ${{ steps.values.outputs.runner }}
+      greeting: ${{ steps.values.outputs.greeting }}
+    steps:
+      - id: values
+        run: |
+          printf '%s\n' 'matrix={"include":[{"color":"red"},{"color":"green"}]}' >> "$GITHUB_OUTPUT"
+          printf '%s\n' 'runner=ubuntu-latest' >> "$GITHUB_OUTPUT"
+          printf '%s\n' 'greeting=hello' >> "$GITHUB_OUTPUT"
+  fanout:
+    needs: define
+    runs-on: ${{ needs.define.outputs.runner }}
+    strategy:
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.define.outputs.matrix) }}
+    env:
+      GREETING: ${{ needs.define.outputs.greeting }}
+    outputs:
+      seen: ${{ steps.verify.outputs.seen }}
+    steps:
+      - id: verify
+        env:
+          NEEDS_RESULT: ${{ needs.define.result }}
+        run: |
+          test "$GREETING" = hello
+          test "$NEEDS_RESULT" = success
+          printf 'seen=%s/%s\n' '${{ matrix.color }}' '${{ needs.define.outputs.greeting }}' >> "$GITHUB_OUTPUT"
+  observe:
+    needs: fanout
+    if: ${{ always() && needs.fanout.result == 'success' }}
+    runs-on: ubuntu-latest
+    env:
+      TRANSITIVE: ${{ needs.define.outputs.greeting }}
+      MATRIX_SEEN: ${{ needs.fanout.outputs.seen }}
+    steps:
+      - run: |
+          test -z "$TRANSITIVE"
+          test -n "$MATRIX_SEEN"
+"#,
+        )
+        .expect("workflow should plan");
+        let root = TestRoot::create();
+        let result = execute_trusted_linux_workflow(&plan, &root.config(3))
+            .await
+            .expect("output-driven workflow should execute");
+
+        assert_eq!(result.schema_version, "gha-indie-worker.linux-workflow.v2");
+        assert_eq!(result.conclusion, WorkflowConclusion::Success);
+        assert_eq!(
+            group(&result, "define")
+                .outputs
+                .get("greeting")
+                .map(String::as_str),
+            Some("hello")
+        );
+        let fanout = group(&result, "fanout");
+        assert_eq!(fanout.instance_ids, ["fanout[1]", "fanout[2]"]);
+        assert_eq!(fanout.max_observed_parallel, 2);
+        assert!(matches!(
+            fanout.outputs.get("seen").map(String::as_str),
+            Some("red/hello" | "green/hello")
+        ));
+        assert_eq!(
+            job(&result, "fanout[1]").matrix.get("color"),
+            Some(&Value::String("red".to_string()))
+        );
+        assert_eq!(
+            job(&result, "fanout[2]").matrix.get("color"),
+            Some(&Value::String("green".to_string()))
+        );
+        assert_eq!(
+            job(&result, "observe").conclusion,
+            WorkflowJobConclusion::Success
+        );
+    }
+
+    #[tokio::test]
+    async fn bounds_deferred_matrix_after_producer_finishes() {
+        let plan = plan_workflow(
+            r#"
+jobs:
+  define:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.values.outputs.matrix }}
+    steps:
+      - id: values
+        run: |
+          printf 'matrix={"value":[' >> "$GITHUB_OUTPUT"
+          for value in $(seq 1 257); do
+            if [ "$value" -gt 1 ]; then printf ',' >> "$GITHUB_OUTPUT"; fi
+            printf '%s' "$value" >> "$GITHUB_OUTPUT"
+          done
+          printf ']}\n' >> "$GITHUB_OUTPUT"
+  fanout:
+    needs: define
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJSON(needs.define.outputs.matrix) }}
+    steps:
+      - run: true
+"#,
+        )
+        .expect("workflow should plan as a deferred matrix");
+        let root = TestRoot::create();
+        let error = execute_trusted_linux_workflow(&plan, &root.config(2))
+            .await
+            .expect_err("257 deferred jobs must exceed the per-matrix bound");
+        assert_eq!(error.code, "matrix_too_large");
+    }
+
+    #[tokio::test]
+    async fn rejects_secret_job_output_context_before_any_shell_runs() {
+        let plan = plan_workflow(
+            r#"
+jobs:
+  first:
+    runs-on: ubuntu-latest
+    steps:
+      - run: printf started > marker
+  unsupported:
+    runs-on: ubuntu-latest
+    outputs:
+      leak: ${{ secrets.VALUE }}
+    steps:
+      - run: true
+"#,
+        )
+        .expect("workflow should plan");
+        let root = TestRoot::create();
+        let error = execute_trusted_linux_workflow(&plan, &root.config(2))
+            .await
+            .expect_err("secret context must fail closed");
+        assert_eq!(error.code, "unsupported_context");
+        assert!(!contains_file_named(&root.0, "marker"));
     }
 
     #[tokio::test]

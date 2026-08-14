@@ -157,7 +157,7 @@ jobs:
               ),
           }
           expected_workspace = 'a-b:yes:7:Alpha'
-          assert trace['schemaVersion'] == 'gha-indie-worker.linux-runner.v2', trace
+          assert trace['schemaVersion'] == 'gha-indie-worker.linux-runner.v3', trace
           assert trace['conclusion'] == 'success', trace
           assert Path('.gha-expression/indie/result.txt').read_text() == expected_workspace
           for step_id, expected in comparisons.items():

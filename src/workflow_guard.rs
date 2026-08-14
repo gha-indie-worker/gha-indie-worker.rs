@@ -7,6 +7,8 @@
 
 use serde_json::{Map, Value};
 
+use crate::workflow::MAX_MATRIX_JOBS;
+
 /// Maximum accepted workflow source size for both CLI and HTTP callers.
 pub const MAX_WORKFLOW_SOURCE_BYTES: usize = 1024 * 1024;
 /// Maximum nesting of inline `[]` and `{}` YAML flow collections.
@@ -41,6 +43,7 @@ const JOB_FIELDS: &[&str] = &[
     "steps",
     "timeout-minutes",
     "continue-on-error",
+    "outputs",
 ];
 const DEFAULTS_FIELDS: &[&str] = &["run"];
 const RUN_DEFAULT_FIELDS: &[&str] = &["shell", "working-directory"];
@@ -124,6 +127,7 @@ pub(crate) fn validate_document(value: &Value) -> Result<(), String> {
         let job = require_object(job_value, &context)?;
         reject_unknown_fields(job, JOB_FIELDS, &context)?;
         validate_parameter_map(job.get("env"), &format!("{context} env"))?;
+        validate_parameter_map(job.get("outputs"), &format!("{context} outputs"))?;
         validate_run_defaults(job.get("defaults"), &format!("{context} defaults"))?;
         validate_string_or_list(
             job.get("needs"),
@@ -211,6 +215,15 @@ fn estimate_concrete_jobs(strategy: Option<&Value>, context: &str) -> Result<usi
     };
     if matrix.is_null() {
         return Ok(1);
+    }
+    if let Value::String(expression) = matrix {
+        let expression = expression.trim();
+        if expression.starts_with("${{") && expression.ends_with("}}") {
+            return Ok(MAX_MATRIX_JOBS);
+        }
+        return Err(format!(
+            "{context} dynamic matrix must be one whole expression"
+        ));
     }
     let matrix = require_object(matrix, &format!("{context} matrix"))?;
 
@@ -599,6 +612,39 @@ mod tests {
             }
         });
         validate_document(&document).unwrap_or_else(|error| panic!("guard failed: {error}"));
+    }
+
+    #[test]
+    fn admits_bounded_outputs_and_whole_expression_matrix() {
+        let document = json!({
+            "jobs": {
+                "define": {
+                    "runs-on": "ubuntu-latest",
+                    "outputs": {"matrix": "${{ steps.values.outputs.matrix }}"},
+                    "steps": [{"id": "values", "run": "true"}]
+                },
+                "fanout": {
+                    "needs": "define",
+                    "runs-on": "ubuntu-latest",
+                    "strategy": {"matrix": "${{ fromJSON(needs.define.outputs.matrix) }}"},
+                    "steps": [{"run": "true"}]
+                }
+            }
+        });
+        validate_document(&document).unwrap_or_else(|error| panic!("guard failed: {error}"));
+
+        let invalid = json!({
+            "jobs": {
+                "fanout": {
+                    "runs-on": "ubuntu-latest",
+                    "strategy": {"matrix": "not-an-expression"},
+                    "steps": [{"run": "true"}]
+                }
+            }
+        });
+        let error =
+            validate_document(&invalid).expect_err("matrix string must be whole expression");
+        assert!(error.contains("whole expression"));
     }
 
     #[test]

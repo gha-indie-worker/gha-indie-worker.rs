@@ -62,7 +62,7 @@ fn configured_port() -> u16 {
 async fn descriptor() -> impl IntoResponse {
     Json(json!({
         "service": "gha-workflow-server",
-        "schemaVersion": "gha-indie-worker.plan.v1",
+        "schemaVersion": "gha-indie-worker.plan.v2",
         "endpoints": {
             "plan": "POST /v1/workflows/plan",
             "health": "GET /healthz"
@@ -76,7 +76,9 @@ async fn descriptor() -> impl IntoResponse {
             "steps.uses",
             "job and step env",
             "static strategy.matrix",
+            "whole-expression deferred strategy.matrix",
             "matrix include/exclude",
+            "declared job outputs",
             "reusable workflow jobs"
         ],
         "unsupportedFields": "rejected rather than ignored",
@@ -98,7 +100,7 @@ async fn healthz() -> impl IntoResponse {
     Json(json!({
         "ok": true,
         "service": "gha-workflow-server",
-        "schemaVersion": "gha-indie-worker.plan.v1"
+        "schemaVersion": "gha-indie-worker.plan.v2"
     }))
 }
 

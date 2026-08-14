@@ -2,7 +2,7 @@
 
 This crate is the fail-closed handoff between the bounded workflow planner and independent fixed-profile workers.
 
-It does **not** translate arbitrary GitHub Actions commands or third-party actions into worker execution. A dispatchable workflow plan must contain only graph, runner-label, and static scalar-matrix metadata. Each base job is then bound by an operator-reviewed document to:
+It does **not** translate arbitrary GitHub Actions commands or third-party actions into worker execution. A dispatchable workflow plan must contain only graph, runner-label, and already-expanded scalar-matrix metadata. Deferred matrices and declared job outputs are rejected at this boundary. Each base job is then bound by an operator-reviewed document to:
 
 - one HTTPS repository URL;
 - one exact 40-character lowercase commit SHA;
@@ -26,7 +26,7 @@ gha-bind-plan <plan.json> <profile-catalog.json> <bindings.json>
 
 Input schemas:
 
-- `gha-indie-worker.plan.v1`
+- `gha-indie-worker.plan.v2`
 - `gha-indie-worker.profile-catalog.v2`
 - `gha-indie-worker.bindings.v1`
 

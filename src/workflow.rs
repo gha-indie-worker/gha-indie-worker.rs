@@ -1,8 +1,9 @@
 //! Parsing and deterministic expansion of a useful GitHub Actions workflow subset.
 //!
 //! The planner deliberately does not evaluate `${{ ... }}` expressions or run
-//! commands. It validates the dependency graph and expands static matrices into
-//! an execution plan that the worker scheduler can consume safely.
+//! commands. It validates the dependency graph, expands static matrices, and
+//! preserves a bounded whole-expression matrix for the scheduler to resolve
+//! after direct dependencies have produced their declared outputs.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -51,6 +52,8 @@ pub struct PlannedJob {
     pub condition: Option<String>,
     /// Static matrix values assigned to this instance.
     pub matrix: BTreeMap<String, Value>,
+    /// Whole expression deferred until direct dependency outputs are available.
+    pub matrix_expression: Option<String>,
     /// Job-level environment values.
     pub env: BTreeMap<String, Value>,
     /// Ordered execution steps.
@@ -63,6 +66,8 @@ pub struct PlannedJob {
     pub timeout_minutes: Option<u64>,
     /// Unevaluated `continue-on-error` value.
     pub continue_on_error: Option<Value>,
+    /// Declared job outputs evaluated from the final step context.
+    pub outputs: BTreeMap<String, String>,
 }
 
 /// One validated workflow step.
@@ -149,6 +154,8 @@ struct RawJob {
     steps: Vec<RawStep>,
     timeout_minutes: Option<u64>,
     continue_on_error: Option<Value>,
+    #[serde(default)]
+    outputs: BTreeMap<String, ScalarString>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -188,8 +195,14 @@ struct RawStrategy {
     #[serde(default = "default_true")]
     fail_fast: bool,
     max_parallel: Option<usize>,
-    #[serde(default)]
-    matrix: BTreeMap<String, Value>,
+    matrix: Option<RawMatrix>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum RawMatrix {
+    Static(BTreeMap<String, Value>),
+    Dynamic(String),
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -229,17 +242,16 @@ impl StringOrList {
     }
 }
 
-/// Parses workflow YAML, validates its static graph, and expands job matrices.
+/// Parses workflow YAML, validates its static graph, and expands static job matrices.
 ///
-/// Expressions remain opaque strings. Dynamic matrices therefore fail closed;
-/// callers can evaluate trusted expressions first and submit the resulting
-/// static workflow to this function.
+/// Expressions remain opaque strings. A whole-expression dynamic matrix is
+/// represented as one deferred job and can only be resolved by the workflow
+/// scheduler after its direct `needs` jobs reach a terminal state.
 ///
 /// # Errors
 ///
-/// Returns [`WorkflowError`] for malformed YAML, unsupported dynamic matrices,
-/// invalid job/step shapes, unknown dependencies, cycles, or expansion beyond
-/// [`MAX_MATRIX_JOBS`].
+/// Returns [`WorkflowError`] for malformed YAML, invalid job/step shapes,
+/// unknown dependencies, cycles, or expansion beyond [`MAX_MATRIX_JOBS`].
 pub fn plan_workflow(yaml: &str) -> Result<WorkflowPlan, WorkflowError> {
     let workflow: RawWorkflow = serde_yaml::from_str(yaml).map_err(|error| {
         WorkflowError::new("invalid_yaml", format!("workflow YAML is invalid: {error}"))
@@ -265,6 +277,7 @@ pub fn plan_workflow(yaml: &str) -> Result<WorkflowPlan, WorkflowError> {
             ));
         };
         let matrix_values = expand_matrix(job_id, raw_job.strategy.as_ref())?;
+        let matrix_expression = deferred_matrix_expression(job_id, raw_job.strategy.as_ref())?;
         let mut job_environment = workflow.env.clone();
         job_environment.extend(raw_job.env.clone());
         let workflow_run_defaults = workflow
@@ -310,6 +323,7 @@ pub fn plan_workflow(yaml: &str) -> Result<WorkflowPlan, WorkflowError> {
                     .as_ref()
                     .map(|condition| condition.0.clone()),
                 matrix,
+                matrix_expression: matrix_expression.clone(),
                 env: job_environment.clone(),
                 steps: raw_job
                     .steps
@@ -358,6 +372,11 @@ pub fn plan_workflow(yaml: &str) -> Result<WorkflowPlan, WorkflowError> {
                     .and_then(|strategy| strategy.max_parallel),
                 timeout_minutes: raw_job.timeout_minutes,
                 continue_on_error: raw_job.continue_on_error.clone(),
+                outputs: raw_job
+                    .outputs
+                    .iter()
+                    .map(|(name, value)| (name.clone(), value.0.clone()))
+                    .collect(),
             });
         }
 
@@ -365,7 +384,7 @@ pub fn plan_workflow(yaml: &str) -> Result<WorkflowPlan, WorkflowError> {
     }
 
     Ok(WorkflowPlan {
-        schema_version: "gha-indie-worker.plan.v1",
+        schema_version: "gha-indie-worker.plan.v2",
         name: workflow.name,
         job_order,
         jobs,
@@ -428,6 +447,15 @@ fn validate_jobs(
                     format!(
                         "step {index} in job {job_id:?} must define exactly one of run or uses"
                     ),
+                ));
+            }
+        }
+
+        for output_name in job.outputs.keys() {
+            if !valid_identifier(output_name) {
+                return Err(WorkflowError::new(
+                    "invalid_job_output",
+                    format!("job {job_id:?} has invalid output name {output_name:?}"),
                 ));
             }
         }
@@ -529,14 +557,80 @@ fn expand_matrix(
             "max-parallel must be greater than zero",
         ));
     }
-    if strategy.matrix.is_empty() {
+    let Some(matrix) = strategy.matrix.as_ref() else {
+        return Ok(vec![BTreeMap::new()]);
+    };
+    let RawMatrix::Static(matrix) = matrix else {
+        return Ok(vec![BTreeMap::new()]);
+    };
+    expand_matrix_mapping(job_id, matrix)
+}
+
+fn deferred_matrix_expression(
+    job_id: &str,
+    strategy: Option<&RawStrategy>,
+) -> Result<Option<String>, WorkflowError> {
+    let Some(RawMatrix::Dynamic(source)) = strategy.and_then(|value| value.matrix.as_ref()) else {
+        return Ok(None);
+    };
+    let trimmed = source.trim();
+    if !trimmed.starts_with("${{") || !trimmed.ends_with("}}") {
+        return Err(matrix_error(
+            job_id,
+            "dynamic matrix must be one whole expression",
+        ));
+    }
+    Ok(Some(source.clone()))
+}
+
+#[cfg(feature = "linux-runner")]
+pub(crate) fn expand_dynamic_matrix(
+    job_id: &str,
+    value: &Value,
+) -> Result<Vec<BTreeMap<String, Value>>, WorkflowError> {
+    let Some(object) = value.as_object() else {
+        return Err(matrix_error(
+            job_id,
+            "dynamic matrix expression must resolve to an object",
+        ));
+    };
+    let matrix = object
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect::<BTreeMap<_, _>>();
+    expand_matrix_mapping(job_id, &matrix)
+}
+
+#[cfg(feature = "linux-runner")]
+pub(crate) fn materialize_dynamic_jobs(
+    template: &PlannedJob,
+    matrices: Vec<BTreeMap<String, Value>>,
+) -> Vec<PlannedJob> {
+    let total = matrices.len();
+    matrices
+        .into_iter()
+        .enumerate()
+        .map(|(index, matrix)| {
+            let mut job = template.clone();
+            job.id = instance_id(&template.base_job_id, index, total, &matrix);
+            job.name = instance_name(&template.name, &matrix);
+            job.matrix = matrix;
+            job.matrix_expression = None;
+            job
+        })
+        .collect()
+}
+
+fn expand_matrix_mapping(
+    job_id: &str,
+    matrix: &BTreeMap<String, Value>,
+) -> Result<Vec<BTreeMap<String, Value>>, WorkflowError> {
+    if matrix.is_empty() {
         return Ok(vec![BTreeMap::new()]);
     }
-
-    let includes = matrix_object_list(job_id, "include", strategy.matrix.get("include"))?;
-    let excludes = matrix_object_list(job_id, "exclude", strategy.matrix.get("exclude"))?;
-    let axes = strategy
-        .matrix
+    let includes = matrix_object_list(job_id, "include", matrix.get("include"))?;
+    let excludes = matrix_object_list(job_id, "exclude", matrix.get("exclude"))?;
+    let axes = matrix
         .iter()
         .filter(|(key, _)| key.as_str() != "include" && key.as_str() != "exclude")
         .map(|(key, value)| {
@@ -946,6 +1040,40 @@ jobs:
             plan_workflow(dynamic).map_err(|error| error.code),
             Err("invalid_matrix")
         );
+    }
+
+    #[test]
+    fn preserves_job_outputs_and_whole_expression_dynamic_matrix() {
+        let yaml = r#"
+jobs:
+  define:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.values.outputs.matrix }}
+    steps:
+      - id: values
+        run: |
+          echo 'matrix={"color":["red","green"]}' >> "$GITHUB_OUTPUT"
+  consume:
+    needs: define
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJSON(needs.define.outputs.matrix) }}
+    steps:
+      - run: echo "${{ matrix.color }}"
+"#;
+        let plan = plan_workflow(yaml).unwrap_or_else(|error| panic!("plan failed: {error}"));
+        assert_eq!(plan.schema_version, "gha-indie-worker.plan.v2");
+        assert_eq!(plan.jobs.len(), 2);
+        assert_eq!(
+            plan.jobs[0].outputs.get("matrix").map(String::as_str),
+            Some("${{ steps.values.outputs.matrix }}")
+        );
+        assert_eq!(
+            plan.jobs[1].matrix_expression.as_deref(),
+            Some("${{ fromJSON(needs.define.outputs.matrix) }}")
+        );
+        assert!(plan.jobs[1].matrix.is_empty());
     }
 
     #[test]

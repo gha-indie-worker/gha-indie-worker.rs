@@ -211,7 +211,7 @@ jobs:
           )
           assert official_max_parallel == 2, intervals
           assert indie_group['maxObservedParallel'] == 2, indie_group
-          assert trace['schemaVersion'] == 'gha-indie-worker.linux-workflow.v1', trace
+          assert trace['schemaVersion'] == 'gha-indie-worker.linux-workflow.v2', trace
           assert trace['conclusion'] == 'success', trace
           assert next(item for item in trace['jobs'] if item['id'] == 'skip_job')['conclusion'] == 'skipped'
           assert next(item for item in trace['jobs'] if item['id'] == 'recover_skip')['conclusion'] == 'success'

@@ -101,7 +101,7 @@ jobs:
           from pathlib import Path
 
           plan = json.loads(Path(".planner-ci/plan.json").read_text())
-          assert plan["schemaVersion"] == "gha-indie-worker.plan.v1"
+          assert plan["schemaVersion"] == "gha-indie-worker.plan.v2"
           assert plan["jobOrder"] == ["build", "report"]
           assert len(plan["jobs"]) == 3
           report = next(job for job in plan["jobs"] if job["baseJobId"] == "report")
@@ -184,7 +184,7 @@ jobs:
           assert descriptor["unsupportedFields"] == "rejected rather than ignored"
 
           plan = json.loads(Path(".planner-ci/server-plan.json").read_text())
-          assert plan["schemaVersion"] == "gha-indie-worker.plan.v1"
+          assert plan["schemaVersion"] == "gha-indie-worker.plan.v2"
           assert len(plan["jobs"]) == 3
 
           error = json.loads(Path(".planner-ci/unsupported-error.json").read_text())
