@@ -57,15 +57,18 @@ jobs:
           canonical_root = Path("canonical/remote/deployments/build-server-rs/src")
           standalone_root = Path("src")
           extension_hashes = {
-              "main.rs": "c9c6afdb499db519f3e8461e68d26d9435a5974b",
+              "main.rs": "a3da1bdae02618a7382fc24aa73e3ad8edb721aa",
+              "admission.rs": "db0812072de0a3ba5d1ce5965a28dc2ff0d09f5a",
               "gha_workflow.rs": "8f42204e1e2443974121203ca683bad26c0a0d26",
               "http.rs": "6e7e559684ad544e2f05b542779b64c8439e5936",
               "jobs.rs": "645078edf50bd8d7c024100bc4e1f748b483a4dd",
-              "lib.rs": "7474ebbbd27f01d250b1c7614e18598a90dcb1c2",
+              "lib.rs": "4163d3a5bf19c26c43b9a854e55632e784a56a82",
+              "linux_runner.rs": "0ca7d1c3536c5f34871c8b3810697106d6b49154",
               "validation.rs": "a57366881c2dcf43e119e70cccd5a82527370227",
               "workflow.rs": "6d81faec78d3bc7286c5ecb2b59dadbe49d1722b",
               "workflow_guard.rs": "a9ef95d0128daa18356e08394e7f2166ca9f0dcf",
               "workflow_yaml.rs": "76ea4b31fa947bef87851969964014025d17e79f",
+              "bin/gha-linux-runner.rs": "deca1126fe6bd8d03e4e3f105d2b635408a5175a",
               "bin/gha-workflow-plan.rs": "350250236d65a61dafdc209fb2192497589b4ecb",
               "bin/gha-workflow-server.rs": "1cd5c3b48baed3e4362bf06c4482cd5f10a89683",
           }
@@ -111,8 +114,11 @@ jobs:
           diff -ru "$source_root/generated" generated
           test "$(git hash-object readme.md)" = "446a84f97fcee88873e97ff3dcd3ab8bb1848ee5"
           grep -F '42b7471fa680331fe4977db42db8497ab9549cd9' SOURCE_PROVENANCE.md
-          grep -F 'c9c6afdb499db519f3e8461e68d26d9435a5974b' SOURCE_PROVENANCE.md
-          grep -F '7474ebbbd27f01d250b1c7614e18598a90dcb1c2' SOURCE_PROVENANCE.md
+          grep -F 'a3da1bdae02618a7382fc24aa73e3ad8edb721aa' SOURCE_PROVENANCE.md
+          grep -F 'db0812072de0a3ba5d1ce5965a28dc2ff0d09f5a' SOURCE_PROVENANCE.md
+          grep -F '4163d3a5bf19c26c43b9a854e55632e784a56a82' SOURCE_PROVENANCE.md
+          grep -F '0ca7d1c3536c5f34871c8b3810697106d6b49154' SOURCE_PROVENANCE.md
+          grep -F 'deca1126fe6bd8d03e4e3f105d2b635408a5175a' SOURCE_PROVENANCE.md
           grep -F '446a84f97fcee88873e97ff3dcd3ab8bb1848ee5' SOURCE_PROVENANCE.md
           grep -F 'dd-telemetry = { path = "vendor/dd-telemetry" }' Cargo.toml
           grep -F 'dd-nats-subject-defs = { path = "vendor/dd-nats-subject-defs" }' Cargo.toml
