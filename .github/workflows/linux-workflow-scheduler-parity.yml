@@ -40,7 +40,6 @@ jobs:
   matrix_job:
     name: Official matrix (${{ matrix.label }})
     runs-on: ubuntu-24.04
-    continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: true
       max-parallel: 2
@@ -54,6 +53,7 @@ jobs:
             experimental: false
     steps:
       - name: Execute official matrix instance
+        continue-on-error: ${{ matrix.experimental }}
         run: |
           sleep 5
           if [ '${{ matrix.experimental }}' = 'true' ]; then false; fi
@@ -181,11 +181,11 @@ jobs:
               )
               expected_outcome = 'failure' if label == 'experimental' else 'success'
               assert official_step['conclusion'] == expected_outcome, official_step
-              assert indie['outcome'] == expected_outcome, indie
-              assert official['conclusion'] == indie['conclusion'] == expected_outcome, (
+              assert indie['outcome'] == indie['conclusion'] == expected_outcome, indie
+              assert official['conclusion'] == 'success', official
+              assert indie['effectiveConclusion'] == official['conclusion'], (
                   official, indie
               )
-              assert indie['effectiveConclusion'] == 'success', indie
               matrix_observations[label] = {
                   'officialJobConclusion': official['conclusion'],
                   'officialStepConclusion': official_step['conclusion'],

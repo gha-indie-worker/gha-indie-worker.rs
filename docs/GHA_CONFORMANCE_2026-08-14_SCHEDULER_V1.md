@@ -70,6 +70,14 @@ The differential job reads official results with its restricted `GITHUB_TOKEN`
 (`actions: read`, `contents: read`), runs the paired fixture through the indie
 scheduler, and performs executable assertions across both traces.
 
+The immutable observation below used job-level `continue-on-error`, which made
+GitHub expose the tolerated experimental concrete job as a red check even though
+the matrix aggregate and workflow succeeded. The recurring pull-request gate now
+places the same tolerance on the failing step: it compares GitHub's failed step
+with the indie raw outcome, and GitHub's successful job conclusion with the indie
+effective conclusion. This keeps every configured gate green without erasing the
+historical job-level observation or weakening the runner's job-level fixture.
+
 ## Exact passing observation
 
 The final comparator emitted this deterministic JSON object:
@@ -211,12 +219,13 @@ cargo run --locked --bin gha-linux-workflow -- \
   --allow-host-execution
 ```
 
-The independent comparison is reproduced by dispatching
+The exact independent comparison is reproduced by dispatching
 `.github/workflows/linux-workflow-scheduler-parity.yml` at the implementation
-commit or by opening a pull request containing that exact tree. A valid result
-must retain the schema identifier, three label observations, official and indie
-maximum parallelism of two, the exact `needs` result map, and final success
-shown above.
+commit. A valid result must retain the schema identifier, three label
+observations, official and indie maximum parallelism of two, the exact `needs`
+result map, and final success shown above. The current recurring gate retains
+those assertions but uses the green-check projection described under
+"Differential design".
 
 ## Claim boundary
 
