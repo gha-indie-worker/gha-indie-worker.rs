@@ -81,7 +81,7 @@ pub(crate) struct PlatformDiagnostic<'a> {
     pub(crate) evidence_ref: &'a str,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct WorkflowAdmissionEvidence<'a> {
     pub(crate) conclusion: Option<&'a str>,
     pub(crate) status: Option<&'a str>,
@@ -90,20 +90,6 @@ pub(crate) struct WorkflowAdmissionEvidence<'a> {
     pub(crate) runner_name: Option<&'a str>,
     pub(crate) runner_labels: &'a [&'a str],
     pub(crate) platform_diagnostics: &'a [PlatformDiagnostic<'a>],
-}
-
-impl Default for WorkflowAdmissionEvidence<'_> {
-    fn default() -> Self {
-        Self {
-            conclusion: None,
-            status: None,
-            jobs_observed: None,
-            steps_observed: None,
-            runner_name: None,
-            runner_labels: &[],
-            platform_diagnostics: &[],
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
