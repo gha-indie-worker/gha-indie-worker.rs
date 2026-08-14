@@ -109,7 +109,10 @@ pub struct LinuxWorkflowJobResult {
     pub matrix: BTreeMap<String, Value>,
     pub needs: Vec<String>,
     pub outcome: WorkflowJobOutcome,
+    /// Concrete GitHub API-style conclusion before job-level tolerance.
     pub conclusion: WorkflowJobConclusion,
+    /// Conclusion used for matrix aggregation, dependencies, and workflow state.
+    pub effective_conclusion: WorkflowJobConclusion,
     pub continue_on_error: bool,
     pub started_sequence: Option<usize>,
     pub completed_sequence: usize,
@@ -599,9 +602,6 @@ async fn schedule_workflow(
             let tolerated = prepared.continue_on_error[&job.id];
             let conclusion = match outcome {
                 WorkflowJobOutcome::Success => WorkflowJobConclusion::Success,
-                WorkflowJobOutcome::Failure | WorkflowJobOutcome::TimedOut if tolerated => {
-                    WorkflowJobConclusion::Success
-                }
                 WorkflowJobOutcome::Failure => WorkflowJobConclusion::Failure,
                 WorkflowJobOutcome::TimedOut => WorkflowJobConclusion::TimedOut,
                 WorkflowJobOutcome::Skipped | WorkflowJobOutcome::Cancelled => unreachable!(),
@@ -687,14 +687,16 @@ async fn schedule_workflow(
             LinuxWorkflowJobGroupResult {
                 base_job_id: base_job_id.clone(),
                 instance_ids: instances.iter().map(|job| job.id.clone()).collect(),
-                conclusion: aggregate_conclusion(instances.into_iter().map(|job| job.conclusion)),
+                conclusion: aggregate_conclusion(
+                    instances.into_iter().map(|job| job.effective_conclusion),
+                ),
                 max_observed_parallel: max_by_base.get(base_job_id).copied().unwrap_or(0),
             }
         })
         .collect::<Vec<_>>();
     let conclusion = if jobs.iter().any(|job| {
         matches!(
-            job.conclusion,
+            job.effective_conclusion,
             WorkflowJobConclusion::Failure | WorkflowJobConclusion::TimedOut
         )
     }) {
@@ -747,7 +749,7 @@ fn needs_context(
                 .iter()
                 .filter(|candidate| &candidate.base_job_id == base_job_id)
                 .filter_map(|candidate| terminal.get(&candidate.id))
-                .map(|result| result.conclusion),
+                .map(|result| result.effective_conclusion),
         );
         success &= conclusion == WorkflowJobConclusion::Success;
         failure |= matches!(
@@ -851,6 +853,15 @@ fn terminal_job(
     workspace: PathBuf,
     runner_result: Option<LinuxJobResult>,
 ) -> LinuxWorkflowJobResult {
+    let effective_conclusion = if continue_on_error
+        && matches!(
+            conclusion,
+            WorkflowJobConclusion::Failure | WorkflowJobConclusion::TimedOut
+        ) {
+        WorkflowJobConclusion::Success
+    } else {
+        conclusion
+    };
     LinuxWorkflowJobResult {
         id: job.id.clone(),
         base_job_id: job.base_job_id.clone(),
@@ -859,6 +870,7 @@ fn terminal_job(
         needs: job.needs.clone(),
         outcome,
         conclusion,
+        effective_conclusion,
         continue_on_error,
         started_sequence,
         completed_sequence,
@@ -1063,6 +1075,10 @@ jobs:
         );
         assert_eq!(
             job(&result, "matrix_job[2]").conclusion,
+            WorkflowJobConclusion::Failure
+        );
+        assert_eq!(
+            job(&result, "matrix_job[2]").effective_conclusion,
             WorkflowJobConclusion::Success
         );
         assert!(job(&result, "matrix_job[2]").continue_on_error);

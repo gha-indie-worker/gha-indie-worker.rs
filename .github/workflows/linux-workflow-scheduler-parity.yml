@@ -182,14 +182,16 @@ jobs:
               expected_outcome = 'failure' if label == 'experimental' else 'success'
               assert official_step['conclusion'] == expected_outcome, official_step
               assert indie['outcome'] == expected_outcome, indie
-              assert official['conclusion'] == indie['conclusion'] == 'success', (
+              assert official['conclusion'] == indie['conclusion'] == expected_outcome, (
                   official, indie
               )
+              assert indie['effectiveConclusion'] == 'success', indie
               matrix_observations[label] = {
                   'officialJobConclusion': official['conclusion'],
                   'officialStepConclusion': official_step['conclusion'],
                   'indieOutcome': indie['outcome'],
                   'indieConclusion': indie['conclusion'],
+                  'indieEffectiveConclusion': indie['effectiveConclusion'],
               }
 
           def timestamp(value):
