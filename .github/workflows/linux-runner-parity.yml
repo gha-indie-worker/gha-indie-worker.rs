@@ -12,6 +12,7 @@ on:
       - tests/fixtures/gha/linux-runner-parity.yml
       - .github/workflows/linux-runner-parity.yml
       - docs/GHA_COMPATIBILITY.md
+      - docs/GHA_CONFORMANCE_*.md
   push:
     branches: [dev, main]
     paths:
@@ -24,6 +25,7 @@ on:
       - tests/fixtures/gha/linux-runner-parity.yml
       - .github/workflows/linux-runner-parity.yml
       - docs/GHA_COMPATIBILITY.md
+      - docs/GHA_CONFORMANCE_*.md
   workflow_dispatch:
 
 env:
