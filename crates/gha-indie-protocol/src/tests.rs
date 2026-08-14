@@ -66,12 +66,14 @@ fn job(id: &str, base_job_id: &str, needs_instances: &[&str]) -> PlannedJob {
         reusable_workflow: None,
         condition: None,
         matrix: BTreeMap::new(),
+        matrix_expression: None,
         env: BTreeMap::new(),
         steps: Vec::new(),
         fail_fast: true,
         max_parallel: None,
         timeout_minutes: None,
         continue_on_error: None,
+        outputs: BTreeMap::new(),
     }
 }
 

@@ -154,6 +154,28 @@ fn rejects_caller_execution_semantics() {
             .code,
         "caller_environment_not_executable"
     );
+
+    let mut with_deferred_matrix = plan();
+    with_deferred_matrix.jobs[0].matrix_expression =
+        Some("${{ fromJSON(needs.define.outputs.matrix) }}".to_string());
+    assert_eq!(
+        bind_plan(&with_deferred_matrix, &catalog, &bindings)
+            .unwrap_err()
+            .code,
+        "deferred_matrix_not_dispatchable"
+    );
+
+    let mut with_outputs = plan();
+    with_outputs.jobs[0].outputs.insert(
+        "artifact".to_string(),
+        "${{ steps.build.outputs.artifact }}".to_string(),
+    );
+    assert_eq!(
+        bind_plan(&with_outputs, &catalog, &bindings)
+            .unwrap_err()
+            .code,
+        "job_outputs_not_dispatchable"
+    );
 }
 
 #[test]

@@ -235,6 +235,15 @@ fn validate_profile_only_job(job: &PlannedJob) -> Result<(), ProtocolError> {
             format!("job {:?} contains an unevaluated condition", job.id),
         ));
     }
+    if job.matrix_expression.is_some() {
+        return Err(ProtocolError::new(
+            "deferred_matrix_not_dispatchable",
+            format!(
+                "job {:?} contains an unevaluated dynamic matrix; profile dispatch requires concrete jobs",
+                job.id
+            ),
+        ));
+    }
     if !job.env.is_empty() {
         return Err(ProtocolError::new(
             "caller_environment_not_executable",
@@ -251,6 +260,15 @@ fn validate_profile_only_job(job: &PlannedJob) -> Result<(), ProtocolError> {
         return Err(ProtocolError::new(
             "continue_on_error_not_executable",
             format!("job {:?} contains continue-on-error", job.id),
+        ));
+    }
+    if !job.outputs.is_empty() {
+        return Err(ProtocolError::new(
+            "job_outputs_not_dispatchable",
+            format!(
+                "job {:?} declares shell-derived outputs; profile dispatch does not execute caller steps",
+                job.id
+            ),
         ));
     }
     if matches!(job.max_parallel, Some(0))

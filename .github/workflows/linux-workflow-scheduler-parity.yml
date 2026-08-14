@@ -40,7 +40,6 @@ jobs:
   matrix_job:
     name: Official matrix (${{ matrix.label }})
     runs-on: ubuntu-24.04
-    continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: true
       max-parallel: 2
@@ -54,9 +53,19 @@ jobs:
             experimental: false
     steps:
       - name: Execute official matrix instance
+        id: exercise
+        continue-on-error: ${{ matrix.experimental }}
         run: |
           sleep 5
           if [ '${{ matrix.experimental }}' = 'true' ]; then false; fi
+
+      - name: Observe raw outcome (${{ steps.exercise.outcome }})
+        run: |
+          if [ '${{ matrix.experimental }}' = 'true' ]; then
+            test '${{ steps.exercise.outcome }}' = 'failure'
+          else
+            test '${{ steps.exercise.outcome }}' = 'success'
+          fi
 
   after_matrix:
     name: Official dependency after matrix
@@ -179,16 +188,29 @@ jobs:
                   step for step in official['steps']
                   if step['name'] == 'Execute official matrix instance'
               )
+              outcome_prefix = 'Observe raw outcome ('
+              official_outcome_step = next(
+                  step for step in official['steps']
+                  if step['name'].startswith(outcome_prefix)
+              )
+              official_outcome = official_outcome_step['name'][
+                  len(outcome_prefix):-1
+              ]
               expected_outcome = 'failure' if label == 'experimental' else 'success'
-              assert official_step['conclusion'] == expected_outcome, official_step
-              assert indie['outcome'] == expected_outcome, indie
-              assert official['conclusion'] == indie['conclusion'] == expected_outcome, (
+              assert official_step['conclusion'] == 'success', official_step
+              assert official_outcome == expected_outcome, official_outcome_step
+              assert official_outcome_step['conclusion'] == 'success', (
+                  official_outcome_step
+              )
+              assert indie['outcome'] == indie['conclusion'] == expected_outcome, indie
+              assert official['conclusion'] == 'success', official
+              assert indie['effectiveConclusion'] == official['conclusion'], (
                   official, indie
               )
-              assert indie['effectiveConclusion'] == 'success', indie
               matrix_observations[label] = {
                   'officialJobConclusion': official['conclusion'],
                   'officialStepConclusion': official_step['conclusion'],
+                  'officialStepOutcome': official_outcome,
                   'indieOutcome': indie['outcome'],
                   'indieConclusion': indie['conclusion'],
                   'indieEffectiveConclusion': indie['effectiveConclusion'],
@@ -211,7 +233,7 @@ jobs:
           )
           assert official_max_parallel == 2, intervals
           assert indie_group['maxObservedParallel'] == 2, indie_group
-          assert trace['schemaVersion'] == 'gha-indie-worker.linux-workflow.v1', trace
+          assert trace['schemaVersion'] == 'gha-indie-worker.linux-workflow.v2', trace
           assert trace['conclusion'] == 'success', trace
           assert next(item for item in trace['jobs'] if item['id'] == 'skip_job')['conclusion'] == 'skipped'
           assert next(item for item in trace['jobs'] if item['id'] == 'recover_skip')['conclusion'] == 'success'

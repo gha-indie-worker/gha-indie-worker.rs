@@ -63,15 +63,17 @@ jobs:
               "reusableWorkflow": None,
               "condition": None,
               "matrix": {"rust": "stable"},
+              "matrixExpression": None,
               "env": {},
               "steps": [],
               "failFast": True,
               "maxParallel": 2,
               "timeoutMinutes": None,
               "continueOnError": None,
+              "outputs": {},
           }
           plan = {
-              "schemaVersion": "gha-indie-worker.plan.v1",
+              "schemaVersion": "gha-indie-worker.plan.v2",
               "name": "profile-only",
               "jobOrder": ["build", "report"],
               "jobs": [

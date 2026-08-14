@@ -1,7 +1,7 @@
 //! Fail-closed protocol between the workflow planner and fixed-profile workers.
 //!
-//! Workflow YAML may describe bounded static matrices and dependency order, but
-//! it never becomes executable shell or arbitrary marketplace actions here.
+//! Workflow YAML may describe bounded matrices and dependency order, but it
+//! never becomes executable shell or arbitrary marketplace actions here.
 //! Every concrete job is bound to an exact repository commit and one reviewed,
 //! digest-pinned worker profile before it can enter durable assignment.
 
@@ -20,7 +20,7 @@ pub use validate::{
     validate_commit_sha, validate_context_dir, validate_digest, validate_repository_url,
 };
 
-pub const PLAN_SCHEMA: &str = "gha-indie-worker.plan.v1";
+pub const PLAN_SCHEMA: &str = "gha-indie-worker.plan.v2";
 pub const PROFILE_CATALOG_SCHEMA: &str = "gha-indie-worker.profile-catalog.v2";
 pub const BINDINGS_SCHEMA: &str = "gha-indie-worker.bindings.v1";
 pub const DISPATCH_BATCH_SCHEMA: &str = "gha-indie-worker.dispatch-batch.v2";

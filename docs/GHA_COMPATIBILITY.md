@@ -8,11 +8,11 @@ The compatibility contract is fail-closed: unsupported YAML or execution semanti
 
 The repository contains five distinct trust stages:
 
-1. **Strict YAML admission and planning** — rejects ambiguous or excessive YAML, validates the job graph, and deterministically expands supported static matrices.
+1. **Strict YAML admission and planning** — rejects ambiguous or excessive YAML, validates the job graph, deterministically expands supported static matrices, and preserves bounded whole-expression matrices for dependency-time resolution.
 2. **Immutable reviewed-profile binding** — binds each concrete job to an exact repository commit, reviewed profile digest, catalog digest, plan digest, dependency set, matrix metadata, and content-derived request identity.
 3. **Fixed-profile execution** — submits only operator-reviewed profiles to the existing build queue. Workflow YAML cannot select a shell command, container image, Dockerfile, deployment, namespace, executor, or credential.
 4. **Explicitly trusted Linux conformance execution** — the separate `gha-linux-runner` CLI can execute the bounded `run`-step subset only when a human or higher-level policy supplies `--allow-host-execution`. It is not connected to webhook or HTTP intake and it does not weaken fixed-profile admission.
-5. **Explicitly trusted Linux workflow scheduling** — the separate `gha-linux-workflow` CLI composes that same bounded executor across a preflighted static job graph. It creates one empty workspace per concrete job and requires the same explicit host-execution capability.
+5. **Explicitly trusted Linux workflow scheduling** — the separate `gha-linux-workflow` CLI composes that same bounded executor across a validated job graph, including direct dependency outputs and output-driven matrix expansion. It creates one empty workspace per concrete job and requires the same explicit host-execution capability.
 
 Keeping these stages separate is intentional. A feature being understood by the planner does not automatically grant it execution authority.
 
@@ -22,18 +22,18 @@ Keeping these stages separate is intentional. A feature being understood by the 
 | --- | --- | --- |
 | Workflow YAML admission | Supported subset | Bounded by source bytes, lines, nesting, node count, jobs, steps, dependencies, runner labels, parameter entries, expanded jobs, copied steps, and estimated plan size. Boolean and numeric YAML scalars in `if` and `run` are normalized to their GitHub command/expression strings. |
 | Ambiguous YAML | Rejected | Duplicate keys, merge keys, aliases, anchors, tags, tabs, directives, and multiple documents fail closed before execution policy evaluation. |
-| `jobs` and `needs` | Supported subset | Static job identifiers, unknown-dependency rejection, cycle rejection, deterministic topological order, dependency-result aggregation, GitHub's implicit-success downstream skip, and explicit status-function recovery are supported by the trusted scheduler. `needs.<job>.outputs` is intentionally empty until bounded job outputs exist. |
-| `runs-on` | Partial | Static Linux labels only. Windows, macOS, dynamic labels, runner groups, and caller-selected environments are not executable. |
+| `jobs` and `needs` | Trusted scheduler supported subset | Static job identifiers, unknown-dependency rejection, cycle rejection, deterministic topological order, dependency-result aggregation, GitHub's implicit-success downstream skip, explicit status-function recovery, declared job outputs, and direct-only `needs.<job>.outputs` are supported. Transitive dependencies are intentionally absent from `needs`. |
+| `runs-on` | Partial | Static Linux labels and Linux labels resolved from the supported `matrix`, `env`, and direct `needs` contexts are executable by the trusted CLI. Windows, macOS, runner groups, and caller-selected environments are not executable. |
 | Repository revision | Supported | Execution requires an exact lowercase 40-character commit SHA and a policy-approved HTTPS GitHub repository identity. Mutable branches and tags may be planned but are not executable. |
 | Steps | Production profile classification; trusted CLI partial | Production intake only classifies `run` plus a small setup-action allowlist into installed profiles. The explicit trusted Linux CLI executes `run` steps in separate processes with a shared workspace and fails closed on every `uses` step. |
 | Action references | Partial | Recognized setup actions must be pinned to an exact commit SHA. Arbitrary JavaScript, Docker, composite, local, and marketplace actions are not executed. |
-| Static matrix | Trusted scheduler supported subset | Deterministic axes plus bounded `include`/`exclude` expansion are available. `gha-linux-workflow` executes every concrete static instance, applies per-matrix `max-parallel`, and exposes the observed concurrency. Dynamic expression-generated matrices remain unsupported. Matrix scheduling is not connected to fixed-profile HTTP intake. |
+| Matrix | Trusted scheduler supported subset | Deterministic static axes plus bounded `include`/`exclude` expansion are available. A whole-expression matrix may resolve from direct dependency outputs after those jobs finish, including `fromJSON(needs.<job>.outputs.<name>)`. Expansion remains capped at 256 instances, and `max-parallel` applies to the generated group. Axis-level dynamic expressions and fixed-profile dispatch of deferred matrices remain rejected. |
 | Job concurrency | Trusted scheduler supported subset | Dependency-ready jobs run concurrently up to an operator-wide ceiling, while each matrix group independently honors `strategy.max-parallel`. The fixed-profile HTTP workflow executor remains sequential. Concurrency groups and external cancellation APIs are not implemented. |
 | Failure propagation | Trusted scheduler supported subset | Step and job outcome remain distinct from conclusion. Boolean or static-matrix expression-valued job `continue-on-error` tolerates a failed instance. A non-tolerated failure triggers matrix `fail-fast`, cancels queued siblings, and aborts in-progress sibling processes; a tolerated failure does not. Direct dependants receive aggregate `needs.<job>.result` and GitHub-compatible implicit-success gating. |
 | Status and retention | Partial | Authenticated submit/list/get APIs, queued/running/succeeded/failed/skipped states, request deduplication, deadlines, and bounded in-memory retention are implemented. Durable workflow-run recovery is future work. |
-| Expressions and contexts | Production rejected; trusted CLI typed subset | Fixed-profile execution rejects expressions. The trusted Linux CLI evaluates bounded typed expressions over explicitly supplied `matrix`, `env`, and completed prior-step contexts. It supports documented literals, property/index access, logical and comparison operators, loose equality, status checks, and the versioned pure-function set. All other contexts/functions fail closed; secret taint and the broader production context model remain unimplemented. |
+| Expressions and contexts | Production rejected; trusted CLI typed subset | Fixed-profile execution rejects expressions. The trusted Linux CLI evaluates bounded typed expressions over explicitly supplied `matrix`, `env`, direct `needs`, and completed prior-step contexts. It supports documented literals, property/index access, logical and comparison operators, loose equality, status checks, and the versioned pure-function set. All other contexts/functions fail closed; secret taint and the broader production context model remain unimplemented. |
 | Secrets and identity | Rejected for execution | `secrets`, `github.token`, OIDC request variables, secret-bearing action inputs, and caller-provided credentials are not accepted by workflow execution. |
-| Workflow/job/step `env` and defaults | Production rejected; trusted CLI partial | The trusted Linux CLI supports scalar workflow/job/step environment precedence, step-scoped `env` in conditions and `continue-on-error`, subsequent-step `GITHUB_ENV` updates, workflow/job `defaults.run`, and explicit step overrides. Fixed-profile environment forwarding remains unsupported. |
+| Workflow/job/step `env` and defaults | Production rejected; trusted CLI partial | The trusted Linux CLI supports scalar workflow/job/step environment precedence, direct dependency outputs in downstream job/step environments, step-scoped `env` in conditions and `continue-on-error`, subsequent-step `GITHUB_ENV` updates, workflow/job `defaults.run`, and explicit step overrides. Fixed-profile environment forwarding remains unsupported. |
 | Conditions and timeouts | Production rejected; trusted CLI partial | The trusted Linux CLIs support typed step conditions, explicit status checks, GitHub's implicit `success()` gate, bounded step timeouts, workspace-contained working directories, default Bash, explicit Bash, and `sh`. The workflow scheduler additionally supports job conditions over direct `needs` results and status functions. Job-level timeout, broader job contexts, and fixed-profile HTTP execution remain rejected rather than ignored. |
 | Reusable workflows | Planner-visible only | Job-level `uses` can be represented by the planner, but reusable workflow invocation and nested permission/secret semantics are not executable. |
 | Services and containers | Rejected | Job containers, service containers, container credentials, and port/network lifecycle are outside the current trust boundary. |
@@ -120,11 +120,46 @@ failure and recovery, isolated workspaces, and whole-plan rejection before any
 shell starts. Those cases are labeled local rather than official differential
 evidence.
 
-The scheduler still rejects actions, reusable workflows, job timeouts, dynamic
+That v1 scheduler contract rejects actions, reusable workflows, job timeouts, dynamic
 matrices, job outputs, step-level `needs`, services, containers, secrets, event
 contexts, artifacts, caches, and persistence/recovery. Its workspaces start
 empty; repository and artifact material appears only when a future explicitly
 supported, immutable action supplies it.
+
+### Linux runner v3 and workflow scheduler v2 output dataflow
+
+The additive `gha-indie-worker.linux-runner.v3` and
+`gha-indie-worker.linux-workflow.v2` contracts are recorded in
+`docs/GHA_CONFORMANCE_2026-08-14_OUTPUT_DATAFLOW_V1.md`. Their paired fixture and
+official-hosted differential cover:
+
+- step outputs explicitly promoted through a job `outputs` mapping;
+- downstream `needs.<job>.result` and `needs.<job>.outputs` values in runner
+  selection, job and step environments, and step templates;
+- GitHub's direct-dependency-only `needs` shape, including an empty lookup for
+  a transitive dependency;
+- a whole-expression matrix produced by
+  `fromJSON(needs.<job>.outputs.<name>)` after the producer finishes;
+- two concrete generated matrix jobs and per-group `max-parallel: 2`;
+- matrix job-output aggregation, with duplicate keys intentionally permitted to
+  follow completion order just as GitHub documents completion order as
+  nondeterministic.
+
+Local positive and negative tests additionally cover use of `needs` in job
+`continue-on-error`, the 256-instance deferred matrix bound, whole-workflow
+output accounting, and pre-shell rejection of secret-context job outputs. Job
+outputs are estimated as UTF-16 and bounded to 1 MiB per concrete job and
+50 MiB per workflow. The expression engine's 64 KiB per-value ceiling is a
+deliberately stricter resource boundary, and every parsed environment, output,
+or path command file is bounded by the runner output policy.
+
+The v2 scheduler accepts only a whole-expression dynamic matrix that resolves
+to an object. It does not support axis-level dynamic expressions, `secrets`,
+secret taint/masking, environment files shared across jobs, artifacts, actions,
+reusable workflows, job timeouts, persistence, or crash recovery. Syntax and
+context availability are preflighted before any shell starts, but a deferred
+matrix's resolved value and size can only be validated after its producer has
+finished; a bad value fails closed before any generated consumer starts.
 
 ## Execution invariants
 

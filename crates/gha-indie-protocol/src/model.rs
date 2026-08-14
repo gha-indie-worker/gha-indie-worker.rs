@@ -26,12 +26,14 @@ pub struct PlannedJob {
     pub reusable_workflow: Option<String>,
     pub condition: Option<String>,
     pub matrix: BTreeMap<String, Value>,
+    pub matrix_expression: Option<String>,
     pub env: BTreeMap<String, Value>,
     pub steps: Vec<PlannedStep>,
     pub fail_fast: bool,
     pub max_parallel: Option<usize>,
     pub timeout_minutes: Option<u64>,
     pub continue_on_error: Option<Value>,
+    pub outputs: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]

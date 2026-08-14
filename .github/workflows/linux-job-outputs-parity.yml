@@ -1,0 +1,221 @@
+name: Linux job outputs and dynamic matrix parity
+
+on:
+  pull_request:
+    paths:
+      - src/expression.rs
+      - src/linux_runner.rs
+      - src/workflow.rs
+      - src/workflow_guard.rs
+      - src/workflow_runner.rs
+      - src/bin/gha-linux-workflow.rs
+      - src/lib.rs
+      - tests/fixtures/gha/linux-job-outputs-parity.yml
+      - .github/workflows/linux-job-outputs-parity.yml
+      - docs/GHA_COMPATIBILITY.md
+      - docs/GHA_CONFORMANCE_*.md
+  push:
+    branches: [dev, main]
+    paths:
+      - src/expression.rs
+      - src/linux_runner.rs
+      - src/workflow.rs
+      - src/workflow_guard.rs
+      - src/workflow_runner.rs
+      - src/bin/gha-linux-workflow.rs
+      - src/lib.rs
+      - tests/fixtures/gha/linux-job-outputs-parity.yml
+      - .github/workflows/linux-job-outputs-parity.yml
+      - docs/GHA_COMPATIBILITY.md
+      - docs/GHA_CONFORMANCE_*.md
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: linux-job-outputs-parity-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  define:
+    name: Official define outputs
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.values.outputs.matrix }}
+      runner: ${{ steps.values.outputs.runner }}
+      greeting: ${{ steps.values.outputs.greeting }}
+    steps:
+      - id: values
+        name: Produce official job outputs
+        run: |
+          printf '%s\n' 'matrix={"include":[{"color":"red"},{"color":"green"}]}' >> "$GITHUB_OUTPUT"
+          printf '%s\n' 'runner=ubuntu-24.04' >> "$GITHUB_OUTPUT"
+          printf '%s\n' 'greeting=hello' >> "$GITHUB_OUTPUT"
+
+  fanout:
+    name: Official fanout (${{ matrix.color }})
+    needs: define
+    runs-on: ${{ needs.define.outputs.runner }}
+    strategy:
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.define.outputs.matrix) }}
+    env:
+      GREETING: ${{ needs.define.outputs.greeting }}
+    outputs:
+      seen: ${{ steps.verify.outputs.seen }}
+    steps:
+      - id: verify
+        name: Consume official needs and matrix
+        env:
+          NEEDS_RESULT: ${{ needs.define.result }}
+        run: |
+          test "$GREETING" = hello
+          test "$NEEDS_RESULT" = success
+          printf 'seen=%s/%s\n' '${{ matrix.color }}' '${{ needs.define.outputs.greeting }}' >> "$GITHUB_OUTPUT"
+
+  observe:
+    name: Official direct-needs observation
+    needs: fanout
+    if: ${{ always() && needs.fanout.result == 'success' }}
+    runs-on: ubuntu-24.04
+    env:
+      TRANSITIVE: ${{ needs.define.outputs.greeting }}
+      MATRIX_SEEN: ${{ needs.fanout.outputs.seen }}
+    outputs:
+      direct_only: ${{ steps.direct.outputs.direct_only }}
+    steps:
+      - id: direct
+        name: Verify needs excludes transitive jobs
+        run: |
+          test -z "$TRANSITIVE"
+          test -n "$MATRIX_SEEN"
+          printf 'direct_only=%s\n' "$TRANSITIVE" >> "$GITHUB_OUTPUT"
+
+  differential:
+    name: Compare official and indie output dataflow
+    needs: [define, fanout, observe]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      OFFICIAL_DEFINE_RESULT: ${{ needs.define.result }}
+      OFFICIAL_DEFINE_MATRIX: ${{ needs.define.outputs.matrix }}
+      OFFICIAL_DEFINE_GREETING: ${{ needs.define.outputs.greeting }}
+      OFFICIAL_FANOUT_RESULT: ${{ needs.fanout.result }}
+      OFFICIAL_FANOUT_SEEN: ${{ needs.fanout.outputs.seen }}
+      OFFICIAL_OBSERVE_RESULT: ${{ needs.observe.result }}
+      OFFICIAL_DIRECT_ONLY: ${{ needs.observe.outputs.direct_only }}
+    steps:
+      - name: Check out without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          show-progress: false
+          submodules: false
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.90.0
+          components: "clippy,rustfmt"
+
+      - name: Verify output dataflow unit and lint contracts
+        run: |
+          cargo test --locked --lib workflow_runner::tests
+          cargo test --locked --lib linux_runner::tests
+          cargo test --locked --bin gha-linux-workflow
+          cargo clippy --locked --lib --bin gha-linux-workflow -- -D warnings
+
+      - name: Run the paired fixture through gha-indie-worker
+        run: |
+          mkdir -p .gha-output-parity/indie-runs
+          cargo run --quiet --locked --bin gha-linux-workflow -- \
+            --workflow tests/fixtures/gha/linux-job-outputs-parity.yml \
+            --run-root .gha-output-parity/indie-runs \
+            --max-parallel 2 \
+            --allow-host-execution \
+            > .gha-output-parity/indie-trace.json
+
+      - name: Read official job observations
+        env:
+          GH_TOKEN_FOR_OBSERVATION: ${{ github.token }}
+        run: |
+          curl --fail --silent --show-error \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN_FOR_OBSERVATION" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
+            > .gha-output-parity/official-jobs.json
+
+      - name: Compare official and indie dataflow observations
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          trace = json.loads(Path('.gha-output-parity/indie-trace.json').read_text())
+          official_payload = json.loads(Path('.gha-output-parity/official-jobs.json').read_text())
+          prefix = 'Official fanout ('
+          official_fanout = {
+              item['name'][len(prefix):-1]: item
+              for item in official_payload['jobs']
+              if item['name'].startswith(prefix) and item['name'].endswith(')')
+          }
+          expected_colors = {'red', 'green'}
+          assert set(official_fanout) == expected_colors, official_fanout
+          assert all(item['conclusion'] == 'success' for item in official_fanout.values())
+
+          expected_matrix = {"include": [{"color": "red"}, {"color": "green"}]}
+          official = {
+              'defineResult': os.environ['OFFICIAL_DEFINE_RESULT'],
+              'defineMatrix': json.loads(os.environ['OFFICIAL_DEFINE_MATRIX']),
+              'defineGreeting': os.environ['OFFICIAL_DEFINE_GREETING'],
+              'fanoutResult': os.environ['OFFICIAL_FANOUT_RESULT'],
+              'fanoutSeen': os.environ['OFFICIAL_FANOUT_SEEN'],
+              'observeResult': os.environ['OFFICIAL_OBSERVE_RESULT'],
+              'directOnly': os.environ['OFFICIAL_DIRECT_ONLY'],
+          }
+          assert official['defineResult'] == 'success', official
+          assert official['defineMatrix'] == expected_matrix, official
+          assert official['defineGreeting'] == 'hello', official
+          assert official['fanoutResult'] == 'success', official
+          assert official['fanoutSeen'] in {'red/hello', 'green/hello'}, official
+          assert official['observeResult'] == 'success', official
+          assert official['directOnly'] == '', official
+
+          groups = {item['baseJobId']: item for item in trace['jobGroups']}
+          jobs = {item['id']: item for item in trace['jobs']}
+          indie_fanout = {
+              item['matrix']['color']: item
+              for item in trace['jobs']
+              if item['baseJobId'] == 'fanout'
+          }
+          assert set(indie_fanout) == expected_colors, indie_fanout
+          assert all(item['conclusion'] == 'success' for item in indie_fanout.values())
+          assert jobs['define']['outputs']['greeting'] == 'hello', jobs['define']
+          assert json.loads(jobs['define']['outputs']['matrix']) == expected_matrix
+          assert groups['fanout']['outputs']['seen'] in {'red/hello', 'green/hello'}
+          assert groups['fanout']['maxObservedParallel'] == 2, groups['fanout']
+          assert jobs['observe']['outputs']['direct_only'] == '', jobs['observe']
+          assert jobs['observe']['conclusion'] == 'success', jobs['observe']
+          assert trace['schemaVersion'] == 'gha-indie-worker.linux-workflow.v2', trace
+          assert trace['conclusion'] == 'success', trace
+          assert all(
+              item['runnerResult']['schemaVersion'] == 'gha-indie-worker.linux-runner.v3'
+              for item in trace['jobs']
+              if item['runnerResult'] is not None
+          )
+
+          print(json.dumps({
+              'schemaVersion': trace['schemaVersion'],
+              'workflowConclusion': trace['conclusion'],
+              'official': official,
+              'officialMatrixJobs': sorted(official_fanout),
+              'indieMatrixJobs': sorted(indie_fanout),
+              'indieFanoutOutput': groups['fanout']['outputs']['seen'],
+              'indieMaxParallel': groups['fanout']['maxObservedParallel'],
+          }, sort_keys=True))
+          PY

@@ -15,6 +15,7 @@ use std::time::Duration;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use tokio::fs;
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::time::timeout;
 use uuid::Uuid;
@@ -26,10 +27,11 @@ use crate::expression::{
 };
 use crate::workflow::{PlannedJob, PlannedStep};
 
-pub const LINUX_RUNNER_SCHEMA_VERSION: &str = "gha-indie-worker.linux-runner.v2";
+pub const LINUX_RUNNER_SCHEMA_VERSION: &str = "gha-indie-worker.linux-runner.v3";
 
 const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 const DEFAULT_OUTPUT_LIMIT: usize = 10 * 1024 * 1024;
+const MAX_JOB_OUTPUT_UTF16_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct TrustedLinuxRunnerConfig {
@@ -49,6 +51,21 @@ impl TrustedLinuxRunnerConfig {
             default_step_timeout: Duration::from_secs(3600),
             maximum_step_timeout: Duration::from_secs(3600),
             maximum_output_bytes: DEFAULT_OUTPUT_LIMIT,
+        }
+    }
+}
+
+/// Scheduler-provided contexts that are unavailable to a standalone job.
+#[derive(Debug, Clone)]
+pub struct TrustedLinuxJobContext {
+    /// Direct dependency results and declared outputs, keyed by base job id.
+    pub needs: Value,
+}
+
+impl Default for TrustedLinuxJobContext {
+    fn default() -> Self {
+        Self {
+            needs: Value::Object(Map::new()),
         }
     }
 }
@@ -99,6 +116,7 @@ pub struct LinuxJobResult {
     pub schema_version: &'static str,
     pub job_id: String,
     pub conclusion: JobConclusion,
+    pub outputs: BTreeMap<String, String>,
     pub steps: Vec<LinuxStepResult>,
 }
 
@@ -129,6 +147,7 @@ impl Error for LinuxRunnerError {}
 #[derive(Clone, Default)]
 struct RuntimeContext {
     environment: BTreeMap<String, String>,
+    needs: Value,
     step_outputs: BTreeMap<String, BTreeMap<String, String>>,
     step_outcomes: BTreeMap<String, StepOutcome>,
     step_conclusions: BTreeMap<String, StepConclusion>,
@@ -181,6 +200,20 @@ pub async fn execute_trusted_linux_job(
     job: &PlannedJob,
     config: &TrustedLinuxRunnerConfig,
 ) -> Result<LinuxJobResult, LinuxRunnerError> {
+    execute_trusted_linux_job_with_context(job, config, &TrustedLinuxJobContext::default()).await
+}
+
+/// Executes one concrete job with scheduler-provided direct dependency context.
+///
+/// # Errors
+///
+/// Returns the same fail-closed errors as [`execute_trusted_linux_job`], plus an
+/// error when `needs` is not an object.
+pub async fn execute_trusted_linux_job_with_context(
+    job: &PlannedJob,
+    config: &TrustedLinuxRunnerConfig,
+    context: &TrustedLinuxJobContext,
+) -> Result<LinuxJobResult, LinuxRunnerError> {
     if !config.allow_host_process_execution {
         return Err(LinuxRunnerError::new(
             "host_execution_not_authorized",
@@ -200,7 +233,13 @@ pub async fn execute_trusted_linux_job(
         ));
     }
 
-    preflight_trusted_linux_job(job)?;
+    preflight_trusted_linux_job_syntax(job)?;
+    if !context.needs.is_object() {
+        return Err(LinuxRunnerError::new(
+            "invalid_needs_context",
+            "trusted Linux job needs context must be an object",
+        ));
+    }
     let workspace = fs::canonicalize(&config.workspace).await.map_err(|error| {
         LinuxRunnerError::new(
             "invalid_workspace",
@@ -217,7 +256,10 @@ pub async fn execute_trusted_linux_job(
         ));
     }
 
-    let mut runtime = RuntimeContext::default();
+    let mut runtime = RuntimeContext {
+        needs: context.needs.clone(),
+        ..RuntimeContext::default()
+    };
     for (key, value) in &job.env {
         validate_environment_name(key)?;
         let value = scalar_to_string(value, "job environment")?;
@@ -276,10 +318,12 @@ pub async fn execute_trusted_linux_job(
     } else {
         JobConclusion::Success
     };
+    let outputs = evaluate_job_outputs(job, &runtime)?;
     Ok(LinuxJobResult {
         schema_version: LINUX_RUNNER_SCHEMA_VERSION,
         job_id: job.id.clone(),
         conclusion,
+        outputs,
         steps: results,
     })
 }
@@ -360,6 +404,7 @@ fn expression_context(
     ExpressionContext::new()
         .with_root("matrix", Value::Object(matrix))
         .with_root("env", Value::Object(environment))
+        .with_root("needs", runtime.needs.clone())
         .with_root("steps", Value::Object(steps))
         .with_status(StatusContext {
             success: !runtime.job_failed && !runtime.job_timed_out,
@@ -390,7 +435,7 @@ fn expression_error(error: ExpressionError) -> LinuxRunnerError {
     LinuxRunnerError::new(error.code, error.message)
 }
 
-pub(crate) fn preflight_trusted_linux_job(job: &PlannedJob) -> Result<(), LinuxRunnerError> {
+pub(crate) fn preflight_trusted_linux_job_syntax(job: &PlannedJob) -> Result<(), LinuxRunnerError> {
     if job.reusable_workflow.is_some() {
         return Err(LinuxRunnerError::new(
             "unsupported_reusable_workflow",
@@ -433,6 +478,9 @@ pub(crate) fn preflight_trusted_linux_job(job: &PlannedJob) -> Result<(), LinuxR
     for (key, value) in &job.env {
         validate_environment_name(key)?;
         validate_templates(&scalar_to_string(value, "job environment")?)?;
+    }
+    for source in job.outputs.values() {
+        validate_templates(source)?;
     }
     for step in &job.steps {
         if step.uses.is_some() {
@@ -494,13 +542,6 @@ pub(crate) fn preflight_trusted_linux_job(job: &PlannedJob) -> Result<(), LinuxR
             }
         }
     }
-    let mut runtime = RuntimeContext::default();
-    for (key, value) in &job.env {
-        let value = scalar_to_string(value, "job environment")?;
-        let value = resolve_templates(&value, &job.matrix, &runtime)?;
-        runtime.environment.insert(key.clone(), value);
-    }
-    validate_linux_labels(job, &runtime)?;
     Ok(())
 }
 
@@ -676,15 +717,15 @@ async fn execute_step(
         }
     };
 
-    let environment_updates = parse_file_commands(&env_path, "environment").await?;
+    let environment_updates =
+        parse_file_commands(&env_path, "environment", config.maximum_output_bytes).await?;
     for (key, value) in environment_updates {
         validate_environment_name(&key)?;
         runtime.environment.insert(key, value);
     }
-    let outputs = parse_file_commands(&output_path, "output").await?;
-    let path_updates = fs::read_to_string(&path_path)
-        .await
-        .map_err(|error| LinuxRunnerError::new("path_command_read_failed", error.to_string()))?;
+    let outputs = parse_file_commands(&output_path, "output", config.maximum_output_bytes).await?;
+    let path_updates =
+        read_bounded_file_command(&path_path, "path", config.maximum_output_bytes).await?;
     runtime.path_entries.extend(
         path_updates
             .lines()
@@ -825,7 +866,8 @@ fn evaluate_condition(
 
 fn validate_condition(condition: &str) -> Result<(), LinuxRunnerError> {
     let condition = unwrap_expression(condition);
-    validate_expression(condition, &["matrix", "env", "steps"], true).map_err(expression_error)
+    validate_expression(condition, &["matrix", "env", "needs", "steps"], true)
+        .map_err(expression_error)
 }
 
 fn unwrap_expression(value: &str) -> &str {
@@ -877,7 +919,36 @@ fn resolve_templates(
 }
 
 fn validate_templates(source: &str) -> Result<(), LinuxRunnerError> {
-    validate_template(source, &["matrix", "env", "steps"], false).map_err(expression_error)
+    validate_template(source, &["matrix", "env", "needs", "steps"], false).map_err(expression_error)
+}
+
+fn evaluate_job_outputs(
+    job: &PlannedJob,
+    runtime: &RuntimeContext,
+) -> Result<BTreeMap<String, String>, LinuxRunnerError> {
+    let context = expression_context(&job.matrix, runtime);
+    let mut outputs = BTreeMap::new();
+    let mut utf16_bytes = 0usize;
+    for (name, source) in &job.outputs {
+        let value = render_template(source, &context).map_err(expression_error)?;
+        utf16_bytes = utf16_bytes
+            .checked_add(name.encode_utf16().count().saturating_mul(2))
+            .and_then(|total| total.checked_add(value.encode_utf16().count().saturating_mul(2)))
+            .ok_or_else(|| {
+                LinuxRunnerError::new("job_outputs_too_large", "job output size overflowed")
+            })?;
+        if utf16_bytes > MAX_JOB_OUTPUT_UTF16_BYTES {
+            return Err(LinuxRunnerError::new(
+                "job_outputs_too_large",
+                format!(
+                    "job {:?} declared {utf16_bytes} UTF-16 bytes of outputs; maximum is {MAX_JOB_OUTPUT_UTF16_BYTES}",
+                    job.id
+                ),
+            ));
+        }
+        outputs.insert(name.clone(), value);
+    }
+    Ok(outputs)
 }
 
 fn scalar_to_string(value: &Value, context: &str) -> Result<String, LinuxRunnerError> {
@@ -916,13 +987,9 @@ fn validate_environment_name(name: &str) -> Result<(), LinuxRunnerError> {
 async fn parse_file_commands(
     path: &Path,
     kind: &str,
+    maximum_bytes: usize,
 ) -> Result<BTreeMap<String, String>, LinuxRunnerError> {
-    let contents = fs::read_to_string(path).await.map_err(|error| {
-        LinuxRunnerError::new(
-            "file_command_read_failed",
-            format!("failed to read {kind} command file: {error}"),
-        )
-    })?;
+    let contents = read_bounded_file_command(path, kind, maximum_bytes).await?;
     let lines = contents.lines().collect::<Vec<_>>();
     let mut parsed = BTreeMap::new();
     let mut index = 0;
@@ -958,6 +1025,42 @@ async fn parse_file_commands(
         index += 1;
     }
     Ok(parsed)
+}
+
+async fn read_bounded_file_command(
+    path: &Path,
+    kind: &str,
+    maximum_bytes: usize,
+) -> Result<String, LinuxRunnerError> {
+    let file = fs::File::open(path).await.map_err(|error| {
+        LinuxRunnerError::new(
+            "file_command_read_failed",
+            format!("failed to read {kind} command file: {error}"),
+        )
+    })?;
+    let maximum = u64::try_from(maximum_bytes).unwrap_or(u64::MAX);
+    let mut bytes = Vec::with_capacity(maximum_bytes.min(64 * 1024));
+    file.take(maximum.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|error| {
+            LinuxRunnerError::new(
+                "file_command_read_failed",
+                format!("failed to read {kind} command file: {error}"),
+            )
+        })?;
+    if bytes.len() > maximum_bytes {
+        return Err(LinuxRunnerError::new(
+            "file_command_too_large",
+            format!("{kind} command file exceeds the {maximum_bytes}-byte runner limit"),
+        ));
+    }
+    String::from_utf8(bytes).map_err(|_| {
+        LinuxRunnerError::new(
+            "invalid_file_command_encoding",
+            format!("{kind} command file must be UTF-8"),
+        )
+    })
 }
 
 fn invalid_file_command(kind: &str, line: &str) -> LinuxRunnerError {
@@ -1216,7 +1319,7 @@ jobs:
             .await
             .expect("typed expression job should execute");
 
-        assert_eq!(result.schema_version, "gha-indie-worker.linux-runner.v2");
+        assert_eq!(result.schema_version, "gha-indie-worker.linux-runner.v3");
         assert_eq!(result.conclusion, JobConclusion::Success);
         assert_eq!(result.steps[1].outcome, StepOutcome::Failure);
         assert_eq!(result.steps[1].conclusion, StepConclusion::Success);
@@ -1335,6 +1438,114 @@ jobs:
             std::fs::read_to_string(workspace.0.join("nested/result.txt")).unwrap(),
             "alpha"
         );
+    }
+
+    #[tokio::test]
+    async fn evaluates_declared_job_outputs_with_direct_needs_context() {
+        let workspace = TestWorkspace::create();
+        let job = one_job(
+            r#"
+jobs:
+  parity:
+    runs-on: ${{ needs.prepare.outputs.runner }}
+    env:
+      GREETING: ${{ needs.prepare.outputs.greeting }}
+    outputs:
+      combined: ${{ steps.producer.outputs.combined }}
+    steps:
+      - id: producer
+        run: |
+          printf 'combined=%s/%s\n' "$GREETING" '${{ needs.prepare.result }}' >> "$GITHUB_OUTPUT"
+"#,
+        );
+        let context = TrustedLinuxJobContext {
+            needs: serde_json::json!({
+                "prepare": {
+                    "result": "success",
+                    "outputs": {
+                        "runner": "ubuntu-latest",
+                        "greeting": "hello"
+                    }
+                }
+            }),
+        };
+        let result = execute_trusted_linux_job_with_context(&job, &workspace.config(), &context)
+            .await
+            .expect("needs-aware job should execute");
+
+        assert_eq!(
+            result.outputs.get("combined").map(String::as_str),
+            Some("hello/success")
+        );
+    }
+
+    #[test]
+    fn bounds_declared_job_outputs_using_utf16_estimate() {
+        let job = one_job(
+            r#"
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    outputs:
+      output0: ${{ steps.producer.outputs.value0 }}
+      output1: ${{ steps.producer.outputs.value1 }}
+      output2: ${{ steps.producer.outputs.value2 }}
+      output3: ${{ steps.producer.outputs.value3 }}
+      output4: ${{ steps.producer.outputs.value4 }}
+      output5: ${{ steps.producer.outputs.value5 }}
+      output6: ${{ steps.producer.outputs.value6 }}
+      output7: ${{ steps.producer.outputs.value7 }}
+      output8: ${{ steps.producer.outputs.value8 }}
+      output9: ${{ steps.producer.outputs.value9 }}
+      output10: ${{ steps.producer.outputs.value10 }}
+    steps:
+      - id: producer
+        run: true
+"#,
+        );
+        let mut runtime = RuntimeContext {
+            needs: Value::Object(Map::new()),
+            ..RuntimeContext::default()
+        };
+        runtime.step_outputs.insert(
+            "producer".to_string(),
+            (0..11)
+                .map(|index| (format!("value{index}"), "x".repeat(50_000)))
+                .collect(),
+        );
+        runtime
+            .step_outcomes
+            .insert("producer".to_string(), StepOutcome::Success);
+        runtime
+            .step_conclusions
+            .insert("producer".to_string(), StepConclusion::Success);
+
+        let error = evaluate_job_outputs(&job, &runtime)
+            .expect_err("more than one MiB of UTF-16 job outputs must fail closed");
+        assert_eq!(error.code, "job_outputs_too_large");
+    }
+
+    #[tokio::test]
+    async fn bounds_file_command_data_before_parsing() {
+        let workspace = TestWorkspace::create();
+        let mut config = workspace.config();
+        config.maximum_output_bytes = 32;
+        let job = one_job(
+            r#"
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          printf 'value=' >> "$GITHUB_OUTPUT"
+          printf '%0128d' 0 >> "$GITHUB_OUTPUT"
+"#,
+        );
+
+        let error = execute_trusted_linux_job(&job, &config)
+            .await
+            .expect_err("oversized file commands must fail before parsing");
+        assert_eq!(error.code, "file_command_too_large");
     }
 
     #[tokio::test]

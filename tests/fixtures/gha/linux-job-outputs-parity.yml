@@ -1,0 +1,50 @@
+name: Linux job outputs parity fixture
+
+jobs:
+  define:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.values.outputs.matrix }}
+      runner: ${{ steps.values.outputs.runner }}
+      greeting: ${{ steps.values.outputs.greeting }}
+    steps:
+      - id: values
+        run: |
+          printf '%s\n' 'matrix={"include":[{"color":"red"},{"color":"green"}]}' >> "$GITHUB_OUTPUT"
+          printf '%s\n' 'runner=ubuntu-24.04' >> "$GITHUB_OUTPUT"
+          printf '%s\n' 'greeting=hello' >> "$GITHUB_OUTPUT"
+
+  fanout:
+    needs: define
+    runs-on: ${{ needs.define.outputs.runner }}
+    strategy:
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.define.outputs.matrix) }}
+    env:
+      GREETING: ${{ needs.define.outputs.greeting }}
+    outputs:
+      seen: ${{ steps.verify.outputs.seen }}
+    steps:
+      - id: verify
+        env:
+          NEEDS_RESULT: ${{ needs.define.result }}
+        run: |
+          test "$GREETING" = hello
+          test "$NEEDS_RESULT" = success
+          printf 'seen=%s/%s\n' '${{ matrix.color }}' '${{ needs.define.outputs.greeting }}' >> "$GITHUB_OUTPUT"
+
+  observe:
+    needs: fanout
+    if: ${{ always() && needs.fanout.result == 'success' }}
+    runs-on: ubuntu-24.04
+    env:
+      TRANSITIVE: ${{ needs.define.outputs.greeting }}
+      MATRIX_SEEN: ${{ needs.fanout.outputs.seen }}
+    outputs:
+      direct_only: ${{ steps.direct.outputs.direct_only }}
+    steps:
+      - id: direct
+        run: |
+          test -z "$TRANSITIVE"
+          test -n "$MATRIX_SEEN"
+          printf 'direct_only=%s\n' "$TRANSITIVE" >> "$GITHUB_OUTPUT"
