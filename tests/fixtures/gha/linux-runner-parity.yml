@@ -48,6 +48,34 @@ jobs:
         if: success()
         run: printf '|%s|${{ steps.producer.outputs.value }}' "$PERSISTED" >> result.txt
 
+      - name: Publish multiline file commands and PATH
+        id: file_commands
+        run: |
+          mkdir -p tools
+          printf '#!/bin/sh\nprintf from-path\n' > tools/parity-tool
+          chmod +x tools/parity-tool
+          printf '%s\n' "$PWD/tools" >> "$GITHUB_PATH"
+          {
+            echo 'MULTILINE_ENV<<PARITY_ENV'
+            echo 'env-one'
+            echo 'env-two'
+            echo 'PARITY_ENV'
+          } >> "$GITHUB_ENV"
+          {
+            echo 'multiline<<PARITY_OUTPUT'
+            echo 'output-one'
+            echo 'output-two'
+            echo 'PARITY_OUTPUT'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Consume multiline file commands and PATH
+        id: consume_commands
+        run: |
+          printf '|path=%s|env=%s|output=%s' \
+            "$(parity-tool)" \
+            "$MULTILINE_ENV" \
+            '${{ steps.file_commands.outputs.multiline }}' >> result.txt
+
       - name: Failure branch stays skipped
         id: must_skip
         if: failure()

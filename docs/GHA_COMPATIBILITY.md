@@ -48,8 +48,9 @@ The `gha-indie-worker.linux-runner.v1` contract is intentionally smaller than Gi
 
 - each `run` step starts in a separate process while the workspace persists;
 - workflow environment is overridden by job environment and then step environment;
-- writes to `GITHUB_ENV` affect later steps but not the writing step;
-- writes to `GITHUB_OUTPUT` become scalar `steps.<id>.outputs.*` values;
+- single-line and delimiter-based multiline writes to `GITHUB_ENV` affect later steps but not the writing step;
+- single-line and delimiter-based multiline writes to `GITHUB_OUTPUT` become scalar `steps.<id>.outputs.*` values;
+- writes to `GITHUB_PATH` prepend executable search paths for later steps;
 - workflow and job `defaults.run` are merged per field and explicit step shell/working-directory values take precedence;
 - an inherited `shell: sh` runs with `-e`, while a step override of `shell: bash` enables `--noprofile --norc -eo pipefail`;
 - a failed `continue-on-error: true` step keeps `outcome: failure` and changes `conclusion` to `success`;
