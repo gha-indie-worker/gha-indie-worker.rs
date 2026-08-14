@@ -32,7 +32,7 @@ Keeping these stages separate is intentional. A feature being understood by the 
 | Status and retention | Partial | Authenticated submit/list/get APIs, queued/running/succeeded/failed/skipped states, request deduplication, deadlines, and bounded in-memory retention are implemented. Durable workflow-run recovery is future work. |
 | Expressions and contexts | Production rejected; trusted CLI narrow subset | Fixed-profile execution rejects expressions. The trusted Linux CLI resolves scalar `matrix.*`, `env.*`, and prior `steps.<id>.outputs.*` references. It rejects all other contexts/functions and is explicitly not the future taint-tracked production evaluator. |
 | Secrets and identity | Rejected for execution | `secrets`, `github.token`, OIDC request variables, secret-bearing action inputs, and caller-provided credentials are not accepted by workflow execution. |
-| Workflow/job/step `env` and defaults | Production rejected; trusted CLI partial | The trusted Linux CLI supports scalar job/step environment precedence and subsequent-step `GITHUB_ENV` updates. Workflow-level `env`, `defaults.run`, and fixed-profile environment forwarding remain unsupported. |
+| Workflow/job/step `env` and defaults | Production rejected; trusted CLI partial | The trusted Linux CLI supports scalar workflow/job/step environment precedence, subsequent-step `GITHUB_ENV` updates, workflow/job `defaults.run`, and explicit step overrides. Fixed-profile environment forwarding remains unsupported. |
 | Conditions and timeouts | Production rejected; trusted CLI partial | The trusted Linux CLI supports step `success()`, `failure()`, `always()`, `cancelled()`, `!cancelled()`, booleans, bounded timeouts, workspace-contained working directories, default Bash, explicit Bash, `sh`, and boolean step `continue-on-error`. Fixed-profile HTTP execution still rejects these caller-controlled fields. |
 | Reusable workflows | Planner-visible only | Job-level `uses` can be represented by the planner, but reusable workflow invocation and nested permission/secret semantics are not executable. |
 | Services and containers | Rejected | Job containers, service containers, container credentials, and port/network lifecycle are outside the current trust boundary. |
@@ -47,10 +47,11 @@ Keeping these stages separate is intentional. A feature being understood by the 
 The `gha-indie-worker.linux-runner.v1` contract is intentionally smaller than GitHub Actions. Its parity claim is limited to the behavior exercised by `tests/fixtures/gha/linux-runner-parity.yml` and `.github/workflows/linux-runner-parity.yml`:
 
 - each `run` step starts in a separate process while the workspace persists;
-- job environment is overridden by step environment;
+- workflow environment is overridden by job environment and then step environment;
 - writes to `GITHUB_ENV` affect later steps but not the writing step;
 - writes to `GITHUB_OUTPUT` become scalar `steps.<id>.outputs.*` values;
-- an unspecified Linux shell behaves as `bash -e`, while explicit `shell: bash` enables `--noprofile --norc -eo pipefail`;
+- workflow and job `defaults.run` are merged per field and explicit step shell/working-directory values take precedence;
+- an inherited `shell: sh` runs with `-e`, while a step override of `shell: bash` enables `--noprofile --norc -eo pipefail`;
 - a failed `continue-on-error: true` step keeps `outcome: failure` and changes `conclusion` to `success`;
 - default/success, failure, always, cancelled, and not-cancelled status conditions use the current job status;
 - working directories must already exist and remain inside the canonical workspace;

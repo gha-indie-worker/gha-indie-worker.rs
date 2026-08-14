@@ -26,6 +26,13 @@ on:
       - docs/GHA_COMPATIBILITY.md
   workflow_dispatch:
 
+env:
+  WORKFLOW_ONLY: workflow
+
+defaults:
+  run:
+    shell: sh
+
 permissions:
   contents: read
 
@@ -42,6 +49,11 @@ jobs:
         value: [42]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    env:
+      LEVEL: job
+    defaults:
+      run:
+        working-directory: .gha-parity/official/work
     steps:
       - name: Check out without persisted credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -57,12 +69,14 @@ jobs:
           components: "clippy,rustfmt"
 
       - name: Verify runner unit contracts
+        working-directory: .
         run: |
           cargo test --locked --lib linux_runner::tests
           cargo test --locked --bin gha-linux-runner
           cargo clippy --locked --lib --bin gha-linux-runner -- -D warnings
 
       - name: Prepare official-runner oracle workspace
+        working-directory: .
         run: mkdir -p .gha-parity/official/work
 
       - name: Produce official persistent environment and output
@@ -70,11 +84,11 @@ jobs:
         env:
           LEVEL: step
         run: |
-          printf '%s:%s' "$LEVEL" '${{ env.LEVEL }}' > .gha-parity/official/work/result.txt
+          printf '%s:%s:%s:%s' "$LEVEL" '${{ env.LEVEL }}' "$WORKFLOW_ONLY" '${{ env.WORKFLOW_ONLY }}' > result.txt
           echo 'PERSISTED=from-env' >> "$GITHUB_ENV"
           echo 'value=${{ matrix.value }}' >> "$GITHUB_OUTPUT"
 
-      - name: Official default bash has no pipefail
+      - name: Official inherited sh has no pipefail
         id: official_default_pipe
         run: false | true
 
@@ -87,7 +101,6 @@ jobs:
       - name: Official runner continues after tolerated failure
         id: official_after
         if: success()
-        working-directory: .gha-parity/official/work
         env:
           OUTPUT_VALUE: ${{ steps.official_producer.outputs.value }}
         run: printf '|%s|%s' "$PERSISTED" "$OUTPUT_VALUE" >> result.txt
@@ -95,9 +108,10 @@ jobs:
       - name: Official failure branch stays skipped
         id: official_must_skip
         if: failure()
-        run: echo wrong >> .gha-parity/official/work/result.txt
+        run: echo wrong >> result.txt
 
       - name: Run the same fixture through gha-indie-worker
+        working-directory: .
         run: |
           mkdir -p .gha-parity/indie
           cargo run --quiet --locked --bin gha-linux-runner -- \
@@ -108,6 +122,7 @@ jobs:
             > .gha-parity/indie-trace.json
 
       - name: Compare official and indie observations
+        working-directory: .
         env:
           OFFICIAL_DEFAULT_OUTCOME: ${{ steps.official_default_pipe.outcome }}
           OFFICIAL_DEFAULT_CONCLUSION: ${{ steps.official_default_pipe.conclusion }}
@@ -137,7 +152,7 @@ jobs:
               'must_skip': ('skipped', os.environ['OFFICIAL_SKIPPED_CONCLUSION']),
           }
           assert trace['conclusion'] == 'success', trace
-          assert Path('.gha-parity/indie/work/result.txt').read_text() == 'step:step|from-env|42'
+          assert Path('.gha-parity/indie/work/result.txt').read_text() == 'step:step:workflow:workflow|from-env|42'
           for step_id, expected in comparisons.items():
               observed = (steps[step_id]['outcome'], steps[step_id]['conclusion'])
               assert observed == expected, (step_id, observed, expected)
@@ -145,6 +160,6 @@ jobs:
               'schemaVersion': trace['schemaVersion'],
               'jobConclusion': trace['conclusion'],
               'matchedSteps': sorted(comparisons),
-              'workspaceResult': 'step:step|from-env|42',
+              'workspaceResult': 'step:step:workflow:workflow|from-env|42',
           }, sort_keys=True))
           PY
