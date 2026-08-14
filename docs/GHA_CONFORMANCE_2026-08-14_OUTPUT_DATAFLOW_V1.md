@@ -112,6 +112,8 @@ The implementation adds dedicated tests for:
 - two-job deferred matrix materialization and per-group concurrency accounting;
 - direct-only `needs` visibility;
 - rejection of 257 generated instances before any generated consumer starts;
+- rejection of manually supplied plans that exceed 1,024 jobs or contain more
+  than one deferred template for a base job;
 - rejection of `secrets` in a job output expression before any workflow shell
   starts;
 - a 1 MiB per-job UTF-16 output estimate;
@@ -134,7 +136,7 @@ python3 -m unittest discover -s tests -p 'test_*.py'
 
 Observed counts after the report-only resource-bound test was added:
 
-- root Rust all-target suite: 131 tests;
+- root Rust all-target suite: 132 tests;
 - no-default-feature planner/library suite: 26 tests;
 - protocol suite: 16 tests;
 - Python suite: 37 tests;

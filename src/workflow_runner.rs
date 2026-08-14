@@ -26,6 +26,7 @@ use crate::linux_runner::{
     LinuxJobResult, LinuxRunnerError, TrustedLinuxJobContext, TrustedLinuxRunnerConfig,
 };
 use crate::workflow::{expand_dynamic_matrix, materialize_dynamic_jobs, PlannedJob, WorkflowPlan};
+use crate::MAX_PLANNED_JOBS;
 
 pub const LINUX_WORKFLOW_SCHEMA_VERSION: &str = "gha-indie-worker.linux-workflow.v2";
 
@@ -177,6 +178,7 @@ impl From<ExpressionError> for LinuxWorkflowError {
     }
 }
 
+#[derive(Debug)]
 struct PreparedWorkflow;
 
 struct RunningJob {
@@ -251,6 +253,15 @@ fn preflight_workflow(
         return Err(LinuxWorkflowError::new(
             "empty_workflow_plan",
             "workflow plan must contain at least one concrete job",
+        ));
+    }
+    if plan.jobs.len() > MAX_PLANNED_JOBS {
+        return Err(LinuxWorkflowError::new(
+            "too_many_workflow_jobs",
+            format!(
+                "workflow plan contains {} jobs; maximum is {MAX_PLANNED_JOBS}",
+                plan.jobs.len()
+            ),
         ));
     }
 
@@ -337,6 +348,28 @@ fn preflight_workflow(
                 ),
             )
         })?;
+    }
+
+    for base_job_id in &plan.job_order {
+        let instances = plan
+            .jobs
+            .iter()
+            .filter(|job| &job.base_job_id == base_job_id)
+            .collect::<Vec<_>>();
+        let deferred = instances
+            .iter()
+            .filter(|job| job.matrix_expression.is_some())
+            .count();
+        if deferred > 0
+            && (deferred != 1 || instances.len() != 1 || !instances[0].matrix.is_empty())
+        {
+            return Err(LinuxWorkflowError::new(
+                "invalid_dynamic_matrix_group",
+                format!(
+                    "base job {base_job_id:?} must have exactly one empty-matrix deferred template"
+                ),
+            ));
+        }
     }
 
     Ok(PreparedWorkflow)
@@ -555,6 +588,16 @@ async fn schedule_workflow(
 
             let matrices = evaluate_dynamic_matrix(&template, &jobs, &terminal)?;
             let instances = materialize_dynamic_jobs(&template, matrices);
+            let projected_jobs = jobs.len().saturating_sub(1).saturating_add(instances.len());
+            if projected_jobs > MAX_PLANNED_JOBS {
+                abort_all(&mut tasks).await;
+                return Err(LinuxWorkflowError::new(
+                    "too_many_workflow_jobs",
+                    format!(
+                        "deferred matrix for {base_job_id:?} expands the workflow to {projected_jobs} jobs; maximum is {MAX_PLANNED_JOBS}"
+                    ),
+                ));
+            }
             jobs.splice(template_index..=template_index, instances.clone());
             for instance in instances {
                 let workspace =
@@ -1626,6 +1669,61 @@ jobs:
             .expect_err("secret context must fail closed");
         assert_eq!(error.code, "unsupported_context");
         assert!(!contains_file_named(&root.0, "marker"));
+    }
+
+    #[test]
+    fn rejects_manually_malformed_or_oversized_runtime_plans() {
+        let mut deferred = plan_workflow(
+            r#"
+jobs:
+  define:
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+  fanout:
+    needs: define
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJSON(needs.define.outputs.matrix) }}
+    steps:
+      - run: true
+"#,
+        )
+        .expect("deferred workflow should plan");
+        let mut duplicate_template = deferred
+            .jobs
+            .iter()
+            .find(|job| job.base_job_id == "fanout")
+            .expect("fanout template should exist")
+            .clone();
+        duplicate_template.id = "fanout-copy".to_string();
+        deferred.jobs.push(duplicate_template);
+        let root = TestRoot::create();
+        let error = preflight_workflow(&deferred, &root.config(1))
+            .expect_err("a deferred base job must have exactly one template");
+        assert_eq!(error.code, "invalid_dynamic_matrix_group");
+
+        let mut oversized = plan_workflow(
+            r#"
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+"#,
+        )
+        .expect("workflow should plan");
+        let template = oversized.jobs[0].clone();
+        oversized.jobs = (0..=MAX_PLANNED_JOBS)
+            .map(|index| {
+                let mut job = template.clone();
+                job.id = format!("build[{index}]");
+                job
+            })
+            .collect();
+        let error = preflight_workflow(&oversized, &root.config(1))
+            .expect_err("manually supplied plans must retain the global job bound");
+        assert_eq!(error.code, "too_many_workflow_jobs");
     }
 
     #[tokio::test]
