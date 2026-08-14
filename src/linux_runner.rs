@@ -13,15 +13,20 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use tokio::fs;
 use tokio::process::Command;
 use tokio::time::timeout;
 use uuid::Uuid;
 
+use crate::expression::{
+    evaluate_condition as evaluate_typed_condition, evaluate_wrapped_expression, render_template,
+    uses_status_function, validate_expression, validate_template, ExpressionContext,
+    ExpressionError, StatusContext,
+};
 use crate::workflow::{PlannedJob, PlannedStep};
 
-pub const LINUX_RUNNER_SCHEMA_VERSION: &str = "gha-indie-worker.linux-runner.v1";
+pub const LINUX_RUNNER_SCHEMA_VERSION: &str = "gha-indie-worker.linux-runner.v2";
 
 const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 const DEFAULT_OUTPUT_LIMIT: usize = 10 * 1024 * 1024;
@@ -125,6 +130,8 @@ impl Error for LinuxRunnerError {}
 struct RuntimeContext {
     environment: BTreeMap<String, String>,
     step_outputs: BTreeMap<String, BTreeMap<String, String>>,
+    step_outcomes: BTreeMap<String, StepOutcome>,
+    step_conclusions: BTreeMap<String, StepConclusion>,
     path_entries: Vec<String>,
     job_failed: bool,
     job_timed_out: bool,
@@ -222,9 +229,10 @@ pub async fn execute_trusted_linux_job(
     let runner_temp = TemporaryDirectory::create().await?;
     let mut results = Vec::with_capacity(job.steps.len());
     for step in &job.steps {
-        let should_run = evaluate_condition(step.condition.as_deref(), &runtime)?;
+        let step_runtime = build_step_runtime(job, step, &runtime)?;
+        let should_run = evaluate_condition(step.condition.as_deref(), &job.matrix, &step_runtime)?;
         if !should_run {
-            results.push(LinuxStepResult {
+            let result = LinuxStepResult {
                 index: step.index,
                 id: step.id.clone(),
                 name: step.name.clone(),
@@ -234,12 +242,22 @@ pub async fn execute_trusted_linux_job(
                 stdout: String::new(),
                 stderr: String::new(),
                 outputs: BTreeMap::new(),
-            });
+            };
+            record_step_context(&mut runtime, &result);
+            results.push(result);
             continue;
         }
 
-        let result =
-            execute_step(job, step, config, &workspace, &runner_temp.0, &mut runtime).await?;
+        let result = execute_step(
+            job,
+            step,
+            config,
+            &workspace,
+            &runner_temp.0,
+            &step_runtime,
+            &mut runtime,
+        )
+        .await?;
         if matches!(result.conclusion, StepConclusion::Failure) {
             runtime.job_failed = true;
         }
@@ -247,6 +265,7 @@ pub async fn execute_trusted_linux_job(
             runtime.job_failed = true;
             runtime.job_timed_out = true;
         }
+        record_step_context(&mut runtime, &result);
         results.push(result);
     }
 
@@ -263,6 +282,112 @@ pub async fn execute_trusted_linux_job(
         conclusion,
         steps: results,
     })
+}
+
+fn build_step_runtime(
+    job: &PlannedJob,
+    step: &PlannedStep,
+    runtime: &RuntimeContext,
+) -> Result<RuntimeContext, LinuxRunnerError> {
+    let mut step_runtime = runtime.clone();
+    let context = expression_context(&job.matrix, runtime);
+    for (key, value) in &step.env {
+        validate_environment_name(key)?;
+        let value = scalar_to_string(value, "step environment")?;
+        step_runtime.environment.insert(
+            key.clone(),
+            render_template(&value, &context).map_err(expression_error)?,
+        );
+    }
+    Ok(step_runtime)
+}
+
+fn record_step_context(runtime: &mut RuntimeContext, result: &LinuxStepResult) {
+    let Some(id) = result.id.as_ref() else {
+        return;
+    };
+    runtime
+        .step_outputs
+        .insert(id.clone(), result.outputs.clone());
+    runtime.step_outcomes.insert(id.clone(), result.outcome);
+    runtime
+        .step_conclusions
+        .insert(id.clone(), result.conclusion);
+}
+
+fn expression_context(
+    matrix: &BTreeMap<String, Value>,
+    runtime: &RuntimeContext,
+) -> ExpressionContext {
+    let matrix = matrix
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect::<Map<_, _>>();
+    let environment = runtime
+        .environment
+        .iter()
+        .map(|(key, value)| (key.clone(), Value::String(value.clone())))
+        .collect::<Map<_, _>>();
+    let mut steps = Map::new();
+    for (id, outcome) in &runtime.step_outcomes {
+        let outputs = runtime
+            .step_outputs
+            .get(id)
+            .into_iter()
+            .flatten()
+            .map(|(key, value)| (key.clone(), Value::String(value.clone())))
+            .collect::<Map<_, _>>();
+        let conclusion = runtime
+            .step_conclusions
+            .get(id)
+            .copied()
+            .unwrap_or(StepConclusion::Skipped);
+        steps.insert(
+            id.clone(),
+            Value::Object(Map::from_iter([
+                ("outputs".to_string(), Value::Object(outputs)),
+                (
+                    "outcome".to_string(),
+                    Value::String(step_outcome_name(*outcome).to_string()),
+                ),
+                (
+                    "conclusion".to_string(),
+                    Value::String(step_conclusion_name(conclusion).to_string()),
+                ),
+            ])),
+        );
+    }
+    ExpressionContext::new()
+        .with_root("matrix", Value::Object(matrix))
+        .with_root("env", Value::Object(environment))
+        .with_root("steps", Value::Object(steps))
+        .with_status(StatusContext {
+            success: !runtime.job_failed && !runtime.job_timed_out,
+            failure: runtime.job_failed,
+            cancelled: false,
+        })
+}
+
+const fn step_outcome_name(outcome: StepOutcome) -> &'static str {
+    match outcome {
+        StepOutcome::Success => "success",
+        StepOutcome::Failure => "failure",
+        StepOutcome::Skipped => "skipped",
+        StepOutcome::TimedOut => "timed_out",
+    }
+}
+
+const fn step_conclusion_name(conclusion: StepConclusion) -> &'static str {
+    match conclusion {
+        StepConclusion::Success => "success",
+        StepConclusion::Failure => "failure",
+        StepConclusion::Skipped => "skipped",
+        StepConclusion::TimedOut => "timed_out",
+    }
+}
+
+fn expression_error(error: ExpressionError) -> LinuxRunnerError {
+    LinuxRunnerError::new(error.code, error.message)
 }
 
 fn preflight_job(job: &PlannedJob) -> Result<(), LinuxRunnerError> {
@@ -406,35 +531,24 @@ async fn execute_step(
     config: &TrustedLinuxRunnerConfig,
     workspace: &Path,
     runner_temp: &Path,
+    step_runtime: &RuntimeContext,
     runtime: &mut RuntimeContext,
 ) -> Result<LinuxStepResult, LinuxRunnerError> {
-    let mut step_runtime = runtime.clone();
-    for (key, value) in &step.env {
-        validate_environment_name(key)?;
-        step_runtime.environment.insert(
-            key.clone(),
-            resolve_templates(
-                &scalar_to_string(value, "step environment")?,
-                &job.matrix,
-                runtime,
-            )?,
-        );
-    }
     let script_source = resolve_templates(
         step.run.as_deref().expect("preflight requires run source"),
         &job.matrix,
-        &step_runtime,
+        step_runtime,
     )?;
     let shell = step
         .shell
         .as_deref()
-        .map(|value| resolve_templates(value, &job.matrix, &step_runtime))
+        .map(|value| resolve_templates(value, &job.matrix, step_runtime))
         .transpose()?;
     let working_directory = resolve_working_directory(
         workspace,
         step.working_directory.as_deref(),
         &job.matrix,
-        &step_runtime,
+        step_runtime,
     )
     .await?;
 
@@ -454,7 +568,7 @@ async fn execute_step(
     }
 
     let (program, arguments) = shell_command(shell.as_deref(), &script_path)?;
-    let mut environment = step_runtime.environment;
+    let mut environment = step_runtime.environment.clone();
 
     let inherited_path = std::env::var("PATH").unwrap_or_else(|_| DEFAULT_PATH.to_string());
     let mut effective_path = runtime
@@ -561,9 +675,6 @@ async fn execute_step(
         runtime.environment.insert(key, value);
     }
     let outputs = parse_file_commands(&output_path, "output").await?;
-    if let Some(id) = step.id.as_deref() {
-        runtime.step_outputs.insert(id.to_string(), outputs.clone());
-    }
     let path_updates = fs::read_to_string(&path_path)
         .await
         .map_err(|error| LinuxRunnerError::new("path_command_read_failed", error.to_string()))?;
@@ -692,38 +803,22 @@ async fn resolve_working_directory(
 
 fn evaluate_condition(
     condition: Option<&str>,
+    matrix: &BTreeMap<String, Value>,
     runtime: &RuntimeContext,
 ) -> Result<bool, LinuxRunnerError> {
     let Some(condition) = condition else {
-        return Ok(!runtime.job_failed);
+        return Ok(!runtime.job_failed && !runtime.job_timed_out);
     };
     let condition = unwrap_expression(condition);
-    match condition {
-        "true" | "always()" => Ok(true),
-        "false" | "cancelled()" => Ok(false),
-        "success()" => Ok(!runtime.job_failed),
-        "!cancelled()" => Ok(true),
-        "failure()" => Ok(runtime.job_failed),
-        other => Err(LinuxRunnerError::new(
-            "unsupported_condition",
-            format!("condition {other:?} is outside the v1 status-function subset"),
-        )),
-    }
+    let has_explicit_status = uses_status_function(condition).map_err(expression_error)?;
+    let context = expression_context(matrix, runtime);
+    let matches = evaluate_typed_condition(condition, &context).map_err(expression_error)?;
+    Ok(matches && (has_explicit_status || (!runtime.job_failed && !runtime.job_timed_out)))
 }
 
 fn validate_condition(condition: &str) -> Result<(), LinuxRunnerError> {
     let condition = unwrap_expression(condition);
-    if matches!(
-        condition,
-        "true" | "false" | "always()" | "cancelled()" | "success()" | "failure()" | "!cancelled()"
-    ) {
-        Ok(())
-    } else {
-        Err(LinuxRunnerError::new(
-            "unsupported_condition",
-            format!("condition {condition:?} is outside the v1 status-function subset"),
-        ))
-    }
+    validate_expression(condition, &["matrix", "env", "steps"], true).map_err(expression_error)
 }
 
 fn unwrap_expression(value: &str) -> &str {
@@ -746,15 +841,18 @@ fn evaluate_continue_on_error(
     match value {
         Value::Bool(value) => Ok(*value),
         Value::String(value) => {
-            let resolved = resolve_templates(value, &job.matrix, runtime)?;
-            match resolved.trim() {
-                "true" => Ok(true),
-                "false" => Ok(false),
-                other => Err(LinuxRunnerError::new(
+            let context = expression_context(&job.matrix, runtime);
+            let evaluated = evaluate_wrapped_expression(value, &context)
+                .map_err(expression_error)?
+                .unwrap_or(Value::String(
+                    render_template(value, &context).map_err(expression_error)?,
+                ));
+            evaluated.as_bool().ok_or_else(|| {
+                LinuxRunnerError::new(
                     "invalid_continue_on_error",
-                    format!("continue-on-error resolved to {other:?}, not a boolean"),
-                )),
-            }
+                    format!("continue-on-error resolved to {evaluated}, not a boolean"),
+                )
+            })
         }
         _ => Err(LinuxRunnerError::new(
             "invalid_continue_on_error",
@@ -768,99 +866,11 @@ fn resolve_templates(
     matrix: &BTreeMap<String, Value>,
     runtime: &RuntimeContext,
 ) -> Result<String, LinuxRunnerError> {
-    let mut rest = source;
-    let mut resolved = String::with_capacity(source.len());
-    while let Some(start) = rest.find("${{") {
-        resolved.push_str(&rest[..start]);
-        let expression = &rest[start + 3..];
-        let Some(end) = expression.find("}}") else {
-            return Err(LinuxRunnerError::new(
-                "invalid_expression",
-                "expression is missing its closing braces",
-            ));
-        };
-        let reference = expression[..end].trim();
-        resolved.push_str(&resolve_reference(reference, matrix, runtime)?);
-        rest = &expression[end + 2..];
-    }
-    resolved.push_str(rest);
-    Ok(resolved)
+    render_template(source, &expression_context(matrix, runtime)).map_err(expression_error)
 }
 
 fn validate_templates(source: &str) -> Result<(), LinuxRunnerError> {
-    let mut rest = source;
-    while let Some(start) = rest.find("${{") {
-        let expression = &rest[start + 3..];
-        let Some(end) = expression.find("}}") else {
-            return Err(LinuxRunnerError::new(
-                "invalid_expression",
-                "expression is missing its closing braces",
-            ));
-        };
-        validate_reference_shape(expression[..end].trim())?;
-        rest = &expression[end + 2..];
-    }
-    Ok(())
-}
-
-fn validate_reference_shape(reference: &str) -> Result<(), LinuxRunnerError> {
-    let parts = reference.split('.').collect::<Vec<_>>();
-    let valid = match parts.as_slice() {
-        ["matrix" | "env", key] => !key.is_empty(),
-        ["steps", step_id, "outputs", output_name] => {
-            !step_id.is_empty() && !output_name.is_empty()
-        }
-        _ => false,
-    };
-    if valid {
-        Ok(())
-    } else {
-        Err(LinuxRunnerError::new(
-            "unsupported_expression",
-            format!("expression {reference:?} is outside the v1 trusted subset"),
-        ))
-    }
-}
-
-fn resolve_reference(
-    reference: &str,
-    matrix: &BTreeMap<String, Value>,
-    runtime: &RuntimeContext,
-) -> Result<String, LinuxRunnerError> {
-    let parts = reference.split('.').collect::<Vec<_>>();
-    match parts.as_slice() {
-        ["matrix", key] => matrix
-            .get(*key)
-            .map(|value| scalar_to_string(value, "matrix expression"))
-            .transpose()?
-            .ok_or_else(|| {
-                LinuxRunnerError::new(
-                    "unknown_expression_value",
-                    format!("matrix has no value named {key:?}"),
-                )
-            }),
-        ["env", key] => runtime.environment.get(*key).cloned().ok_or_else(|| {
-            LinuxRunnerError::new(
-                "unknown_expression_value",
-                format!("environment has no value named {key:?}"),
-            )
-        }),
-        ["steps", step_id, "outputs", output_name] => runtime
-            .step_outputs
-            .get(*step_id)
-            .and_then(|outputs| outputs.get(*output_name))
-            .cloned()
-            .ok_or_else(|| {
-                LinuxRunnerError::new(
-                    "unknown_expression_value",
-                    format!("step {step_id:?} has no output named {output_name:?}"),
-                )
-            }),
-        _ => Err(LinuxRunnerError::new(
-            "unsupported_expression",
-            format!("expression {reference:?} is outside the v1 trusted subset"),
-        )),
-    }
+    validate_template(source, &["matrix", "env", "steps"], false).map_err(expression_error)
 }
 
 fn scalar_to_string(value: &Value, context: &str) -> Result<String, LinuxRunnerError> {
@@ -1031,7 +1041,29 @@ jobs:
         let error = execute_trusted_linux_job(&job, &workspace.config())
             .await
             .expect_err("secret context must fail closed before execution");
-        assert_eq!(error.code, "unsupported_expression");
+        assert_eq!(error.code, "unsupported_context");
+        assert!(!marker.exists());
+    }
+
+    #[tokio::test]
+    async fn preflights_unsupported_expression_functions_before_running_any_step() {
+        let workspace = TestWorkspace::create();
+        let marker = workspace.0.join("must-not-exist");
+        let job = one_job(
+            r#"
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: touch must-not-exist
+      - if: hashFiles('**/Cargo.lock') != ''
+        run: echo unreachable
+"#,
+        );
+        let error = execute_trusted_linux_job(&job, &workspace.config())
+            .await
+            .expect_err("unsupported functions must fail closed before execution");
+        assert_eq!(error.code, "unsupported_function");
         assert!(!marker.exists());
     }
 
@@ -1131,6 +1163,98 @@ jobs:
         assert_eq!(
             result.steps[1].outputs.get("value").map(String::as_str),
             Some("42")
+        );
+    }
+
+    #[tokio::test]
+    async fn evaluates_typed_conditions_functions_and_step_result_contexts() {
+        let workspace = TestWorkspace::create();
+        let job = one_job(
+            r#"
+env:
+  CONTINUE: "true"
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        enabled: [true]
+        word: [Alpha]
+    steps:
+      - id: producer
+        run: |
+          echo 'count=7' >> "$GITHUB_OUTPUT"
+          echo 'word=HeLLo' >> "$GITHUB_OUTPUT"
+      - id: tolerated
+        if: >-
+          success() && matrix.enabled &&
+          env.CONTINUE == 'TRUE' &&
+          fromJSON(steps.producer.outputs.count) >= 7 &&
+          contains(fromJSON('["push","pull_request"]'), 'PUSH') &&
+          startsWith(matrix.word, 'al') &&
+          endsWith(steps.producer.outputs.word, 'LO') &&
+          matrix.missing == ''
+        continue-on-error: ${{ fromJSON(env.CONTINUE) }}
+        run: 'false'
+      - id: after
+        if: >-
+          success() &&
+          steps.tolerated.outcome == 'failure' &&
+          steps.tolerated.conclusion == 'success'
+        run: |
+          printf '%s' '${{ format('{0}:{1}:{2}', join(fromJSON('["a","b"]'), '-'), true && 'yes' || 'no', fromJSON('[0,7]')[1]) }}' > result.txt
+"#,
+        );
+        let result = execute_trusted_linux_job(&job, &workspace.config())
+            .await
+            .expect("typed expression job should execute");
+
+        assert_eq!(result.schema_version, "gha-indie-worker.linux-runner.v2");
+        assert_eq!(result.conclusion, JobConclusion::Success);
+        assert_eq!(result.steps[1].outcome, StepOutcome::Failure);
+        assert_eq!(result.steps[1].conclusion, StepConclusion::Success);
+        assert_eq!(result.steps[2].conclusion, StepConclusion::Success);
+        assert_eq!(
+            std::fs::read_to_string(workspace.0.join("result.txt")).unwrap(),
+            "a-b:yes:7"
+        );
+    }
+
+    #[tokio::test]
+    async fn applies_implicit_success_to_conditions_without_status_functions() {
+        let workspace = TestWorkspace::create();
+        let job = one_job(
+            r#"
+env:
+  FLAG: yes
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    steps:
+      - id: fail
+        run: 'false'
+      - id: literal_true
+        if: 'true'
+        run: echo wrong > result.txt
+      - id: context_true
+        if: env.FLAG == 'yes'
+        run: echo wrong > result.txt
+      - id: recovery
+        if: failure() && env.FLAG == 'YES'
+        run: echo recovered > result.txt
+"#,
+        );
+        let result = execute_trusted_linux_job(&job, &workspace.config())
+            .await
+            .expect("status-aware condition job should execute");
+
+        assert_eq!(result.conclusion, JobConclusion::Failure);
+        assert_eq!(result.steps[1].conclusion, StepConclusion::Skipped);
+        assert_eq!(result.steps[2].conclusion, StepConclusion::Skipped);
+        assert_eq!(result.steps[3].conclusion, StepConclusion::Success);
+        assert_eq!(
+            std::fs::read_to_string(workspace.0.join("result.txt")).unwrap(),
+            "recovered\n"
         );
     }
 
