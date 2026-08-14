@@ -56,6 +56,8 @@ jobs:
 
           canonical_root = Path("canonical/remote/deployments/build-server-rs/src")
           standalone_root = Path("src")
+          canonical_scripts_root = Path("canonical/remote/deployments/build-server-rs/scripts")
+          standalone_scripts_root = Path("scripts")
           extension_hashes = {
               "main.rs": "a3da1bdae02618a7382fc24aa73e3ad8edb721aa",
               "admission.rs": "db0812072de0a3ba5d1ce5965a28dc2ff0d09f5a",
@@ -71,6 +73,9 @@ jobs:
               "bin/gha-linux-runner.rs": "deca1126fe6bd8d03e4e3f105d2b635408a5175a",
               "bin/gha-workflow-plan.rs": "350250236d65a61dafdc209fb2192497589b4ecb",
               "bin/gha-workflow-server.rs": "1cd5c3b48baed3e4362bf06c4482cd5f10a89683",
+          }
+          script_extension_hashes = {
+              "github_readiness_audit.py": "42c8bc040c23bbbdf9ea34156c447f1a9136a46a",
           }
 
           canonical_paths = {
@@ -109,8 +114,44 @@ jobs:
                       file=sys.stderr,
                   )
                   raise SystemExit(1)
+
+          canonical_script_paths = {
+              path.relative_to(canonical_scripts_root).as_posix()
+              for path in canonical_scripts_root.rglob("*")
+              if path.is_file()
+          }
+          standalone_script_paths = {
+              path.relative_to(standalone_scripts_root).as_posix()
+              for path in standalone_scripts_root.rglob("*")
+              if path.is_file()
+          }
+          expected_script_paths = canonical_script_paths | set(script_extension_hashes)
+          if standalone_script_paths != expected_script_paths:
+              print("standalone scripts differ from canonical scripts plus pinned extensions", file=sys.stderr)
+              print("missing:", sorted(expected_script_paths - standalone_script_paths), file=sys.stderr)
+              print("unexpected:", sorted(standalone_script_paths - expected_script_paths), file=sys.stderr)
+              raise SystemExit(1)
+
+          for relative in sorted(canonical_script_paths - set(script_extension_hashes)):
+              canonical = canonical_scripts_root / relative
+              standalone = standalone_scripts_root / relative
+              if canonical.read_bytes() != standalone.read_bytes():
+                  print(f"canonical script drift: scripts/{relative}", file=sys.stderr)
+                  raise SystemExit(1)
+
+          for relative, expected_hash in script_extension_hashes.items():
+              actual_hash = subprocess.check_output(
+                  ["git", "hash-object", str(standalone_scripts_root / relative)],
+                  text=True,
+              ).strip()
+              if actual_hash != expected_hash:
+                  print(
+                      f"standalone script extension drift: scripts/{relative}: "
+                      f"expected {expected_hash}, got {actual_hash}",
+                      file=sys.stderr,
+                  )
+                  raise SystemExit(1)
           PY
-          diff -ru "$source_root/scripts" scripts
           diff -ru "$source_root/generated" generated
           test "$(git hash-object readme.md)" = "446a84f97fcee88873e97ff3dcd3ab8bb1848ee5"
           grep -F '42b7471fa680331fe4977db42db8497ab9549cd9' SOURCE_PROVENANCE.md
@@ -119,6 +160,7 @@ jobs:
           grep -F '4163d3a5bf19c26c43b9a854e55632e784a56a82' SOURCE_PROVENANCE.md
           grep -F '0ca7d1c3536c5f34871c8b3810697106d6b49154' SOURCE_PROVENANCE.md
           grep -F 'deca1126fe6bd8d03e4e3f105d2b635408a5175a' SOURCE_PROVENANCE.md
+          grep -F '42c8bc040c23bbbdf9ea34156c447f1a9136a46a' SOURCE_PROVENANCE.md
           grep -F '446a84f97fcee88873e97ff3dcd3ab8bb1848ee5' SOURCE_PROVENANCE.md
           grep -F 'dd-telemetry = { path = "vendor/dd-telemetry" }' Cargo.toml
           grep -F 'dd-nats-subject-defs = { path = "vendor/dd-nats-subject-defs" }' Cargo.toml
