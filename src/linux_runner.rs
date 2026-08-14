@@ -687,7 +687,7 @@ async fn execute_step(
     );
 
     let continue_on_error =
-        evaluate_continue_on_error(step.continue_on_error.as_ref(), job, runtime)?;
+        evaluate_continue_on_error(step.continue_on_error.as_ref(), job, step_runtime)?;
     let conclusion = match outcome {
         StepOutcome::Success => StepConclusion::Success,
         StepOutcome::Failure if continue_on_error => StepConclusion::Success,
@@ -1171,8 +1171,6 @@ jobs:
         let workspace = TestWorkspace::create();
         let job = one_job(
             r#"
-env:
-  CONTINUE: "true"
 jobs:
   parity:
     runs-on: ubuntu-latest
@@ -1186,6 +1184,8 @@ jobs:
           echo 'count=7' >> "$GITHUB_OUTPUT"
           echo 'word=HeLLo' >> "$GITHUB_OUTPUT"
       - id: tolerated
+        env:
+          CONTINUE: "true"
         if: >-
           success() && matrix.enabled &&
           env.CONTINUE == 'TRUE' &&
