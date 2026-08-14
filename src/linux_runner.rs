@@ -995,18 +995,27 @@ jobs:
         let workspace = TestWorkspace::create();
         let job = one_job(
             r#"
+env:
+  WORKFLOW_ONLY: workflow
+defaults:
+  run:
+    shell: sh
 jobs:
   parity:
     runs-on: ubuntu-latest
     env:
       LEVEL: job
+    defaults:
+      run:
+        working-directory: work
     steps:
-      - run: mkdir -p work
+      - working-directory: .
+        run: mkdir -p work
       - id: producer
         env:
           LEVEL: step
         run: |
-          printf '%s:%s' "$LEVEL" '${{ env.LEVEL }}' > work/result.txt
+          printf '%s:%s:%s:%s' "$LEVEL" '${{ env.LEVEL }}' "$WORKFLOW_ONLY" '${{ env.WORKFLOW_ONLY }}' > result.txt
           echo 'PERSISTED=from-env' >> "$GITHUB_ENV"
           echo 'value=42' >> "$GITHUB_OUTPUT"
       - id: tolerated
@@ -1015,10 +1024,10 @@ jobs:
         run: false | true
       - id: after
         if: success()
-        run: printf '|%s|${{ steps.producer.outputs.value }}' "$PERSISTED" >> work/result.txt
+        run: printf '|%s|${{ steps.producer.outputs.value }}' "$PERSISTED" >> result.txt
       - id: must_skip
         if: failure()
-        run: echo wrong >> work/result.txt
+        run: echo wrong >> result.txt
 "#,
         );
         let result = execute_trusted_linux_job(&job, &workspace.config())
@@ -1028,7 +1037,7 @@ jobs:
         assert_eq!(result.conclusion, JobConclusion::Success);
         assert_eq!(
             std::fs::read_to_string(workspace.0.join("work/result.txt")).unwrap(),
-            "step:step|from-env|42"
+            "step:step:workflow:workflow|from-env|42"
         );
         assert_eq!(result.steps[2].outcome, StepOutcome::Failure);
         assert_eq!(result.steps[2].conclusion, StepConclusion::Success);

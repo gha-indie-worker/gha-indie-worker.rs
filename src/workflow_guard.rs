@@ -28,7 +28,7 @@ pub const MAX_RUNNER_LABELS: usize = 16;
 /// Maximum entries in any supported job or step `env`/`with` mapping.
 pub const MAX_PARAMETER_ENTRIES: usize = 256;
 
-const ROOT_FIELDS: &[&str] = &["name", "run-name", "on", "jobs"];
+const ROOT_FIELDS: &[&str] = &["name", "run-name", "on", "env", "defaults", "jobs"];
 const JOB_FIELDS: &[&str] = &[
     "name",
     "needs",
@@ -37,10 +37,13 @@ const JOB_FIELDS: &[&str] = &[
     "if",
     "strategy",
     "env",
+    "defaults",
     "steps",
     "timeout-minutes",
     "continue-on-error",
 ];
+const DEFAULTS_FIELDS: &[&str] = &["run"];
+const RUN_DEFAULT_FIELDS: &[&str] = &["shell", "working-directory"];
 const STRATEGY_FIELDS: &[&str] = &["fail-fast", "max-parallel", "matrix"];
 const STEP_FIELDS: &[&str] = &[
     "id",
@@ -98,6 +101,8 @@ pub(crate) fn validate_source(input: &str) -> Result<(), String> {
 pub(crate) fn validate_document(value: &Value) -> Result<(), String> {
     let root = require_object(value, "workflow root")?;
     reject_unknown_fields(root, ROOT_FIELDS, "workflow root")?;
+    validate_parameter_map(root.get("env"), "workflow env")?;
+    validate_run_defaults(root.get("defaults"), "workflow defaults")?;
 
     let Some(jobs_value) = root.get("jobs") else {
         return Ok(());
@@ -119,6 +124,7 @@ pub(crate) fn validate_document(value: &Value) -> Result<(), String> {
         let job = require_object(job_value, &context)?;
         reject_unknown_fields(job, JOB_FIELDS, &context)?;
         validate_parameter_map(job.get("env"), &format!("{context} env"))?;
+        validate_run_defaults(job.get("defaults"), &format!("{context} defaults"))?;
         validate_string_or_list(
             job.get("needs"),
             MAX_DEPENDENCIES_PER_JOB,
@@ -276,6 +282,26 @@ fn validate_parameter_map(value: Option<&Value>, context: &str) -> Result<(), St
         ));
     }
     Ok(())
+}
+
+fn validate_run_defaults(value: Option<&Value>, context: &str) -> Result<(), String> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    if value.is_null() {
+        return Ok(());
+    }
+    let defaults = require_object(value, context)?;
+    reject_unknown_fields(defaults, DEFAULTS_FIELDS, context)?;
+    let Some(run) = defaults.get("run") else {
+        return Ok(());
+    };
+    if run.is_null() {
+        return Ok(());
+    }
+    let run_context = format!("{context} run");
+    let run = require_object(run, &run_context)?;
+    reject_unknown_fields(run, RUN_DEFAULT_FIELDS, &run_context)
 }
 
 fn validate_string_or_list(
@@ -573,5 +599,30 @@ mod tests {
             }
         });
         validate_document(&document).unwrap_or_else(|error| panic!("guard failed: {error}"));
+    }
+
+    #[test]
+    fn validates_workflow_and_job_run_defaults() {
+        let supported = json!({
+            "env": {"WORKFLOW": "yes"},
+            "defaults": {"run": {"shell": "sh", "working-directory": "workflow"}},
+            "jobs": {
+                "build": {
+                    "runs-on": "ubuntu-latest",
+                    "defaults": {"run": {"shell": "bash"}},
+                    "steps": [{"run": "true"}]
+                }
+            }
+        });
+        assert!(validate_document(&supported).is_ok());
+
+        let unsupported = json!({
+            "defaults": {"run": {"unsupported": true}},
+            "jobs": {
+                "build": {"runs-on": "ubuntu-latest", "steps": [{"run": "true"}]}
+            }
+        });
+        let error = validate_document(&unsupported).expect_err("unknown default must fail closed");
+        assert!(error.contains("unsupported field \"unsupported\""));
     }
 }

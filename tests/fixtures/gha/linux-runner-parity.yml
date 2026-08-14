@@ -1,5 +1,12 @@
 name: Linux runner differential fixture
 
+env:
+  WORKFLOW_ONLY: workflow
+
+defaults:
+  run:
+    shell: sh
+
 jobs:
   parity:
     runs-on: ${{ matrix.os }}
@@ -9,8 +16,12 @@ jobs:
         value: [42]
     env:
       LEVEL: job
+    defaults:
+      run:
+        working-directory: work
     steps:
       - name: Prepare shared workspace
+        working-directory: .
         run: mkdir -p work
 
       - name: Produce persistent environment and output
@@ -18,7 +29,7 @@ jobs:
         env:
           LEVEL: step
         run: |
-          printf '%s:%s' "$LEVEL" '${{ env.LEVEL }}' > work/result.txt
+          printf '%s:%s:%s:%s' "$LEVEL" '${{ env.LEVEL }}' "$WORKFLOW_ONLY" '${{ env.WORKFLOW_ONLY }}' > result.txt
           echo 'PERSISTED=from-env' >> "$GITHUB_ENV"
           echo 'value=${{ matrix.value }}' >> "$GITHUB_OUTPUT"
 
@@ -35,10 +46,9 @@ jobs:
       - name: Continue after tolerated failure
         id: after
         if: success()
-        working-directory: work
         run: printf '|%s|${{ steps.producer.outputs.value }}' "$PERSISTED" >> result.txt
 
       - name: Failure branch stays skipped
         id: must_skip
         if: failure()
-        run: echo wrong >> work/result.txt
+        run: echo wrong >> result.txt

@@ -125,6 +125,9 @@ impl Error for WorkflowError {}
 struct RawWorkflow {
     name: Option<String>,
     #[serde(default)]
+    env: BTreeMap<String, Value>,
+    defaults: Option<RawDefaults>,
+    #[serde(default)]
     jobs: BTreeMap<String, RawJob>,
 }
 
@@ -140,6 +143,7 @@ struct RawJob {
     strategy: Option<RawStrategy>,
     #[serde(default)]
     env: BTreeMap<String, Value>,
+    defaults: Option<RawDefaults>,
     #[serde(default)]
     steps: Vec<RawStep>,
     timeout_minutes: Option<u64>,
@@ -163,6 +167,18 @@ struct RawStep {
     env: BTreeMap<String, Value>,
     continue_on_error: Option<Value>,
     timeout_minutes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RawDefaults {
+    run: Option<RawRunDefaults>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct RawRunDefaults {
+    shell: Option<String>,
+    working_directory: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -227,6 +243,16 @@ pub fn plan_workflow(yaml: &str) -> Result<WorkflowPlan, WorkflowError> {
             ));
         };
         let matrix_values = expand_matrix(job_id, raw_job.strategy.as_ref())?;
+        let mut job_environment = workflow.env.clone();
+        job_environment.extend(raw_job.env.clone());
+        let workflow_run_defaults = workflow
+            .defaults
+            .as_ref()
+            .and_then(|defaults| defaults.run.as_ref());
+        let job_run_defaults = raw_job
+            .defaults
+            .as_ref()
+            .and_then(|defaults| defaults.run.as_ref());
         let instance_ids = matrix_values
             .iter()
             .enumerate()
@@ -259,7 +285,7 @@ pub fn plan_workflow(yaml: &str) -> Result<WorkflowPlan, WorkflowError> {
                 reusable_workflow: raw_job.uses.clone(),
                 condition: raw_job.condition.clone(),
                 matrix,
-                env: raw_job.env.clone(),
+                env: job_environment.clone(),
                 steps: raw_job
                     .steps
                     .iter()
@@ -271,8 +297,26 @@ pub fn plan_workflow(yaml: &str) -> Result<WorkflowPlan, WorkflowError> {
                         condition: step.condition.clone(),
                         uses: step.uses.clone(),
                         run: step.run.clone(),
-                        shell: step.shell.clone(),
-                        working_directory: step.working_directory.clone(),
+                        shell: step
+                            .shell
+                            .clone()
+                            .or_else(|| {
+                                job_run_defaults.and_then(|defaults| defaults.shell.clone())
+                            })
+                            .or_else(|| {
+                                workflow_run_defaults.and_then(|defaults| defaults.shell.clone())
+                            }),
+                        working_directory: step
+                            .working_directory
+                            .clone()
+                            .or_else(|| {
+                                job_run_defaults
+                                    .and_then(|defaults| defaults.working_directory.clone())
+                            })
+                            .or_else(|| {
+                                workflow_run_defaults
+                                    .and_then(|defaults| defaults.working_directory.clone())
+                            }),
                         with: step.with.clone(),
                         env: step.env.clone(),
                         continue_on_error: step.continue_on_error.clone(),
@@ -744,6 +788,52 @@ jobs:
         );
         assert!(plan.jobs[0].runs_on.is_empty());
         assert!(plan.jobs[0].steps.is_empty());
+    }
+
+    #[test]
+    fn applies_workflow_and_job_environment_and_run_defaults() {
+        let yaml = r#"
+env:
+  SHARED: workflow
+  WORKFLOW_ONLY: present
+defaults:
+  run:
+    shell: sh
+    working-directory: workflow-dir
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      SHARED: job
+      JOB_ONLY: present
+    defaults:
+      run:
+        working-directory: job-dir
+    steps:
+      - run: echo inherited
+      - shell: bash
+        working-directory: step-dir
+        run: echo explicit
+"#;
+
+        let plan = plan_workflow(yaml).unwrap_or_else(|error| panic!("plan failed: {error}"));
+        let job = &plan.jobs[0];
+        assert_eq!(
+            job.env.get("SHARED"),
+            Some(&Value::String("job".to_string()))
+        );
+        assert_eq!(
+            job.env.get("WORKFLOW_ONLY"),
+            Some(&Value::String("present".to_string()))
+        );
+        assert_eq!(
+            job.env.get("JOB_ONLY"),
+            Some(&Value::String("present".to_string()))
+        );
+        assert_eq!(job.steps[0].shell.as_deref(), Some("sh"));
+        assert_eq!(job.steps[0].working_directory.as_deref(), Some("job-dir"));
+        assert_eq!(job.steps[1].shell.as_deref(), Some("bash"));
+        assert_eq!(job.steps[1].working_directory.as_deref(), Some("step-dir"));
     }
 
     #[test]
