@@ -8,6 +8,8 @@ pub mod expression;
 pub mod linux_runner;
 pub mod workflow;
 mod workflow_guard;
+#[cfg(feature = "linux-runner")]
+pub mod workflow_runner;
 mod workflow_yaml;
 
 use serde::de::DeserializeOwned;

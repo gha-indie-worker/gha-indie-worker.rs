@@ -6,12 +6,13 @@ The compatibility contract is fail-closed: unsupported YAML or execution semanti
 
 ## Architecture
 
-The repository contains four distinct trust stages:
+The repository contains five distinct trust stages:
 
 1. **Strict YAML admission and planning** — rejects ambiguous or excessive YAML, validates the job graph, and deterministically expands supported static matrices.
 2. **Immutable reviewed-profile binding** — binds each concrete job to an exact repository commit, reviewed profile digest, catalog digest, plan digest, dependency set, matrix metadata, and content-derived request identity.
 3. **Fixed-profile execution** — submits only operator-reviewed profiles to the existing build queue. Workflow YAML cannot select a shell command, container image, Dockerfile, deployment, namespace, executor, or credential.
 4. **Explicitly trusted Linux conformance execution** — the separate `gha-linux-runner` CLI can execute the bounded `run`-step subset only when a human or higher-level policy supplies `--allow-host-execution`. It is not connected to webhook or HTTP intake and it does not weaken fixed-profile admission.
+5. **Explicitly trusted Linux workflow scheduling** — the separate `gha-linux-workflow` CLI composes that same bounded executor across a preflighted static job graph. It creates one empty workspace per concrete job and requires the same explicit host-execution capability.
 
 Keeping these stages separate is intentional. A feature being understood by the planner does not automatically grant it execution authority.
 
@@ -21,19 +22,19 @@ Keeping these stages separate is intentional. A feature being understood by the 
 | --- | --- | --- |
 | Workflow YAML admission | Supported subset | Bounded by source bytes, lines, nesting, node count, jobs, steps, dependencies, runner labels, parameter entries, expanded jobs, copied steps, and estimated plan size. Boolean and numeric YAML scalars in `if` and `run` are normalized to their GitHub command/expression strings. |
 | Ambiguous YAML | Rejected | Duplicate keys, merge keys, aliases, anchors, tags, tabs, directives, and multiple documents fail closed before execution policy evaluation. |
-| `jobs` and `needs` | Supported | Static job identifiers, unknown-dependency rejection, cycle rejection, deterministic topological order, and downstream skip after failed dependencies. |
+| `jobs` and `needs` | Supported subset | Static job identifiers, unknown-dependency rejection, cycle rejection, deterministic topological order, dependency-result aggregation, GitHub's implicit-success downstream skip, and explicit status-function recovery are supported by the trusted scheduler. `needs.<job>.outputs` is intentionally empty until bounded job outputs exist. |
 | `runs-on` | Partial | Static Linux labels only. Windows, macOS, dynamic labels, runner groups, and caller-selected environments are not executable. |
 | Repository revision | Supported | Execution requires an exact lowercase 40-character commit SHA and a policy-approved HTTPS GitHub repository identity. Mutable branches and tags may be planned but are not executable. |
 | Steps | Production profile classification; trusted CLI partial | Production intake only classifies `run` plus a small setup-action allowlist into installed profiles. The explicit trusted Linux CLI executes `run` steps in separate processes with a shared workspace and fails closed on every `uses` step. |
 | Action references | Partial | Recognized setup actions must be pinned to an exact commit SHA. Arbitrary JavaScript, Docker, composite, local, and marketplace actions are not executed. |
-| Static matrix | Planner/protocol plus trusted single-instance execution | Deterministic axes plus bounded `include`/`exclude` expansion are available. The trusted CLI resolves scalar `matrix` references for one selected concrete instance; matrix scheduling is not yet enabled in the fixed-profile HTTP path. |
-| Job concurrency | Deviation | The current fixed-profile workflow executor runs concrete jobs sequentially in dependency order. GitHub-independent parallel-ready scheduling is future work. |
-| Failure propagation | Partial | Fixed-profile workflows skip downstream jobs after dependency failure. The trusted Linux CLI distinguishes step outcome from conclusion, implements boolean and expression-valued step `continue-on-error`, and preserves failure for `failure()`/`always()` cleanup. Matrix `fail-fast` and cancellation propagation remain unimplemented; job-level `continue-on-error` is rejected rather than ignored. |
+| Static matrix | Trusted scheduler supported subset | Deterministic axes plus bounded `include`/`exclude` expansion are available. `gha-linux-workflow` executes every concrete static instance, applies per-matrix `max-parallel`, and exposes the observed concurrency. Dynamic expression-generated matrices remain unsupported. Matrix scheduling is not connected to fixed-profile HTTP intake. |
+| Job concurrency | Trusted scheduler supported subset | Dependency-ready jobs run concurrently up to an operator-wide ceiling, while each matrix group independently honors `strategy.max-parallel`. The fixed-profile HTTP workflow executor remains sequential. Concurrency groups and external cancellation APIs are not implemented. |
+| Failure propagation | Trusted scheduler supported subset | Step and job outcome remain distinct from conclusion. Boolean or static-matrix expression-valued job `continue-on-error` tolerates a failed instance. A non-tolerated failure triggers matrix `fail-fast`, cancels queued siblings, and aborts in-progress sibling processes; a tolerated failure does not. Direct dependants receive aggregate `needs.<job>.result` and GitHub-compatible implicit-success gating. |
 | Status and retention | Partial | Authenticated submit/list/get APIs, queued/running/succeeded/failed/skipped states, request deduplication, deadlines, and bounded in-memory retention are implemented. Durable workflow-run recovery is future work. |
 | Expressions and contexts | Production rejected; trusted CLI typed subset | Fixed-profile execution rejects expressions. The trusted Linux CLI evaluates bounded typed expressions over explicitly supplied `matrix`, `env`, and completed prior-step contexts. It supports documented literals, property/index access, logical and comparison operators, loose equality, status checks, and the versioned pure-function set. All other contexts/functions fail closed; secret taint and the broader production context model remain unimplemented. |
 | Secrets and identity | Rejected for execution | `secrets`, `github.token`, OIDC request variables, secret-bearing action inputs, and caller-provided credentials are not accepted by workflow execution. |
 | Workflow/job/step `env` and defaults | Production rejected; trusted CLI partial | The trusted Linux CLI supports scalar workflow/job/step environment precedence, step-scoped `env` in conditions and `continue-on-error`, subsequent-step `GITHUB_ENV` updates, workflow/job `defaults.run`, and explicit step overrides. Fixed-profile environment forwarding remains unsupported. |
-| Conditions and timeouts | Production rejected; trusted CLI partial | The trusted Linux CLI supports typed step conditions over the v2 expression subset, explicit status checks, GitHub's implicit `success()` gate, bounded step timeouts, workspace-contained working directories, default Bash, explicit Bash, `sh`, and boolean or expression-valued step `continue-on-error`. Job-level conditions and timeouts require scheduler semantics and are rejected rather than ignored. Fixed-profile HTTP execution still rejects these caller-controlled fields. |
+| Conditions and timeouts | Production rejected; trusted CLI partial | The trusted Linux CLIs support typed step conditions, explicit status checks, GitHub's implicit `success()` gate, bounded step timeouts, workspace-contained working directories, default Bash, explicit Bash, and `sh`. The workflow scheduler additionally supports job conditions over direct `needs` results and status functions. Job-level timeout, broader job contexts, and fixed-profile HTTP execution remain rejected rather than ignored. |
 | Reusable workflows | Planner-visible only | Job-level `uses` can be represented by the planner, but reusable workflow invocation and nested permission/secret semantics are not executable. |
 | Services and containers | Rejected | Job containers, service containers, container credentials, and port/network lifecycle are outside the current trust boundary. |
 | Permissions and tokens | Not implemented | Workflow/job `permissions`, `GITHUB_TOKEN` scoping, fork restrictions, and OIDC claims are not synthesized. |
@@ -91,7 +92,38 @@ misrepresented as independent differential evidence.
 
 The v2 evaluator still rejects every unlisted context or function. In
 particular, it has no secret context, taint propagation, `hashFiles`, object
-filters, dynamic matrices, prior-job `needs`, or job-level scheduler semantics.
+filters, or dynamic matrices. The scheduler supplies a deliberately narrow
+direct-`needs` context for job conditions; it does not make `needs` available to
+step expressions or implement job outputs.
+
+### Linux workflow scheduler v1
+
+The additive `gha-indie-worker.linux-workflow.v1` contract is recorded in
+`docs/GHA_CONFORMANCE_2026-08-14_SCHEDULER_V1.md`. Its paired fixture and
+official-hosted differential cover:
+
+- execution of all instances from a bounded static `matrix.include`;
+- per-matrix `max-parallel: 2`, measured from official job timestamps and from
+  the indie scheduler's own maximum-observed counter;
+- expression-valued job `continue-on-error` using a static matrix boolean;
+- preservation of the failed experimental instance's raw outcome while its job
+  conclusion and matrix aggregate remain successful;
+- non-triggering of `fail-fast` by that tolerated instance;
+- default execution of a job that needs the successful matrix aggregate;
+- a false job condition producing `skipped`, followed by an `always()` job that
+  inspects `needs.<job>.result` and recovers successfully.
+
+Local positive and negative tests additionally prove queued and in-progress
+fail-fast cancellation, operator-wide concurrency limits, ordinary dependency
+failure and recovery, isolated workspaces, and whole-plan rejection before any
+shell starts. Those cases are labeled local rather than official differential
+evidence.
+
+The scheduler still rejects actions, reusable workflows, job timeouts, dynamic
+matrices, job outputs, step-level `needs`, services, containers, secrets, event
+contexts, artifacts, caches, and persistence/recovery. Its workspaces start
+empty; repository and artifact material appears only when a future explicitly
+supported, immutable action supplies it.
 
 ## Execution invariants
 
@@ -118,7 +150,8 @@ The following conditions are mandatory for every production fixed-profile job. T
 
 ### P1 — useful static workflow parity
 
-- execute bounded static matrix jobs with dependency-aware parallelism, `max-parallel`, and `fail-fast`;
+- connect the bounded static scheduler to durable leases, cancellation APIs,
+  immutable source material, and the production admission boundary;
 - extend the bounded typed evaluator with per-field context availability,
   secret taint propagation, masking, and safe job/step scheduler integration;
 - support outputs without exposing secret-tainted values;

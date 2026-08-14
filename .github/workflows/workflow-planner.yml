@@ -48,7 +48,7 @@ jobs:
             find .planner-ci -depth -delete
           fi
           mkdir -p .planner-ci/src/bin
-          cp src/expression.rs src/lib.rs src/linux_runner.rs src/workflow.rs src/workflow_guard.rs src/workflow_yaml.rs .planner-ci/src/
+          cp src/expression.rs src/lib.rs src/linux_runner.rs src/workflow.rs src/workflow_guard.rs src/workflow_runner.rs src/workflow_yaml.rs .planner-ci/src/
           cp src/bin/gha-workflow-plan.rs src/bin/gha-workflow-server.rs .planner-ci/src/bin/
           cat > .planner-ci/Cargo.toml <<'EOF'
           [package]

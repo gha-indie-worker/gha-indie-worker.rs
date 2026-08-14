@@ -200,7 +200,7 @@ pub async fn execute_trusted_linux_job(
         ));
     }
 
-    preflight_job(job)?;
+    preflight_trusted_linux_job(job)?;
     let workspace = fs::canonicalize(&config.workspace).await.map_err(|error| {
         LinuxRunnerError::new(
             "invalid_workspace",
@@ -390,7 +390,7 @@ fn expression_error(error: ExpressionError) -> LinuxRunnerError {
     LinuxRunnerError::new(error.code, error.message)
 }
 
-fn preflight_job(job: &PlannedJob) -> Result<(), LinuxRunnerError> {
+pub(crate) fn preflight_trusted_linux_job(job: &PlannedJob) -> Result<(), LinuxRunnerError> {
     if job.reusable_workflow.is_some() {
         return Err(LinuxRunnerError::new(
             "unsupported_reusable_workflow",
@@ -494,6 +494,13 @@ fn preflight_job(job: &PlannedJob) -> Result<(), LinuxRunnerError> {
             }
         }
     }
+    let mut runtime = RuntimeContext::default();
+    for (key, value) in &job.env {
+        let value = scalar_to_string(value, "job environment")?;
+        let value = resolve_templates(&value, &job.matrix, &runtime)?;
+        runtime.environment.insert(key.clone(), value);
+    }
+    validate_linux_labels(job, &runtime)?;
     Ok(())
 }
 
