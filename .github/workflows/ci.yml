@@ -26,7 +26,7 @@ jobs:
           toolchain: '1.90.0'
           components: rustfmt, clippy
       - name: Check canonical worker source formatting
-        run: rustfmt --edition 2021 --config skip_children=true --check src/main.rs src/expression.rs src/gha_workflow.rs src/http.rs src/jobs.rs src/lib.rs src/linux_runner.rs src/validation.rs src/bin/gha-linux-runner.rs
+        run: rustfmt --edition 2021 --config skip_children=true --check src/main.rs src/expression.rs src/gha_workflow.rs src/http.rs src/jobs.rs src/lib.rs src/linux_runner.rs src/workflow_runner.rs src/validation.rs src/bin/gha-linux-runner.rs src/bin/gha-linux-workflow.rs
       - name: Check compatibility crate formatting
         run: rustfmt --edition 2021 --check vendor/dd-telemetry/src/lib.rs vendor/dd-nats-subject-defs/src/lib.rs vendor/dd-runtime-config-client/src/lib.rs
       - run: cargo clippy --locked --all-targets -- -D warnings
@@ -65,13 +65,15 @@ jobs:
               "gha_workflow.rs": "8f42204e1e2443974121203ca683bad26c0a0d26",
               "http.rs": "6e7e559684ad544e2f05b542779b64c8439e5936",
               "jobs.rs": "645078edf50bd8d7c024100bc4e1f748b483a4dd",
-              "lib.rs": "fd443bc3122283cc01b6ac1436e2ae12f7ecb2eb",
-              "linux_runner.rs": "2c75fda9d9eb52eb674ac8b5308c40ddea2569de",
+              "lib.rs": "e23d0f643a632cd80d5e99e7387896d2b06f4516",
+              "linux_runner.rs": "c9b61e9ccb959e5deff39dc890f1e3aae89c21c0",
               "validation.rs": "a57366881c2dcf43e119e70cccd5a82527370227",
               "workflow.rs": "2696df4697ca1c59e4ba5df9af336a6420285875",
               "workflow_guard.rs": "b96a32c9e858584dbcbb2466021f2292921d5171",
+              "workflow_runner.rs": "44d4183d5ced7c210d9a8c1766ef9c3949a210ef",
               "workflow_yaml.rs": "76ea4b31fa947bef87851969964014025d17e79f",
               "bin/gha-linux-runner.rs": "deca1126fe6bd8d03e4e3f105d2b635408a5175a",
+              "bin/gha-linux-workflow.rs": "0c0ca9329b02d4aafb1d3c71609320c36fd15a67",
               "bin/gha-workflow-plan.rs": "350250236d65a61dafdc209fb2192497589b4ecb",
               "bin/gha-workflow-server.rs": "1cd5c3b48baed3e4362bf06c4482cd5f10a89683",
           }
@@ -159,9 +161,11 @@ jobs:
           grep -F 'a3da1bdae02618a7382fc24aa73e3ad8edb721aa' SOURCE_PROVENANCE.md
           grep -F 'db0812072de0a3ba5d1ce5965a28dc2ff0d09f5a' SOURCE_PROVENANCE.md
           grep -F '944ef5e0c05010a9a46aedc7728e244ec21c17ab' SOURCE_PROVENANCE.md
-          grep -F 'fd443bc3122283cc01b6ac1436e2ae12f7ecb2eb' SOURCE_PROVENANCE.md
-          grep -F '2c75fda9d9eb52eb674ac8b5308c40ddea2569de' SOURCE_PROVENANCE.md
+          grep -F 'e23d0f643a632cd80d5e99e7387896d2b06f4516' SOURCE_PROVENANCE.md
+          grep -F 'c9b61e9ccb959e5deff39dc890f1e3aae89c21c0' SOURCE_PROVENANCE.md
+          grep -F '44d4183d5ced7c210d9a8c1766ef9c3949a210ef' SOURCE_PROVENANCE.md
           grep -F 'deca1126fe6bd8d03e4e3f105d2b635408a5175a' SOURCE_PROVENANCE.md
+          grep -F '0c0ca9329b02d4aafb1d3c71609320c36fd15a67' SOURCE_PROVENANCE.md
           grep -F '42c8bc040c23bbbdf9ea34156c447f1a9136a46a' SOURCE_PROVENANCE.md
           grep -F '446a84f97fcee88873e97ff3dcd3ab8bb1848ee5' SOURCE_PROVENANCE.md
           grep -F 'dd-telemetry = { path = "vendor/dd-telemetry" }' Cargo.toml
