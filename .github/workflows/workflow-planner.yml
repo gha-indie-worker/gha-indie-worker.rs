@@ -10,6 +10,7 @@ on:
       - "src/workflow_yaml.rs"
       - "src/bin/gha-workflow-plan.rs"
       - "src/bin/gha-workflow-server.rs"
+      - "Cargo.toml"
       - ".github/workflows/workflow-planner.yml"
   push:
     branches: [main]
@@ -20,6 +21,7 @@ on:
       - "src/workflow_yaml.rs"
       - "src/bin/gha-workflow-plan.rs"
       - "src/bin/gha-workflow-server.rs"
+      - "Cargo.toml"
       - ".github/workflows/workflow-planner.yml"
 
 permissions:
@@ -42,7 +44,9 @@ jobs:
         run: rustup toolchain install 1.97.0 --profile minimal --component rustfmt,clippy
       - name: Assemble standalone planner harness
         run: |
-          rm -rf .planner-ci
+          if [ -d .planner-ci ]; then
+            find .planner-ci -depth -delete
+          fi
           mkdir -p .planner-ci/src/bin
           cp src/lib.rs src/workflow.rs src/workflow_guard.rs src/workflow_yaml.rs .planner-ci/src/
           cp src/bin/gha-workflow-plan.rs src/bin/gha-workflow-server.rs .planner-ci/src/bin/
@@ -52,6 +56,10 @@ jobs:
           version = "0.1.0"
           edition = "2021"
           publish = false
+
+          [features]
+          default = []
+          linux-runner = []
 
           [dependencies]
           axum = { version = "0.7", features = ["macros"] }

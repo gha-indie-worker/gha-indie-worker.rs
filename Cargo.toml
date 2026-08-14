@@ -3,6 +3,10 @@ name = "dd-build-server"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["linux-runner"]
+linux-runner = []
+
 [dependencies]
 dd-telemetry = { path = "vendor/dd-telemetry" }
 tracing = "0.1"

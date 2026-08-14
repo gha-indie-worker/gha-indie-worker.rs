@@ -3,6 +3,7 @@
 extern crate self as serde_yaml;
 extern crate serde_yaml as serde_yaml_real;
 
+#[cfg(feature = "linux-runner")]
 pub mod linux_runner;
 pub mod workflow;
 mod workflow_guard;
