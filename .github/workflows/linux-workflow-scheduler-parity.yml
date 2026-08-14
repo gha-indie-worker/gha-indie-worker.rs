@@ -53,10 +53,19 @@ jobs:
             experimental: false
     steps:
       - name: Execute official matrix instance
+        id: exercise
         continue-on-error: ${{ matrix.experimental }}
         run: |
           sleep 5
           if [ '${{ matrix.experimental }}' = 'true' ]; then false; fi
+
+      - name: Observe raw outcome (${{ steps.exercise.outcome }})
+        run: |
+          if [ '${{ matrix.experimental }}' = 'true' ]; then
+            test '${{ steps.exercise.outcome }}' = 'failure'
+          else
+            test '${{ steps.exercise.outcome }}' = 'success'
+          fi
 
   after_matrix:
     name: Official dependency after matrix
@@ -179,8 +188,20 @@ jobs:
                   step for step in official['steps']
                   if step['name'] == 'Execute official matrix instance'
               )
+              outcome_prefix = 'Observe raw outcome ('
+              official_outcome_step = next(
+                  step for step in official['steps']
+                  if step['name'].startswith(outcome_prefix)
+              )
+              official_outcome = official_outcome_step['name'][
+                  len(outcome_prefix):-1
+              ]
               expected_outcome = 'failure' if label == 'experimental' else 'success'
-              assert official_step['conclusion'] == expected_outcome, official_step
+              assert official_step['conclusion'] == 'success', official_step
+              assert official_outcome == expected_outcome, official_outcome_step
+              assert official_outcome_step['conclusion'] == 'success', (
+                  official_outcome_step
+              )
               assert indie['outcome'] == indie['conclusion'] == expected_outcome, indie
               assert official['conclusion'] == 'success', official
               assert indie['effectiveConclusion'] == official['conclusion'], (
@@ -189,6 +210,7 @@ jobs:
               matrix_observations[label] = {
                   'officialJobConclusion': official['conclusion'],
                   'officialStepConclusion': official_step['conclusion'],
+                  'officialStepOutcome': official_outcome,
                   'indieOutcome': indie['outcome'],
                   'indieConclusion': indie['conclusion'],
                   'indieEffectiveConclusion': indie['effectiveConclusion'],

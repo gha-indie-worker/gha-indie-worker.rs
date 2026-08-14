@@ -74,9 +74,10 @@ The immutable observation below used job-level `continue-on-error`, which made
 GitHub expose the tolerated experimental concrete job as a red check even though
 the matrix aggregate and workflow succeeded. The recurring pull-request gate now
 places the same tolerance on the failing step: it compares GitHub's failed step
-with the indie raw outcome, and GitHub's successful job conclusion with the indie
-effective conclusion. This keeps every configured gate green without erasing the
-historical job-level observation or weakening the runner's job-level fixture.
+`outcome` context with the indie raw outcome, and GitHub's successful step and
+job conclusions with the indie effective conclusion. This keeps every configured
+gate green without erasing the historical job-level observation or weakening the
+runner's job-level fixture.
 
 ## Exact passing observation
 
