@@ -73,8 +73,12 @@ pub(crate) async fn append_log(path: &Path, message: &str, max_bytes: u64) {
     }
 }
 
-pub(crate) async fn pipe_reader<R>(reader: R, log_path: PathBuf, prefix: &'static str, max_bytes: u64)
-where
+pub(crate) async fn pipe_reader<R>(
+    reader: R,
+    log_path: PathBuf,
+    prefix: &'static str,
+    max_bytes: u64,
+) where
     R: AsyncRead + Unpin,
 {
     let mut reader = BufReader::new(reader);

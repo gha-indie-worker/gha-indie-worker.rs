@@ -1,0 +1,44 @@
+name: Linux runner differential fixture
+
+jobs:
+  parity:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        value: [42]
+    env:
+      LEVEL: job
+    steps:
+      - name: Prepare shared workspace
+        run: mkdir -p work
+
+      - name: Produce persistent environment and output
+        id: producer
+        env:
+          LEVEL: step
+        run: |
+          printf '%s:%s' "$LEVEL" '${{ env.LEVEL }}' > work/result.txt
+          echo 'PERSISTED=from-env' >> "$GITHUB_ENV"
+          echo 'value=${{ matrix.value }}' >> "$GITHUB_OUTPUT"
+
+      - name: Default bash has errexit without pipefail
+        id: default_pipe
+        run: false | true
+
+      - name: Explicit bash enables pipefail
+        id: tolerated_pipe
+        shell: bash
+        continue-on-error: true
+        run: false | true
+
+      - name: Continue after tolerated failure
+        id: after
+        if: success()
+        working-directory: work
+        run: printf '|%s|${{ steps.producer.outputs.value }}' "$PERSISTED" >> result.txt
+
+      - name: Failure branch stays skipped
+        id: must_skip
+        if: failure()
+        run: echo wrong >> work/result.txt

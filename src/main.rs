@@ -13,6 +13,9 @@ use tokio::{
     sync::{RwLock, Semaphore},
 };
 
+// The DEN-3440 classifier is compiled and tested independently while the
+// GitHub check-run evidence adapter remains a separate trust-boundary change.
+#[allow(dead_code)]
 mod admission;
 mod config;
 mod db;

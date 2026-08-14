@@ -6,11 +6,12 @@ The compatibility contract is fail-closed: unsupported YAML or execution semanti
 
 ## Architecture
 
-The repository contains three distinct trust stages:
+The repository contains four distinct trust stages:
 
 1. **Strict YAML admission and planning** — rejects ambiguous or excessive YAML, validates the job graph, and deterministically expands supported static matrices.
 2. **Immutable reviewed-profile binding** — binds each concrete job to an exact repository commit, reviewed profile digest, catalog digest, plan digest, dependency set, matrix metadata, and content-derived request identity.
 3. **Fixed-profile execution** — submits only operator-reviewed profiles to the existing build queue. Workflow YAML cannot select a shell command, container image, Dockerfile, deployment, namespace, executor, or credential.
+4. **Explicitly trusted Linux conformance execution** — the separate `gha-linux-runner` CLI can execute the bounded `run`-step subset only when a human or higher-level policy supplies `--allow-host-execution`. It is not connected to webhook or HTTP intake and it does not weaken fixed-profile admission.
 
 Keeping these stages separate is intentional. A feature being understood by the planner does not automatically grant it execution authority.
 
@@ -23,16 +24,16 @@ Keeping these stages separate is intentional. A feature being understood by the 
 | `jobs` and `needs` | Supported | Static job identifiers, unknown-dependency rejection, cycle rejection, deterministic topological order, and downstream skip after failed dependencies. |
 | `runs-on` | Partial | Static Linux labels only. Windows, macOS, dynamic labels, runner groups, and caller-selected environments are not executable. |
 | Repository revision | Supported | Execution requires an exact lowercase 40-character commit SHA and a policy-approved HTTPS GitHub repository identity. Mutable branches and tags may be planned but are not executable. |
-| Steps | Profile classification only | `run` and a small allowlist of setup actions are inspected only to select one installed fixed profile. Caller shell text is never forwarded. |
+| Steps | Production profile classification; trusted CLI partial | Production intake only classifies `run` plus a small setup-action allowlist into installed profiles. The explicit trusted Linux CLI executes `run` steps in separate processes with a shared workspace and fails closed on every `uses` step. |
 | Action references | Partial | Recognized setup actions must be pinned to an exact commit SHA. Arbitrary JavaScript, Docker, composite, local, and marketplace actions are not executed. |
-| Static matrix | Planner/protocol support | Deterministic axes plus bounded `include`/`exclude` expansion are available in the planner and binding protocol. Matrix jobs are not yet enabled in the fixed-profile HTTP execution path. |
+| Static matrix | Planner/protocol plus trusted single-instance execution | Deterministic axes plus bounded `include`/`exclude` expansion are available. The trusted CLI resolves scalar `matrix` references for one selected concrete instance; matrix scheduling is not yet enabled in the fixed-profile HTTP path. |
 | Job concurrency | Deviation | The current fixed-profile workflow executor runs concrete jobs sequentially in dependency order. GitHub-independent parallel-ready scheduling is future work. |
-| Failure propagation | Partial | Required downstream jobs are skipped after dependency failure. `continue-on-error`, `fail-fast`, cancellation propagation, and nuanced conclusion semantics are not executable. |
+| Failure propagation | Partial | Fixed-profile workflows skip downstream jobs after dependency failure. The trusted Linux CLI distinguishes step outcome from conclusion, implements boolean step `continue-on-error`, and preserves failure for `failure()`/`always()` cleanup. Matrix `fail-fast`, cancellation propagation, and job-level `continue-on-error` remain unimplemented. |
 | Status and retention | Partial | Authenticated submit/list/get APIs, queued/running/succeeded/failed/skipped states, request deduplication, deadlines, and bounded in-memory retention are implemented. Durable workflow-run recovery is future work. |
-| Expressions and contexts | Rejected for execution | `${{ ... }}`, contexts, functions, interpolation, dynamic matrices, job outputs, and step outputs are not evaluated. |
+| Expressions and contexts | Production rejected; trusted CLI narrow subset | Fixed-profile execution rejects expressions. The trusted Linux CLI resolves scalar `matrix.*`, `env.*`, and prior `steps.<id>.outputs.*` references. It rejects all other contexts/functions and is explicitly not the future taint-tracked production evaluator. |
 | Secrets and identity | Rejected for execution | `secrets`, `github.token`, OIDC request variables, secret-bearing action inputs, and caller-provided credentials are not accepted by workflow execution. |
-| Workflow/job/step `env` and defaults | Rejected for execution | Environment mutation and default shell/working-directory behavior are not forwarded. |
-| Conditions and timeouts | Rejected for execution | Job/step `if`, custom timeouts, custom shells, working directories, and `continue-on-error` are planner-visible but cannot bind to execution. |
+| Workflow/job/step `env` and defaults | Production rejected; trusted CLI partial | The trusted Linux CLI supports scalar job/step environment precedence and subsequent-step `GITHUB_ENV` updates. Workflow-level `env`, `defaults.run`, and fixed-profile environment forwarding remain unsupported. |
+| Conditions and timeouts | Production rejected; trusted CLI partial | The trusted Linux CLI supports step `success()`, `failure()`, `always()`, `cancelled()`, `!cancelled()`, booleans, bounded timeouts, workspace-contained working directories, default Bash, explicit Bash, `sh`, and boolean step `continue-on-error`. Fixed-profile HTTP execution still rejects these caller-controlled fields. |
 | Reusable workflows | Planner-visible only | Job-level `uses` can be represented by the planner, but reusable workflow invocation and nested permission/secret semantics are not executable. |
 | Services and containers | Rejected | Job containers, service containers, container credentials, and port/network lifecycle are outside the current trust boundary. |
 | Permissions and tokens | Not implemented | Workflow/job `permissions`, `GITHUB_TOKEN` scoping, fork restrictions, and OIDC claims are not synthesized. |
@@ -41,9 +42,26 @@ Keeping these stages separate is intentional. A feature being understood by the 
 | Environments and deployments | Not implemented | Environment approvals, protected deployments, concurrency locks, and deployment status APIs remain outside this worker. |
 | Annotations and checks | Not implemented | Check runs, log commands, masks, problem matchers, summaries, annotations, reruns, and cancellation APIs need a GitHub lifecycle adapter. |
 
+## Trusted Linux runner v1 evidence
+
+The `gha-indie-worker.linux-runner.v1` contract is intentionally smaller than GitHub Actions. Its parity claim is limited to the behavior exercised by `tests/fixtures/gha/linux-runner-parity.yml` and `.github/workflows/linux-runner-parity.yml`:
+
+- each `run` step starts in a separate process while the workspace persists;
+- job environment is overridden by step environment;
+- writes to `GITHUB_ENV` affect later steps but not the writing step;
+- writes to `GITHUB_OUTPUT` become scalar `steps.<id>.outputs.*` values;
+- an unspecified Linux shell behaves as `bash -e`, while explicit `shell: bash` enables `--noprofile --norc -eo pipefail`;
+- a failed `continue-on-error: true` step keeps `outcome: failure` and changes `conclusion` to `success`;
+- default/success, failure, always, cancelled, and not-cancelled status conditions use the current job status;
+- working directories must already exist and remain inside the canonical workspace;
+- matrix, environment, and prior-step-output scalar interpolation is bounded and fail-closed;
+- step output size and execution time are bounded.
+
+The differential workflow executes an equivalent oracle sequence directly on GitHub's official Ubuntu runner, executes the fixture through `gha-linux-runner`, compares the resulting workspace bytes, and compares each observed step outcome/conclusion. A passing differential job proves this listed slice only. It does not prove action-runtime, service-container, token, event, artifact, cache, deployment, or complete expression parity.
+
 ## Execution invariants
 
-The following conditions are mandatory for every executable job:
+The following conditions are mandatory for every production fixed-profile job. The trusted conformance CLI has a separate explicit-authorization boundary described above and is not a production intake path:
 
 - workflow input passed strict bounded YAML admission;
 - repository identity and context path are canonical and traversal-free;

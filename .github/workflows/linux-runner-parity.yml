@@ -1,0 +1,150 @@
+name: Linux runner parity
+
+on:
+  pull_request:
+    paths:
+      - src/linux_runner.rs
+      - src/bin/gha-linux-runner.rs
+      - src/lib.rs
+      - src/workflow.rs
+      - src/workflow_guard.rs
+      - src/workflow_yaml.rs
+      - tests/fixtures/gha/linux-runner-parity.yml
+      - .github/workflows/linux-runner-parity.yml
+      - docs/GHA_COMPATIBILITY.md
+  push:
+    branches: [dev, main]
+    paths:
+      - src/linux_runner.rs
+      - src/bin/gha-linux-runner.rs
+      - src/lib.rs
+      - src/workflow.rs
+      - src/workflow_guard.rs
+      - src/workflow_yaml.rs
+      - tests/fixtures/gha/linux-runner-parity.yml
+      - .github/workflows/linux-runner-parity.yml
+      - docs/GHA_COMPATIBILITY.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-runner-parity-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  differential:
+    name: Official vs indie Linux semantics
+    strategy:
+      matrix:
+        os: [ubuntu-24.04]
+        value: [42]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - name: Check out without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          show-progress: false
+          submodules: false
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.90.0
+          components: "clippy,rustfmt"
+
+      - name: Verify runner unit contracts
+        run: |
+          cargo test --locked --lib linux_runner::tests
+          cargo test --locked --bin gha-linux-runner
+          cargo clippy --locked --lib --bin gha-linux-runner -- -D warnings
+
+      - name: Prepare official-runner oracle workspace
+        run: mkdir -p .gha-parity/official/work
+
+      - name: Produce official persistent environment and output
+        id: official_producer
+        env:
+          LEVEL: step
+        run: |
+          printf '%s:%s' "$LEVEL" '${{ env.LEVEL }}' > .gha-parity/official/work/result.txt
+          echo 'PERSISTED=from-env' >> "$GITHUB_ENV"
+          echo 'value=${{ matrix.value }}' >> "$GITHUB_OUTPUT"
+
+      - name: Official default bash has no pipefail
+        id: official_default_pipe
+        run: false | true
+
+      - name: Official explicit bash enables pipefail
+        id: official_tolerated_pipe
+        shell: bash
+        continue-on-error: true
+        run: false | true
+
+      - name: Official runner continues after tolerated failure
+        id: official_after
+        if: success()
+        working-directory: .gha-parity/official/work
+        env:
+          OUTPUT_VALUE: ${{ steps.official_producer.outputs.value }}
+        run: printf '|%s|%s' "$PERSISTED" "$OUTPUT_VALUE" >> result.txt
+
+      - name: Official failure branch stays skipped
+        id: official_must_skip
+        if: failure()
+        run: echo wrong >> .gha-parity/official/work/result.txt
+
+      - name: Run the same fixture through gha-indie-worker
+        run: |
+          mkdir -p .gha-parity/indie
+          cargo run --quiet --locked --bin gha-linux-runner -- \
+            --workflow tests/fixtures/gha/linux-runner-parity.yml \
+            --job parity \
+            --workspace .gha-parity/indie \
+            --allow-host-execution \
+            > .gha-parity/indie-trace.json
+
+      - name: Compare official and indie observations
+        env:
+          OFFICIAL_DEFAULT_OUTCOME: ${{ steps.official_default_pipe.outcome }}
+          OFFICIAL_DEFAULT_CONCLUSION: ${{ steps.official_default_pipe.conclusion }}
+          OFFICIAL_TOLERATED_OUTCOME: ${{ steps.official_tolerated_pipe.outcome }}
+          OFFICIAL_TOLERATED_CONCLUSION: ${{ steps.official_tolerated_pipe.conclusion }}
+          OFFICIAL_AFTER_CONCLUSION: ${{ steps.official_after.conclusion }}
+          OFFICIAL_SKIPPED_CONCLUSION: ${{ steps.official_must_skip.conclusion }}
+        run: |
+          cmp .gha-parity/official/work/result.txt .gha-parity/indie/work/result.txt
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          trace = json.loads(Path('.gha-parity/indie-trace.json').read_text())
+          steps = {step['id']: step for step in trace['steps'] if step['id']}
+          comparisons = {
+              'default_pipe': (
+                  os.environ['OFFICIAL_DEFAULT_OUTCOME'],
+                  os.environ['OFFICIAL_DEFAULT_CONCLUSION'],
+              ),
+              'tolerated_pipe': (
+                  os.environ['OFFICIAL_TOLERATED_OUTCOME'],
+                  os.environ['OFFICIAL_TOLERATED_CONCLUSION'],
+              ),
+              'after': ('success', os.environ['OFFICIAL_AFTER_CONCLUSION']),
+              'must_skip': ('skipped', os.environ['OFFICIAL_SKIPPED_CONCLUSION']),
+          }
+          assert trace['conclusion'] == 'success', trace
+          assert Path('.gha-parity/indie/work/result.txt').read_text() == 'step:step|from-env|42'
+          for step_id, expected in comparisons.items():
+              observed = (steps[step_id]['outcome'], steps[step_id]['conclusion'])
+              assert observed == expected, (step_id, observed, expected)
+          print(json.dumps({
+              'schemaVersion': trace['schemaVersion'],
+              'jobConclusion': trace['conclusion'],
+              'matchedSteps': sorted(comparisons),
+              'workspaceResult': 'step:step|from-env|42',
+          }, sort_keys=True))
+          PY
