@@ -6,7 +6,7 @@ This repository is published from `ORESoftware/k8s-cluster` at immutable commit 
 - Canonical feature PR: `ORESoftware/k8s-cluster#797`
 - Published role: bounded GitHub Actions YAML planner and fixed-profile execution worker
 - Publication date: 2026-08-04
-- Canonical core parity: every canonical file under `src/` except the explicitly pinned standalone extensions below, plus `scripts/` and `generated/`, remains byte-for-byte identical to the immutable source commit
+- Canonical core parity: every canonical file under `src/` and `scripts/` except the explicitly pinned standalone extensions below, plus all of `generated/`, remains byte-for-byte identical to the immutable source commit
 - Standalone entry-point integration: `src/main.rs` is pinned to Git blob `a3da1bdae02618a7382fc24aa73e3ad8edb721aa`; it preserves the canonical fixed-profile policy, compiles the independently certified admission classifier without connecting it to unreviewed evidence, and delegates executable YAML admission to the shared library boundary
 - GitHub admission classification: `src/admission.rs` is pinned to Git blob `db0812072de0a3ba5d1ce5965a28dc2ff0d09f5a`; it fails closed on ambiguous zero-step evidence and cannot authorize fallback from repository-controlled log text
 - Immutable checkout hardening: `src/jobs.rs` is pinned to Git blob `645078edf50bd8d7c024100bc4e1f748b483a4dd`; exact commit requests use a restricted shallow fetch followed by a detached checkout instead of treating the commit ID as a branch name
@@ -16,6 +16,7 @@ This repository is published from `ORESoftware/k8s-cluster` at immutable commit 
 - Standalone operator contract: `readme.md` is pinned to Git blob `446a84f97fcee88873e97ff3dcd3ab8bb1848ee5`; it documents immutable profile checkout separately from mutable image-job branch and tag checkout
 - Shared strict admission: `src/lib.rs` is pinned to Git blob `4163d3a5bf19c26c43b9a854e55632e784a56a82`; planner and executable entry points share the bounded source guard and ambiguity-rejecting parser, while the trusted Linux executor is isolated behind the default-on `linux-runner` feature so the standalone planner harness remains execution-free
 - Trusted Linux conformance executor: `src/linux_runner.rs` is pinned to Git blob `0ca7d1c3536c5f34871c8b3810697106d6b49154` and `src/bin/gha-linux-runner.rs` is pinned to Git blob `deca1126fe6bd8d03e4e3f105d2b635408a5175a`; host shell execution requires an explicit CLI capability and is not reachable from webhook or HTTP intake
+- GitHub readiness auditor: `scripts/github_readiness_audit.py` is an independently reviewed standalone extension pinned to Git blob `42c8bc040c23bbbdf9ea34156c447f1a9136a46a`; it performs a fail-closed capability audit without reading or printing credentials
 - Standalone planner extensions: `src/workflow.rs`, `src/workflow_guard.rs`, `src/workflow_yaml.rs`, and the two `src/bin/gha-workflow-*` entry points are pinned by exact Git blob hashes in `.github/workflows/ci.yml`
 - Immutable binding protocol: `crates/gha-indie-protocol` is independently locked and validated by `.github/workflows/indie-protocol.yml`
 - Packaging adaptations: three monorepo path dependencies are replaced by local API-compatible crates under `vendor/`; `Dockerfile` copies those crates
