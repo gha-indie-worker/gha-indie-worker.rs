@@ -19,7 +19,7 @@ Keeping these stages separate is intentional. A feature being understood by the 
 
 | Area | Current status | Contract |
 | --- | --- | --- |
-| Workflow YAML admission | Supported subset | Bounded by source bytes, lines, nesting, node count, jobs, steps, dependencies, runner labels, parameter entries, expanded jobs, copied steps, and estimated plan size. |
+| Workflow YAML admission | Supported subset | Bounded by source bytes, lines, nesting, node count, jobs, steps, dependencies, runner labels, parameter entries, expanded jobs, copied steps, and estimated plan size. Boolean and numeric YAML scalars in `if` and `run` are normalized to their GitHub command/expression strings. |
 | Ambiguous YAML | Rejected | Duplicate keys, merge keys, aliases, anchors, tags, tabs, directives, and multiple documents fail closed before execution policy evaluation. |
 | `jobs` and `needs` | Supported | Static job identifiers, unknown-dependency rejection, cycle rejection, deterministic topological order, and downstream skip after failed dependencies. |
 | `runs-on` | Partial | Static Linux labels only. Windows, macOS, dynamic labels, runner groups, and caller-selected environments are not executable. |
@@ -28,12 +28,12 @@ Keeping these stages separate is intentional. A feature being understood by the 
 | Action references | Partial | Recognized setup actions must be pinned to an exact commit SHA. Arbitrary JavaScript, Docker, composite, local, and marketplace actions are not executed. |
 | Static matrix | Planner/protocol plus trusted single-instance execution | Deterministic axes plus bounded `include`/`exclude` expansion are available. The trusted CLI resolves scalar `matrix` references for one selected concrete instance; matrix scheduling is not yet enabled in the fixed-profile HTTP path. |
 | Job concurrency | Deviation | The current fixed-profile workflow executor runs concrete jobs sequentially in dependency order. GitHub-independent parallel-ready scheduling is future work. |
-| Failure propagation | Partial | Fixed-profile workflows skip downstream jobs after dependency failure. The trusted Linux CLI distinguishes step outcome from conclusion, implements boolean step `continue-on-error`, and preserves failure for `failure()`/`always()` cleanup. Matrix `fail-fast` and cancellation propagation remain unimplemented; job-level `continue-on-error` is rejected rather than ignored. |
+| Failure propagation | Partial | Fixed-profile workflows skip downstream jobs after dependency failure. The trusted Linux CLI distinguishes step outcome from conclusion, implements boolean and expression-valued step `continue-on-error`, and preserves failure for `failure()`/`always()` cleanup. Matrix `fail-fast` and cancellation propagation remain unimplemented; job-level `continue-on-error` is rejected rather than ignored. |
 | Status and retention | Partial | Authenticated submit/list/get APIs, queued/running/succeeded/failed/skipped states, request deduplication, deadlines, and bounded in-memory retention are implemented. Durable workflow-run recovery is future work. |
-| Expressions and contexts | Production rejected; trusted CLI narrow subset | Fixed-profile execution rejects expressions. The trusted Linux CLI resolves scalar `matrix.*`, `env.*`, and prior `steps.<id>.outputs.*` references. It rejects all other contexts/functions and is explicitly not the future taint-tracked production evaluator. |
+| Expressions and contexts | Production rejected; trusted CLI typed subset | Fixed-profile execution rejects expressions. The trusted Linux CLI evaluates bounded typed expressions over explicitly supplied `matrix`, `env`, and completed prior-step contexts. It supports documented literals, property/index access, logical and comparison operators, loose equality, status checks, and the versioned pure-function set. All other contexts/functions fail closed; secret taint and the broader production context model remain unimplemented. |
 | Secrets and identity | Rejected for execution | `secrets`, `github.token`, OIDC request variables, secret-bearing action inputs, and caller-provided credentials are not accepted by workflow execution. |
-| Workflow/job/step `env` and defaults | Production rejected; trusted CLI partial | The trusted Linux CLI supports scalar workflow/job/step environment precedence, subsequent-step `GITHUB_ENV` updates, workflow/job `defaults.run`, and explicit step overrides. Fixed-profile environment forwarding remains unsupported. |
-| Conditions and timeouts | Production rejected; trusted CLI partial | The trusted Linux CLI supports step `success()`, `failure()`, `always()`, `cancelled()`, `!cancelled()`, booleans, bounded step timeouts, workspace-contained working directories, default Bash, explicit Bash, `sh`, and boolean step `continue-on-error`. Job-level conditions and timeouts require scheduler semantics and are rejected rather than ignored. Fixed-profile HTTP execution still rejects these caller-controlled fields. |
+| Workflow/job/step `env` and defaults | Production rejected; trusted CLI partial | The trusted Linux CLI supports scalar workflow/job/step environment precedence, step-scoped `env` in conditions and `continue-on-error`, subsequent-step `GITHUB_ENV` updates, workflow/job `defaults.run`, and explicit step overrides. Fixed-profile environment forwarding remains unsupported. |
+| Conditions and timeouts | Production rejected; trusted CLI partial | The trusted Linux CLI supports typed step conditions over the v2 expression subset, explicit status checks, GitHub's implicit `success()` gate, bounded step timeouts, workspace-contained working directories, default Bash, explicit Bash, `sh`, and boolean or expression-valued step `continue-on-error`. Job-level conditions and timeouts require scheduler semantics and are rejected rather than ignored. Fixed-profile HTTP execution still rejects these caller-controlled fields. |
 | Reusable workflows | Planner-visible only | Job-level `uses` can be represented by the planner, but reusable workflow invocation and nested permission/secret semantics are not executable. |
 | Services and containers | Rejected | Job containers, service containers, container credentials, and port/network lifecycle are outside the current trust boundary. |
 | Permissions and tokens | Not implemented | Workflow/job `permissions`, `GITHUB_TOKEN` scoping, fork restrictions, and OIDC claims are not synthesized. |
@@ -42,7 +42,9 @@ Keeping these stages separate is intentional. A feature being understood by the 
 | Environments and deployments | Not implemented | Environment approvals, protected deployments, concurrency locks, and deployment status APIs remain outside this worker. |
 | Annotations and checks | Not implemented | Check runs, log commands, masks, problem matchers, summaries, annotations, reruns, and cancellation APIs need a GitHub lifecycle adapter. |
 
-## Trusted Linux runner v1 evidence
+## Versioned trusted Linux runner evidence
+
+### Linux runner v1
 
 The `gha-indie-worker.linux-runner.v1` contract is intentionally smaller than GitHub Actions. Its parity claim is limited to the behavior exercised by `tests/fixtures/gha/linux-runner-parity.yml` and `.github/workflows/linux-runner-parity.yml`:
 
@@ -61,6 +63,35 @@ The `gha-indie-worker.linux-runner.v1` contract is intentionally smaller than Gi
 - unsupported job-level conditions, timeouts, `continue-on-error`, reusable workflows, and `with` inputs on `run` steps fail closed during preflight before any step executes.
 
 The differential workflow executes an equivalent oracle sequence directly on GitHub's official Ubuntu runner, executes the fixture through `gha-linux-runner`, compares the resulting workspace bytes, and compares each observed step outcome/conclusion. A passing differential job proves this listed slice only. It does not prove action-runtime, service-container, token, event, artifact, cache, deployment, or complete expression parity.
+
+### Linux runner v2 expressions
+
+The additive `gha-indie-worker.linux-runner.v2` contract is recorded in
+`docs/GHA_CONFORMANCE_2026-08-14_EXPRESSION_V2.md`. Its independent
+official-runner differential proves the following combined fixture surface:
+
+- scalar YAML normalization for the observed unquoted `run: false` command;
+- typed boolean, string, number, missing-property, matrix, environment, and
+  prior-step-result values;
+- property and bracket indexing;
+- loose numerical equality/comparison and case-insensitive ASCII string
+  comparison;
+- short-circuit operand-valued `&&` and `||`;
+- `contains`, `startsWith`, `endsWith`, `format`, `join`, and `fromJSON` in the
+  observed compositions;
+- expression-valued step `continue-on-error` and subsequent
+  `outcome`/`conclusion` inspection;
+- false typed conditions producing matching skipped states.
+
+Local positive and negative tests additionally cover the documented v2 parser
+surface, `toJSON`, hexadecimal and exponential literals, implicit `success()`
+after an ordinary failure, input/resource limits, and whole-job rejection of
+unavailable contexts and unsupported functions. Those local cases are not
+misrepresented as independent differential evidence.
+
+The v2 evaluator still rejects every unlisted context or function. In
+particular, it has no secret context, taint propagation, `hashFiles`, object
+filters, dynamic matrices, prior-job `needs`, or job-level scheduler semantics.
 
 ## Execution invariants
 
@@ -88,7 +119,8 @@ The following conditions are mandatory for every production fixed-profile job. T
 ### P1 — useful static workflow parity
 
 - execute bounded static matrix jobs with dependency-aware parallelism, `max-parallel`, and `fail-fast`;
-- support safe job/step conditions over a typed, taint-tracked expression evaluator;
+- extend the bounded typed evaluator with per-field context availability,
+  secret taint propagation, masking, and safe job/step scheduler integration;
 - support outputs without exposing secret-tainted values;
 - implement content-addressed artifacts and caches with quotas and retention;
 - support reusable workflows only after immutable resolution, recursion limits, permission narrowing, and digest binding.
