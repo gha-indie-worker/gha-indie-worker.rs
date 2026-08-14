@@ -266,6 +266,42 @@ pub async fn execute_trusted_linux_job(
 }
 
 fn preflight_job(job: &PlannedJob) -> Result<(), LinuxRunnerError> {
+    if job.reusable_workflow.is_some() {
+        return Err(LinuxRunnerError::new(
+            "unsupported_reusable_workflow",
+            format!(
+                "job {:?} invokes a reusable workflow; the v1 trusted Linux runner executes concrete run-step jobs only",
+                job.id
+            ),
+        ));
+    }
+    if job.condition.is_some() {
+        return Err(LinuxRunnerError::new(
+            "unsupported_job_condition",
+            format!(
+                "job {:?} defines if; job-level conditions require the workflow scheduler",
+                job.id
+            ),
+        ));
+    }
+    if job.timeout_minutes.is_some() {
+        return Err(LinuxRunnerError::new(
+            "unsupported_job_timeout",
+            format!(
+                "job {:?} defines timeout-minutes; v1 bounds individual steps only",
+                job.id
+            ),
+        ));
+    }
+    if job.continue_on_error.is_some() {
+        return Err(LinuxRunnerError::new(
+            "unsupported_job_continue_on_error",
+            format!(
+                "job {:?} defines continue-on-error; v1 supports that field on steps only",
+                job.id
+            ),
+        ));
+    }
     for label in &job.runs_on {
         validate_templates(label)?;
     }
@@ -289,6 +325,15 @@ fn preflight_job(job: &PlannedJob) -> Result<(), LinuxRunnerError> {
                 format!("step {} has no non-empty run source", step.index),
             ));
         };
+        if !step.with.is_empty() {
+            return Err(LinuxRunnerError::new(
+                "unsupported_run_inputs",
+                format!(
+                    "run step {} defines with; inputs are valid only for supported action steps",
+                    step.index
+                ),
+            ));
+        }
         validate_templates(run)?;
         if step.timeout_minutes == Some(0) {
             return Err(LinuxRunnerError::new(
@@ -988,6 +1033,46 @@ jobs:
             .expect_err("secret context must fail closed before execution");
         assert_eq!(error.code, "unsupported_expression");
         assert!(!marker.exists());
+    }
+
+    #[tokio::test]
+    async fn preflights_unsupported_job_semantics_and_run_inputs() {
+        let workspace = TestWorkspace::create();
+        let cases = [
+            (
+                "jobs:\n  test:\n    if: 'false'\n    runs-on: ubuntu-latest\n    steps:\n      - run: touch must-not-exist\n",
+                "unsupported_job_condition",
+            ),
+            (
+                "jobs:\n  test:\n    timeout-minutes: 1\n    runs-on: ubuntu-latest\n    steps:\n      - run: touch must-not-exist\n",
+                "unsupported_job_timeout",
+            ),
+            (
+                "jobs:\n  test:\n    continue-on-error: true\n    runs-on: ubuntu-latest\n    steps:\n      - run: touch must-not-exist\n",
+                "unsupported_job_continue_on_error",
+            ),
+            (
+                "jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: touch must-not-exist\n        with: { ignored: value }\n",
+                "unsupported_run_inputs",
+            ),
+        ];
+
+        for (yaml, expected_code) in cases {
+            let job = one_job(yaml);
+            let error = execute_trusted_linux_job(&job, &workspace.config())
+                .await
+                .expect_err("unsupported job semantics must fail closed");
+            assert_eq!(error.code, expected_code);
+            assert!(!workspace.0.join("must-not-exist").exists());
+        }
+
+        let reusable = one_job(
+            "jobs:\n  test:\n    uses: owner/repository/.github/workflows/test.yml@0123456789abcdef0123456789abcdef01234567\n",
+        );
+        let error = execute_trusted_linux_job(&reusable, &workspace.config())
+            .await
+            .expect_err("reusable workflow execution must fail closed");
+        assert_eq!(error.code, "unsupported_reusable_workflow");
     }
 
     #[tokio::test]
