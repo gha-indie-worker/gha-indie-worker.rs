@@ -1589,6 +1589,19 @@ jobs:
         assert_eq!(error.code, "matrix_too_large");
     }
 
+    #[test]
+    fn bounds_total_workflow_outputs_using_utf16_estimate() {
+        let outputs = BTreeMap::from([("a".to_string(), "b".to_string())]);
+        assert_eq!(
+            add_output_size(MAX_WORKFLOW_OUTPUT_UTF16_BYTES - 4, &outputs, "job")
+                .expect("the exact workflow output limit should be accepted"),
+            MAX_WORKFLOW_OUTPUT_UTF16_BYTES
+        );
+        let error = add_output_size(MAX_WORKFLOW_OUTPUT_UTF16_BYTES - 2, &outputs, "job")
+            .expect_err("more than 50 MiB of workflow outputs must fail closed");
+        assert_eq!(error.code, "workflow_outputs_too_large");
+    }
+
     #[tokio::test]
     async fn rejects_secret_job_output_context_before_any_shell_runs() {
         let plan = plan_workflow(
