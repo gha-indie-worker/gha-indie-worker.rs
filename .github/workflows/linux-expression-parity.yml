@@ -1,0 +1,172 @@
+name: Linux expression parity
+
+on:
+  pull_request:
+    paths:
+      - src/expression.rs
+      - src/linux_runner.rs
+      - src/bin/gha-linux-runner.rs
+      - src/lib.rs
+      - src/workflow.rs
+      - src/workflow_guard.rs
+      - src/workflow_yaml.rs
+      - tests/fixtures/gha/linux-expression-parity.yml
+      - .github/workflows/linux-expression-parity.yml
+      - docs/GHA_COMPATIBILITY.md
+      - docs/GHA_CONFORMANCE_*.md
+  push:
+    branches: [dev, main]
+    paths:
+      - src/expression.rs
+      - src/linux_runner.rs
+      - src/bin/gha-linux-runner.rs
+      - src/lib.rs
+      - src/workflow.rs
+      - src/workflow_guard.rs
+      - src/workflow_yaml.rs
+      - tests/fixtures/gha/linux-expression-parity.yml
+      - .github/workflows/linux-expression-parity.yml
+      - docs/GHA_COMPATIBILITY.md
+      - docs/GHA_CONFORMANCE_*.md
+  workflow_dispatch:
+
+env:
+  CONTINUE: "true"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-expression-parity-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  differential:
+    name: Official vs indie expression semantics
+    strategy:
+      matrix:
+        enabled: [true]
+        word: [Alpha]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          show-progress: false
+          submodules: false
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.90.0
+          components: "clippy,rustfmt"
+
+      - name: Verify expression and runner unit contracts
+        run: |
+          cargo test --locked --lib expression::tests
+          cargo test --locked --lib linux_runner::tests
+          cargo clippy --locked --lib --bin gha-linux-runner -- -D warnings
+
+      - name: Prepare official-runner oracle workspace
+        run: mkdir -p .gha-expression/official
+
+      - id: producer
+        name: Publish official typed expression inputs
+        working-directory: .gha-expression/official
+        run: |
+          echo 'count=7' >> "$GITHUB_OUTPUT"
+          echo 'word=HeLLo' >> "$GITHUB_OUTPUT"
+
+      - id: tolerated
+        name: Evaluate official functions and loose coercions
+        working-directory: .gha-expression/official
+        if: >-
+          success() && matrix.enabled &&
+          env.CONTINUE == 'TRUE' &&
+          fromJSON(steps.producer.outputs.count) >= 7 &&
+          contains(fromJSON('["push","pull_request"]'), 'PUSH') &&
+          startsWith(matrix.word, 'al') &&
+          endsWith(steps.producer.outputs.word, 'LO') &&
+          matrix.missing == ''
+        continue-on-error: ${{ fromJSON(env.CONTINUE) }}
+        run: 'false'
+
+      - id: after
+        name: Observe official outcome and conclusion contexts
+        working-directory: .gha-expression/official
+        if: >-
+          success() &&
+          steps['tolerated'].outcome == 'failure' &&
+          steps.tolerated.conclusion == 'success'
+        run: |
+          printf '%s' '${{ format('{0}:{1}:{2}:{3}', join(fromJSON('["a","b"]'), '-'), true && 'yes' || 'no', fromJSON('[0,7]')[1], matrix.word) }}' > result.txt
+
+      - id: must_skip
+        name: Preserve official false condition
+        working-directory: .gha-expression/official
+        if: matrix.enabled && false
+        run: echo wrong >> result.txt
+
+      - name: Run the same fixture through gha-indie-worker
+        run: |
+          mkdir -p .gha-expression/indie
+          cargo run --quiet --locked --bin gha-linux-runner -- \
+            --workflow tests/fixtures/gha/linux-expression-parity.yml \
+            --job expression \
+            --workspace .gha-expression/indie \
+            --allow-host-execution \
+            > .gha-expression/indie-trace.json
+
+      - name: Compare official and indie expression observations
+        env:
+          OFFICIAL_PRODUCER_OUTCOME: ${{ steps.producer.outcome }}
+          OFFICIAL_PRODUCER_CONCLUSION: ${{ steps.producer.conclusion }}
+          OFFICIAL_TOLERATED_OUTCOME: ${{ steps.tolerated.outcome }}
+          OFFICIAL_TOLERATED_CONCLUSION: ${{ steps.tolerated.conclusion }}
+          OFFICIAL_AFTER_OUTCOME: ${{ steps.after.outcome }}
+          OFFICIAL_AFTER_CONCLUSION: ${{ steps.after.conclusion }}
+          OFFICIAL_SKIPPED_OUTCOME: ${{ steps.must_skip.outcome }}
+          OFFICIAL_SKIPPED_CONCLUSION: ${{ steps.must_skip.conclusion }}
+        run: |
+          cmp .gha-expression/official/result.txt .gha-expression/indie/result.txt
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          trace = json.loads(Path('.gha-expression/indie-trace.json').read_text())
+          steps = {step['id']: step for step in trace['steps'] if step['id']}
+          comparisons = {
+              'producer': (
+                  os.environ['OFFICIAL_PRODUCER_OUTCOME'],
+                  os.environ['OFFICIAL_PRODUCER_CONCLUSION'],
+              ),
+              'tolerated': (
+                  os.environ['OFFICIAL_TOLERATED_OUTCOME'],
+                  os.environ['OFFICIAL_TOLERATED_CONCLUSION'],
+              ),
+              'after': (
+                  os.environ['OFFICIAL_AFTER_OUTCOME'],
+                  os.environ['OFFICIAL_AFTER_CONCLUSION'],
+              ),
+              'must_skip': (
+                  os.environ['OFFICIAL_SKIPPED_OUTCOME'],
+                  os.environ['OFFICIAL_SKIPPED_CONCLUSION'],
+              ),
+          }
+          expected_workspace = 'a-b:yes:7:Alpha'
+          assert trace['schemaVersion'] == 'gha-indie-worker.linux-runner.v2', trace
+          assert trace['conclusion'] == 'success', trace
+          assert Path('.gha-expression/indie/result.txt').read_text() == expected_workspace
+          for step_id, expected in comparisons.items():
+              observed = (steps[step_id]['outcome'], steps[step_id]['conclusion'])
+              assert observed == expected, (step_id, observed, expected)
+          print(json.dumps({
+              'schemaVersion': trace['schemaVersion'],
+              'jobConclusion': trace['conclusion'],
+              'matchedSteps': sorted(comparisons),
+              'workspaceResult': expected_workspace,
+          }, sort_keys=True))
+          PY

@@ -3,6 +3,7 @@ name: Linux runner parity
 on:
   pull_request:
     paths:
+      - src/expression.rs
       - src/linux_runner.rs
       - src/bin/gha-linux-runner.rs
       - src/lib.rs
@@ -16,6 +17,7 @@ on:
   push:
     branches: [dev, main]
     paths:
+      - src/expression.rs
       - src/linux_runner.rs
       - src/bin/gha-linux-runner.rs
       - src/lib.rs
