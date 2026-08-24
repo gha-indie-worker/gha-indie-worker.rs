@@ -17,7 +17,6 @@ on:
       - "tests/test_native_worker_handoff_integration.py"
   push:
     branches:
-      - dev
       - main
     paths:
       - ".github/workflows/native-worker-execution.yml"

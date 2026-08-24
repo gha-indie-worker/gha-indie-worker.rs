@@ -10,7 +10,7 @@ on:
       - tests/native_fleet_test_support.py
       - tests/test_native_fleet_*.py
   push:
-    branches: [dev, main]
+    branches: [main]
     paths:
       - .github/workflows/native-fleet-protocol.yml
       - docs/NATIVE_FLEET_PROTOCOL.md

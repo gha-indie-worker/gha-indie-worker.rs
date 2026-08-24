@@ -14,7 +14,7 @@ on:
       - docs/GHA_COMPATIBILITY.md
       - docs/GHA_CONFORMANCE_*.md
   push:
-    branches: [dev, main]
+    branches: [main]
     paths:
       - src/expression.rs
       - src/linux_runner.rs
