@@ -1,0 +1,250 @@
+name: Linux workflow scheduler parity
+
+on:
+  pull_request:
+    paths:
+      - src/expression.rs
+      - src/linux_runner.rs
+      - src/workflow.rs
+      - src/workflow_runner.rs
+      - src/bin/gha-linux-workflow.rs
+      - src/lib.rs
+      - tests/fixtures/gha/linux-workflow-scheduler-parity.yml
+      - .github/workflows/linux-workflow-scheduler-parity.yml
+      - docs/GHA_COMPATIBILITY.md
+      - docs/GHA_CONFORMANCE_*.md
+  push:
+    branches: [main]
+    paths:
+      - src/expression.rs
+      - src/linux_runner.rs
+      - src/workflow.rs
+      - src/workflow_runner.rs
+      - src/bin/gha-linux-workflow.rs
+      - src/lib.rs
+      - tests/fixtures/gha/linux-workflow-scheduler-parity.yml
+      - .github/workflows/linux-workflow-scheduler-parity.yml
+      - docs/GHA_COMPATIBILITY.md
+      - docs/GHA_CONFORMANCE_*.md
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: linux-workflow-scheduler-parity-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  matrix_job:
+    name: Official matrix (${{ matrix.label }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: true
+      max-parallel: 2
+      matrix:
+        include:
+          - label: stable-one
+            experimental: false
+          - label: experimental
+            experimental: true
+          - label: stable-two
+            experimental: false
+    steps:
+      - name: Execute official matrix instance
+        id: exercise
+        continue-on-error: ${{ matrix.experimental }}
+        run: |
+          sleep 5
+          if [ '${{ matrix.experimental }}' = 'true' ]; then false; fi
+
+      - name: Observe raw outcome (${{ steps.exercise.outcome }})
+        run: |
+          if [ '${{ matrix.experimental }}' = 'true' ]; then
+            test '${{ steps.exercise.outcome }}' = 'failure'
+          else
+            test '${{ steps.exercise.outcome }}' = 'success'
+          fi
+
+  after_matrix:
+    name: Official dependency after matrix
+    needs: matrix_job
+    runs-on: ubuntu-24.04
+    steps:
+      - run: true
+
+  skip_job:
+    name: Official intentional skip
+    if: false
+    runs-on: ubuntu-24.04
+    steps:
+      - run: false
+
+  recover_skip:
+    name: Official skip recovery
+    needs: skip_job
+    if: ${{ always() && needs.skip_job.result == 'skipped' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: true
+
+  differential:
+    name: Compare official and indie workflow scheduling
+    needs: [matrix_job, after_matrix, skip_job, recover_skip]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      OFFICIAL_MATRIX_RESULT: ${{ needs.matrix_job.result }}
+      OFFICIAL_AFTER_RESULT: ${{ needs.after_matrix.result }}
+      OFFICIAL_SKIP_RESULT: ${{ needs.skip_job.result }}
+      OFFICIAL_RECOVER_RESULT: ${{ needs.recover_skip.result }}
+    steps:
+      - name: Check out without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          show-progress: false
+          submodules: false
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.90.0
+          components: "clippy,rustfmt"
+
+      - name: Verify scheduler unit and lint contracts
+        run: |
+          cargo test --locked --lib workflow_runner::tests
+          cargo test --locked --bin gha-linux-workflow
+          cargo clippy --locked --lib --bin gha-linux-workflow -- -D warnings
+
+      - name: Run the paired fixture through gha-indie-worker
+        run: |
+          mkdir -p .gha-workflow/indie-runs
+          cargo run --quiet --locked --bin gha-linux-workflow -- \
+            --workflow tests/fixtures/gha/linux-workflow-scheduler-parity.yml \
+            --run-root .gha-workflow/indie-runs \
+            --max-parallel 2 \
+            --allow-host-execution \
+            > .gha-workflow/indie-trace.json
+
+      - name: Read official job observations
+        env:
+          GH_TOKEN_FOR_OBSERVATION: ${{ github.token }}
+        run: |
+          curl --fail --silent --show-error \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN_FOR_OBSERVATION" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
+            > .gha-workflow/official-jobs.json
+
+      - name: Compare official and indie scheduler observations
+        run: |
+          python - <<'PY'
+          import datetime
+          import json
+          import os
+          from pathlib import Path
+
+          trace = json.loads(Path('.gha-workflow/indie-trace.json').read_text())
+          official_payload = json.loads(Path('.gha-workflow/official-jobs.json').read_text())
+          prefix = 'Official matrix ('
+          official_jobs = {
+              item['name'][len(prefix):-1]: item
+              for item in official_payload['jobs']
+              if item['name'].startswith(prefix) and item['name'].endswith(')')
+          }
+          labels = {'stable-one', 'experimental', 'stable-two'}
+          assert set(official_jobs) == labels, official_jobs
+
+          indie_jobs = {
+              item['matrix']['label']: item
+              for item in trace['jobs']
+              if item['baseJobId'] == 'matrix_job'
+          }
+          assert set(indie_jobs) == labels, indie_jobs
+          expected_needs = {
+              'matrix_job': 'success',
+              'after_matrix': 'success',
+              'skip_job': 'skipped',
+              'recover_skip': 'success',
+          }
+          observed_needs = {
+              'matrix_job': os.environ['OFFICIAL_MATRIX_RESULT'],
+              'after_matrix': os.environ['OFFICIAL_AFTER_RESULT'],
+              'skip_job': os.environ['OFFICIAL_SKIP_RESULT'],
+              'recover_skip': os.environ['OFFICIAL_RECOVER_RESULT'],
+          }
+          assert observed_needs == expected_needs, observed_needs
+
+          matrix_observations = {}
+          for label in sorted(labels):
+              official = official_jobs[label]
+              indie = indie_jobs[label]
+              official_step = next(
+                  step for step in official['steps']
+                  if step['name'] == 'Execute official matrix instance'
+              )
+              outcome_prefix = 'Observe raw outcome ('
+              official_outcome_step = next(
+                  step for step in official['steps']
+                  if step['name'].startswith(outcome_prefix)
+              )
+              official_outcome = official_outcome_step['name'][
+                  len(outcome_prefix):-1
+              ]
+              expected_outcome = 'failure' if label == 'experimental' else 'success'
+              assert official_step['conclusion'] == 'success', official_step
+              assert official_outcome == expected_outcome, official_outcome_step
+              assert official_outcome_step['conclusion'] == 'success', (
+                  official_outcome_step
+              )
+              assert indie['outcome'] == indie['conclusion'] == expected_outcome, indie
+              assert official['conclusion'] == 'success', official
+              assert indie['effectiveConclusion'] == official['conclusion'], (
+                  official, indie
+              )
+              matrix_observations[label] = {
+                  'officialJobConclusion': official['conclusion'],
+                  'officialStepConclusion': official_step['conclusion'],
+                  'officialStepOutcome': official_outcome,
+                  'indieOutcome': indie['outcome'],
+                  'indieConclusion': indie['conclusion'],
+                  'indieEffectiveConclusion': indie['effectiveConclusion'],
+              }
+
+          def timestamp(value):
+              return datetime.datetime.fromisoformat(value.replace('Z', '+00:00'))
+
+          intervals = [
+              (timestamp(item['started_at']), timestamp(item['completed_at']))
+              for item in official_jobs.values()
+          ]
+          official_max_parallel = max(
+              sum(start <= candidate < end for start, end in intervals)
+              for candidate, _ in intervals
+          )
+          indie_group = next(
+              item for item in trace['jobGroups']
+              if item['baseJobId'] == 'matrix_job'
+          )
+          assert official_max_parallel == 2, intervals
+          assert indie_group['maxObservedParallel'] == 2, indie_group
+          assert trace['schemaVersion'] == 'gha-indie-worker.linux-workflow.v2', trace
+          assert trace['conclusion'] == 'success', trace
+          assert next(item for item in trace['jobs'] if item['id'] == 'skip_job')['conclusion'] == 'skipped'
+          assert next(item for item in trace['jobs'] if item['id'] == 'recover_skip')['conclusion'] == 'success'
+          assert next(item for item in trace['jobs'] if item['id'] == 'after_matrix')['conclusion'] == 'success'
+
+          print(json.dumps({
+              'schemaVersion': trace['schemaVersion'],
+              'workflowConclusion': trace['conclusion'],
+              'officialNeeds': observed_needs,
+              'matrix': matrix_observations,
+              'officialMaxParallel': official_max_parallel,
+              'indieMaxParallel': indie_group['maxObservedParallel'],
+          }, sort_keys=True))
+          PY

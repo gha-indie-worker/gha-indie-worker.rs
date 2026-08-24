@@ -1,0 +1,186 @@
+name: Standalone GHA indie worker
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: standalone-gha-indie-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: '1.90.0'
+          components: rustfmt, clippy
+      - name: Check canonical worker source formatting
+        run: rustfmt --edition 2021 --config skip_children=true --check src/main.rs src/expression.rs src/gha_workflow.rs src/http.rs src/jobs.rs src/lib.rs src/linux_runner.rs src/workflow_runner.rs src/validation.rs src/bin/gha-linux-runner.rs src/bin/gha-linux-workflow.rs
+      - name: Check compatibility crate formatting
+        run: rustfmt --edition 2021 --check vendor/dd-telemetry/src/lib.rs vendor/dd-nats-subject-defs/src/lib.rs vendor/dd-runtime-config-client/src/lib.rs
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked --all-targets
+
+  provenance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ORESoftware/k8s-cluster
+          ref: 42b7471fa680331fe4977db42db8497ab9549cd9
+          path: canonical
+          persist-credentials: false
+      - name: Verify canonical core and pinned standalone extensions
+        run: |
+          set -euo pipefail
+          source_root=canonical/remote/deployments/build-server-rs
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          canonical_root = Path("canonical/remote/deployments/build-server-rs/src")
+          standalone_root = Path("src")
+          canonical_scripts_root = Path("canonical/remote/deployments/build-server-rs/scripts")
+          standalone_scripts_root = Path("scripts")
+          extension_hashes = {
+              "main.rs": "a3da1bdae02618a7382fc24aa73e3ad8edb721aa",
+              "admission.rs": "db0812072de0a3ba5d1ce5965a28dc2ff0d09f5a",
+              "expression.rs": "944ef5e0c05010a9a46aedc7728e244ec21c17ab",
+              "gha_workflow.rs": "af608b77c568dfb17e4966f8a6f0a86377df45b7",
+              "http.rs": "6e7e559684ad544e2f05b542779b64c8439e5936",
+              "jobs.rs": "645078edf50bd8d7c024100bc4e1f748b483a4dd",
+              "lib.rs": "e23d0f643a632cd80d5e99e7387896d2b06f4516",
+              "linux_runner.rs": "f5c82d4ae5e6af06b1059aa91f557b6b44400433",
+              "validation.rs": "a57366881c2dcf43e119e70cccd5a82527370227",
+              "workflow.rs": "14740cbe06abbcd78eeb07ac5465d34586c1001c",
+              "workflow_guard.rs": "9953fd49f934fab7c491eb2cccd96a96403f6a4d",
+              "workflow_runner.rs": "733508edde285256cb640f2bd2c8978324ca795c",
+              "workflow_yaml.rs": "6b3469920fb583054cf58e4e65338f8f7047ceb1",
+              "bin/gha-linux-runner.rs": "deca1126fe6bd8d03e4e3f105d2b635408a5175a",
+              "bin/gha-linux-workflow.rs": "0c0ca9329b02d4aafb1d3c71609320c36fd15a67",
+              "bin/gha-workflow-plan.rs": "350250236d65a61dafdc209fb2192497589b4ecb",
+              "bin/gha-workflow-server.rs": "64bc75bab8612bb2385364c77d2d851f5c4366b4",
+          }
+          script_extension_hashes = {
+              "github_readiness_audit.py": "42c8bc040c23bbbdf9ea34156c447f1a9136a46a",
+          }
+
+          canonical_paths = {
+              path.relative_to(canonical_root).as_posix()
+              for path in canonical_root.rglob("*")
+              if path.is_file()
+          }
+          standalone_paths = {
+              path.relative_to(standalone_root).as_posix()
+              for path in standalone_root.rglob("*")
+              if path.is_file()
+          }
+          expected_paths = canonical_paths | (set(extension_hashes) - {"main.rs"})
+          if standalone_paths != expected_paths:
+              print("standalone src path set differs from canonical core plus pinned extensions", file=sys.stderr)
+              print("missing:", sorted(expected_paths - standalone_paths), file=sys.stderr)
+              print("unexpected:", sorted(standalone_paths - expected_paths), file=sys.stderr)
+              raise SystemExit(1)
+
+          for relative in sorted(canonical_paths - set(extension_hashes)):
+              canonical = canonical_root / relative
+              standalone = standalone_root / relative
+              if canonical.read_bytes() != standalone.read_bytes():
+                  print(f"canonical source drift: src/{relative}", file=sys.stderr)
+                  raise SystemExit(1)
+
+          for relative, expected_hash in extension_hashes.items():
+              actual_hash = subprocess.check_output(
+                  ["git", "hash-object", str(standalone_root / relative)],
+                  text=True,
+              ).strip()
+              if actual_hash != expected_hash:
+                  print(
+                      f"standalone extension drift: src/{relative}: "
+                      f"expected {expected_hash}, got {actual_hash}",
+                      file=sys.stderr,
+                  )
+                  raise SystemExit(1)
+
+          canonical_script_paths = {
+              path.relative_to(canonical_scripts_root).as_posix()
+              for path in canonical_scripts_root.rglob("*")
+              if path.is_file()
+          }
+          standalone_script_paths = {
+              path.relative_to(standalone_scripts_root).as_posix()
+              for path in standalone_scripts_root.rglob("*")
+              if path.is_file()
+          }
+          expected_script_paths = canonical_script_paths | set(script_extension_hashes)
+          if standalone_script_paths != expected_script_paths:
+              print("standalone scripts differ from canonical scripts plus pinned extensions", file=sys.stderr)
+              print("missing:", sorted(expected_script_paths - standalone_script_paths), file=sys.stderr)
+              print("unexpected:", sorted(standalone_script_paths - expected_script_paths), file=sys.stderr)
+              raise SystemExit(1)
+
+          for relative in sorted(canonical_script_paths - set(script_extension_hashes)):
+              canonical = canonical_scripts_root / relative
+              standalone = standalone_scripts_root / relative
+              if canonical.read_bytes() != standalone.read_bytes():
+                  print(f"canonical script drift: scripts/{relative}", file=sys.stderr)
+                  raise SystemExit(1)
+
+          for relative, expected_hash in script_extension_hashes.items():
+              actual_hash = subprocess.check_output(
+                  ["git", "hash-object", str(standalone_scripts_root / relative)],
+                  text=True,
+              ).strip()
+              if actual_hash != expected_hash:
+                  print(
+                      f"standalone script extension drift: scripts/{relative}: "
+                      f"expected {expected_hash}, got {actual_hash}",
+                      file=sys.stderr,
+                  )
+                  raise SystemExit(1)
+          PY
+          diff -ru "$source_root/generated" generated
+          test "$(git hash-object readme.md)" = "c947cec02f207d743d8a454c3e85a1ff73fe6825"
+          grep -F '42b7471fa680331fe4977db42db8497ab9549cd9' SOURCE_PROVENANCE.md
+          grep -F 'a3da1bdae02618a7382fc24aa73e3ad8edb721aa' SOURCE_PROVENANCE.md
+          grep -F 'db0812072de0a3ba5d1ce5965a28dc2ff0d09f5a' SOURCE_PROVENANCE.md
+          grep -F '944ef5e0c05010a9a46aedc7728e244ec21c17ab' SOURCE_PROVENANCE.md
+          grep -F 'e23d0f643a632cd80d5e99e7387896d2b06f4516' SOURCE_PROVENANCE.md
+          grep -F 'f5c82d4ae5e6af06b1059aa91f557b6b44400433' SOURCE_PROVENANCE.md
+          grep -F '733508edde285256cb640f2bd2c8978324ca795c' SOURCE_PROVENANCE.md
+          grep -F 'deca1126fe6bd8d03e4e3f105d2b635408a5175a' SOURCE_PROVENANCE.md
+          grep -F '0c0ca9329b02d4aafb1d3c71609320c36fd15a67' SOURCE_PROVENANCE.md
+          grep -F '42c8bc040c23bbbdf9ea34156c447f1a9136a46a' SOURCE_PROVENANCE.md
+          grep -F 'c947cec02f207d743d8a454c3e85a1ff73fe6825' SOURCE_PROVENANCE.md
+          grep -F 'dd-telemetry = { path = "vendor/dd-telemetry" }' Cargo.toml
+          grep -F 'dd-nats-subject-defs = { path = "vendor/dd-nats-subject-defs" }' Cargo.toml
+          grep -F 'dd-runtime-config-client = { path = "vendor/dd-runtime-config-client" }' Cargo.toml
+          grep -F 'COPY vendor ./vendor' Dockerfile
+          test -s STANDALONE-DEPENDENCIES.md
+          grep -F '| `dd-telemetry` | `vendor/dd-telemetry` |' STANDALONE-DEPENDENCIES.md
+          grep -F '| `dd-nats-subject-defs` | `vendor/dd-nats-subject-defs` |' STANDALONE-DEPENDENCIES.md
+          grep -F '| `dd-runtime-config-client` | `vendor/dd-runtime-config-client` |' STANDALONE-DEPENDENCIES.md
+      - name: Reject credential material
+        run: |
+          if grep -RIE \
+            'ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|BEGIN (RSA |EC )?PRIVATE KEY' \
+            src crates vendor docs SOURCE_PROVENANCE.md readme.md; then
+            echo 'credential-like material found' >&2
+            exit 1
+          fi

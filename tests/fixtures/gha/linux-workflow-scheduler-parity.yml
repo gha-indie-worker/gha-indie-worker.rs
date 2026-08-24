@@ -1,0 +1,46 @@
+name: Linux workflow scheduler parity fixture
+
+jobs:
+  matrix_job:
+    name: Matrix ${{ matrix.label }}
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: true
+      max-parallel: 2
+      matrix:
+        include:
+          - label: stable-one
+            experimental: false
+          - label: experimental
+            experimental: true
+          - label: stable-two
+            experimental: false
+    steps:
+      - name: Execute matrix instance
+        run: |
+          printf '%s' '${{ matrix.label }}' > matrix-result.txt
+          sleep 1
+          if [ '${{ matrix.experimental }}' = 'true' ]; then false; fi
+
+  after_matrix:
+    name: After successful matrix aggregate
+    needs: matrix_job
+    runs-on: ubuntu-latest
+    steps:
+      - run: printf 'after-matrix' > dependency-result.txt
+
+  skip_job:
+    name: Intentional skip
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: false
+
+  recover_skip:
+    name: Recover intentional skip
+    needs: skip_job
+    if: ${{ always() && needs.skip_job.result == 'skipped' }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: printf 'recovered-skip' > dependency-result.txt

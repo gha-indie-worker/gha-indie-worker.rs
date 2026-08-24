@@ -1,0 +1,41 @@
+name: Linux expression differential fixture
+
+env:
+  CONTINUE: "true"
+
+jobs:
+  expression:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        enabled: [true]
+        word: [Alpha]
+    steps:
+      - id: producer
+        run: |
+          echo 'count=7' >> "$GITHUB_OUTPUT"
+          echo 'word=HeLLo' >> "$GITHUB_OUTPUT"
+
+      - id: tolerated
+        if: >-
+          success() && matrix.enabled &&
+          env.CONTINUE == 'TRUE' &&
+          fromJSON(steps.producer.outputs.count) >= 7 &&
+          contains(fromJSON('["push","pull_request"]'), 'PUSH') &&
+          startsWith(matrix.word, 'al') &&
+          endsWith(steps.producer.outputs.word, 'LO') &&
+          matrix.missing == ''
+        continue-on-error: ${{ fromJSON(env.CONTINUE) }}
+        run: false
+
+      - id: after
+        if: >-
+          success() &&
+          steps['tolerated'].outcome == 'failure' &&
+          steps.tolerated.conclusion == 'success'
+        run: |
+          printf '%s' '${{ format('{0}:{1}:{2}:{3}', join(fromJSON('["a","b"]'), '-'), true && 'yes' || 'no', fromJSON('[0,7]')[1], matrix.word) }}' > result.txt
+
+      - id: must_skip
+        if: matrix.enabled && false
+        run: echo wrong >> result.txt

