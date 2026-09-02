@@ -1,0 +1,120 @@
+name: Repair parity trace normalization
+
+on:
+  push:
+    branches:
+      - audit/gha-parity-conformance-contract
+
+permissions:
+  contents: write
+
+concurrency:
+  group: repair-parity-trace-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out exact branch head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Preserve path suffixes and accept JSON Lines
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path('tools/compare_gha_traces.py')
+          text = path.read_text(encoding='utf-8')
+          lines = []
+          for line in text.splitlines():
+              if "re.compile(r'/home/runner/work/_temp" in line:
+                  line = "    re.compile(r'/home/runner/work/_temp'),"
+              elif "re.compile(r'/__w/_temp" in line:
+                  line = "    re.compile(r'/__w/_temp'),"
+              elif "re.compile(r'/tmp(?:" in line:
+                  line = "    re.compile(r'(?<![A-Za-z0-9_])/tmp(?=/|$)'),"
+              elif "[A-Z]:\\\\a\\\\_temp" in line:
+                  line = "    re.compile(r'(?i)[A-Z]:\\\\a\\\\_temp'),"
+              elif "RUNNER~1\\\\AppData\\\\Local\\\\Temp" in line:
+                  line = "    re.compile(r'(?i)[A-Z]:\\\\Users\\\\RUNNER~1\\\\AppData\\\\Local\\\\Temp'),"
+              lines.append(line)
+          text = '\n'.join(lines) + '\n'
+
+          start = text.index('def load_trace(')
+          end = text.index('\ndef _replace_root', start)
+          replacement = '''def _parse_json_lines(text: str, path: Path, max_events: int) -> list[dict[str, Any]]:
+              parsed: list[Any] = []
+              for line_number, line in enumerate(text.splitlines(), start=1):
+                  if not line.strip():
+                      continue
+                  try:
+                      parsed.append(json.loads(line))
+                  except json.JSONDecodeError as error:
+                      raise TraceError(f'{path} has invalid JSON on line {line_number}') from error
+              return _validate_events(parsed, max_events=max_events)
+
+
+          def load_trace(
+              path: Path,
+              *,
+              max_bytes: int = MAX_TRACE_BYTES,
+              max_events: int = MAX_EVENTS,
+          ) -> list[dict[str, Any]]:
+              data = _file_bytes(path, max_bytes)
+              if b'\\x00' in data:
+                  raise TraceError(f'{path} contains NUL bytes')
+              try:
+                  text = data.decode('utf-8')
+              except UnicodeDecodeError as error:
+                  raise TraceError(f'{path} is not UTF-8') from error
+              stripped = text.strip()
+              if not stripped:
+                  raise TraceError(f'{path} is empty')
+
+              if stripped[0] == '[':
+                  try:
+                      events = _extract_events(json.loads(stripped))
+                  except json.JSONDecodeError as error:
+                      raise TraceError(f'{path} contains invalid JSON') from error
+              elif stripped[0] == '{':
+                  try:
+                      document = json.loads(stripped)
+                  except json.JSONDecodeError:
+                      events = _parse_json_lines(text, path, max_events)
+                  else:
+                      if isinstance(document, dict) and 'event' in document and 'events' not in document:
+                          events = _validate_events([document], max_events=max_events)
+                      else:
+                          events = _extract_events(document)
+              else:
+                  events = _parse_json_lines(text, path, max_events)
+
+              if len(events) > max_events:
+                  raise TraceError(f'trace contains more than {max_events} events')
+              return events
+
+          '''
+          replacement = '\n'.join(line[10:] if line.startswith('          ') else line for line in replacement.splitlines())
+          text = text[:start] + replacement + text[end + 1:]
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          python3 -m py_compile tools/compare_gha_traces.py
+          python3 -m unittest -v test/test_compare_gha_traces.py
+
+          rm -- .github/workflows/repair-parity-trace-normalization.yml
+          git config user.name 'gha-indie-worker-bot'
+          git config user.email 'gha-indie-worker-bot@users.noreply.github.com'
+          git add tools/compare_gha_traces.py .github/workflows/repair-parity-trace-normalization.yml
+          if ! git diff --cached --quiet; then
+            git commit -m 'test: preserve path suffixes and parse JSON Lines traces'
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
