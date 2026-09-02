@@ -1,0 +1,71 @@
+name: GitHub Actions evidence bindings
+
+on:
+  pull_request:
+    paths:
+      - 'conformance/**'
+      - 'tools/audit_gha_parity.py'
+      - 'tools/audit_gha_evidence_bindings.py'
+      - 'tools/compare_gha_traces.py'
+      - 'test/test_gha_parity_audit.py'
+      - 'test/test_gha_evidence_bindings.py'
+      - 'test/test_compare_gha_traces.py'
+      - '.github/workflows/gha-evidence-bindings.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'conformance/**'
+      - 'tools/audit_gha_parity.py'
+      - 'tools/audit_gha_evidence_bindings.py'
+      - 'tools/compare_gha_traces.py'
+      - 'test/test_gha_parity_audit.py'
+      - 'test/test_gha_evidence_bindings.py'
+      - 'test/test_compare_gha_traces.py'
+      - '.github/workflows/gha-evidence-bindings.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gha-evidence-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  provenance-and-equivalence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compile evidence and comparison tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            tools/audit_gha_parity.py \
+            tools/audit_gha_evidence_bindings.py \
+            tools/compare_gha_traces.py \
+            test/test_gha_evidence_bindings.py
+
+      - name: Run adversarial evidence-binding tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest -v \
+            test/test_compare_gha_traces.py \
+            test/test_gha_parity_audit.py \
+            test/test_gha_evidence_bindings.py
+
+      - name: Audit catalog structure and bound runtime evidence
+        shell: bash
+        env:
+          GHA_REQUIRE_FULL_PARITY: 'false'
+        run: |
+          set -euo pipefail
+          python3 tools/audit_gha_parity.py
+          python3 tools/audit_gha_evidence_bindings.py
