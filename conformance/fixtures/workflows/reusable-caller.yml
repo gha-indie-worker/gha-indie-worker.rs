@@ -1,0 +1,36 @@
+# The conformance harness copies reusable-called.yml to
+# .github/workflows/conformance-reusable-called.yml before dispatching this
+# fixture through real GitHub Actions or the clone.
+name: conformance-reusable-caller
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  call:
+    uses: ./.github/workflows/conformance-reusable-called.yml
+    with:
+      phrase: pontifex
+      multiplier: 3
+    secrets:
+      conformance_secret: ${{ secrets.CONFORMANCE_SECRET }}
+
+  verify:
+    needs: call
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify called-workflow outputs
+        shell: bash
+        env:
+          RENDERED: ${{ needs.call.outputs.rendered }}
+          SECRET_PRESENT: ${{ needs.call.outputs.secret_present }}
+        run: |
+          set -euo pipefail
+          test "${RENDERED}" = 'pontifex|pontifex|pontifex'
+          case "${SECRET_PRESENT}" in
+            true|false) ;;
+            *) exit 97 ;;
+          esac
