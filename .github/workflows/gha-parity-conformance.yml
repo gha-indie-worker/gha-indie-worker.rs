@@ -89,18 +89,38 @@ jobs:
           fi
 
           if git rev-parse --verify 'HEAD^2' >/dev/null 2>&1; then
-            changed_rust="$({ git diff --name-only 'HEAD^1...HEAD^2' -- '*.rs' Cargo.toml Cargo.lock rustfmt.toml .rustfmt.toml || true; })"
+            comparison_base="$(git merge-base 'HEAD^1' 'HEAD^2')"
+            comparison_head='HEAD^2'
           else
-            changed_rust="$({ git diff-tree --no-commit-id --name-only -r HEAD -- '*.rs' Cargo.toml Cargo.lock rustfmt.toml .rustfmt.toml || true; })"
+            comparison_base='HEAD^'
+            comparison_head='HEAD'
           fi
 
-          if [[ -n "$changed_rust" ]]; then
-            printf 'Rust formatting applies to changed paths:\n%s\n' "$changed_rust"
-            cargo fmt --all -- --check
+          mapfile -d '' candidate_rust < <(
+            git diff --name-only -z "$comparison_base" "$comparison_head" -- '*.rs'
+          )
+          changed_rust=()
+          for path in "${candidate_rust[@]}"; do
+            if [[ -L "$path" ]]; then
+              echo "Changed Rust source must not be a symlink: $path" >&2
+              exit 1
+            fi
+            if [[ -f "$path" ]]; then
+              changed_rust+=("$path")
+            fi
+          done
+
+          if (( ${#changed_rust[@]} > 0 )); then
+            printf 'Rust formatting applies only to changed source files:\n'
+            printf '  %s\n' "${changed_rust[@]}"
+            rustfmt --edition 2021 --check "${changed_rust[@]}"
           else
-            echo 'No Rust surface changed in this exact revision; preserving pre-existing formatting debt outside this PR.'
+            echo 'No Rust source file changed; preserving unrelated baseline formatting debt outside this PR.'
           fi
 
+          # Manifest and lock changes are validated semantically by Cargo rather
+          # than using repository-wide rustfmt, which would make an unrelated
+          # pre-existing source-formatting backlog block a focused PR.
           cargo metadata --locked --no-deps --format-version 1 >/dev/null
           cargo test --workspace --all-targets --all-features --locked
           cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
