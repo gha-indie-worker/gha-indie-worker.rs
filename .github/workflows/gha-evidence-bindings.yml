@@ -50,16 +50,17 @@ jobs:
             tools/audit_gha_parity.py \
             tools/audit_gha_evidence_bindings.py \
             tools/compare_gha_traces.py \
+            test/test_compare_gha_traces.py \
+            test/test_gha_parity_audit.py \
             test/test_gha_evidence_bindings.py
 
       - name: Run adversarial evidence-binding tests
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m unittest -v \
-            test/test_compare_gha_traces.py \
-            test/test_gha_parity_audit.py \
-            test/test_gha_evidence_bindings.py
+          python3 test/test_compare_gha_traces.py -v
+          python3 test/test_gha_parity_audit.py -v
+          python3 test/test_gha_evidence_bindings.py -v
 
       - name: Audit catalog structure and bound runtime evidence
         shell: bash
