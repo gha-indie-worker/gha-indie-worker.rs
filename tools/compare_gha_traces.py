@@ -49,18 +49,21 @@ VOLATILE_KEYS = frozenset({
 })
 TOP_LEVEL_VOLATILE_KEYS = VOLATILE_KEYS | {'engine', 'seq', 'sequence'}
 
+# Replace only the well-known temp root. Consuming the suffix would make a
+# built-in GitHub runner path normalize differently from a clone path whose
+# configured root replacement intentionally preserves the relative suffix.
 POSIX_TEMP_PATTERNS = (
-    re.compile(r'/home/runner/work/_temp(?:/[A-Za-z0-9._/-]+)?'),
-    re.compile(r'/__w/_temp(?:/[A-Za-z0-9._/-]+)?'),
-    re.compile(r'/tmp(?:/[A-Za-z0-9._/-]+)?'),
+    re.compile(r'/home/runner/work/_temp(?=/|$)'),
+    re.compile(r'/__w/_temp(?=/|$)'),
+    re.compile(r'/tmp(?=/|$)'),
 )
 POSIX_WORKSPACE_PATTERNS = (
     re.compile(r'/home/runner/work/[^/\s]+/[^/\s]+'),
     re.compile(r'/__w/[^/\s]+/[^/\s]+'),
 )
 WINDOWS_TEMP_PATTERNS = (
-    re.compile(r'(?i)[A-Z]:\\a\\_temp(?:\\[^\s"\']+)?'),
-    re.compile(r'(?i)[A-Z]:\\Users\\RUNNER~1\\AppData\\Local\\Temp(?:\\[^\s"\']+)?'),
+    re.compile(r'(?i)[A-Z]:\\a\\_temp(?=\\|$)'),
+    re.compile(r'(?i)[A-Z]:\\Users\\RUNNER~1\\AppData\\Local\\Temp(?=\\|$)'),
 )
 WINDOWS_WORKSPACE_PATTERNS = (
     re.compile(r'(?i)[A-Z]:\\a\\[^\\\s]+\\[^\\\s]+'),
@@ -151,6 +154,13 @@ def _validate_events(events: list[Any], max_events: int = MAX_EVENTS) -> list[di
     return validated
 
 
+def _json_loads(text: str) -> Any:
+    def reject_constant(value: str):
+        raise ValueError(f'non-finite JSON constant is forbidden: {value}')
+
+    return json.loads(text, parse_constant=reject_constant)
+
+
 def load_trace(
     path: Path,
     *,
@@ -168,22 +178,25 @@ def load_trace(
     if not stripped:
         raise TraceError(f'{path} is empty')
 
+    # Try one complete JSON document first. A JSON Lines trace commonly starts
+    # with "{" too, so an Extra-data failure must fall back to bounded per-line
+    # parsing rather than being classified as a malformed single object.
     try:
-        if stripped[0] in '[{':
-            document = json.loads(stripped)
-            events = _extract_events(document)
-        else:
-            parsed: list[Any] = []
-            for line_number, line in enumerate(text.splitlines(), start=1):
-                if not line.strip():
-                    continue
-                try:
-                    parsed.append(json.loads(line))
-                except json.JSONDecodeError as error:
-                    raise TraceError(f'{path} has invalid JSON on line {line_number}') from error
-            events = _validate_events(parsed, max_events=max_events)
-    except json.JSONDecodeError as error:
-        raise TraceError(f'{path} contains invalid JSON') from error
+        document = _json_loads(stripped)
+    except json.JSONDecodeError:
+        parsed: list[Any] = []
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            if not line.strip():
+                continue
+            try:
+                parsed.append(_json_loads(line))
+            except (json.JSONDecodeError, ValueError) as error:
+                raise TraceError(f'{path} has invalid JSON on line {line_number}') from error
+        events = _validate_events(parsed, max_events=max_events)
+    except ValueError as error:
+        raise TraceError(f'{path} contains invalid JSON: {error}') from error
+    else:
+        events = _extract_events(document)
 
     if len(events) > max_events:
         raise TraceError(f'trace contains more than {max_events} events')
