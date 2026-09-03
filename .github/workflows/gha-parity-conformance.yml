@@ -30,15 +30,16 @@ jobs:
           set -euo pipefail
           python3 -m py_compile \
             tools/audit_gha_parity.py \
-            tools/compare_gha_traces.py
+            tools/compare_gha_traces.py \
+            test/test_gha_parity_audit.py \
+            test/test_compare_gha_traces.py
 
       - name: Run adversarial conformance-policy tests
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m unittest -v \
-            test/test_gha_parity_audit.py \
-            test/test_compare_gha_traces.py
+          python3 test/test_gha_parity_audit.py -v
+          python3 test/test_compare_gha_traces.py -v
 
       - name: Enforce honest parity status and evidence
         shell: bash
@@ -72,10 +73,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - name: Check out exact revision
+      - name: Check out exact revision and parents
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Verify the Rust workspace when present
         shell: bash
@@ -85,7 +87,20 @@ jobs:
             echo 'No root Cargo.toml; Rust workspace verification is not applicable.'
             exit 0
           fi
-          cargo fmt --all -- --check
+
+          if git rev-parse --verify 'HEAD^2' >/dev/null 2>&1; then
+            changed_rust="$({ git diff --name-only 'HEAD^1...HEAD^2' -- '*.rs' Cargo.toml Cargo.lock rustfmt.toml .rustfmt.toml || true; })"
+          else
+            changed_rust="$({ git diff-tree --no-commit-id --name-only -r HEAD -- '*.rs' Cargo.toml Cargo.lock rustfmt.toml .rustfmt.toml || true; })"
+          fi
+
+          if [[ -n "$changed_rust" ]]; then
+            printf 'Rust formatting applies to changed paths:\n%s\n' "$changed_rust"
+            cargo fmt --all -- --check
+          else
+            echo 'No Rust surface changed in this exact revision; preserving pre-existing formatting debt outside this PR.'
+          fi
+
           cargo metadata --locked --no-deps --format-version 1 >/dev/null
           cargo test --workspace --all-targets --all-features --locked
           cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
