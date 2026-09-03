@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-dd-telemetry = { path = "../../libs/telemetry-rs" }
+dd-telemetry = { path = "vendor/dd-telemetry" }
 tracing = "0.1"
 # NATS MQ integration: lifecycle events on dd.remote.build_server.* and the
 # optional durable JetStream request intake. Version pinned to the fleet-wide
@@ -18,8 +18,8 @@ chrono = { version = "0.4", features = ["serde"] }
 crypto_box = { version = "0.9", features = ["seal", "std"] }
 # Generated cross-language NATS subject constants (schema lives in
 # remote/libs/nats/subject-defs/schema/build-server.schema.json).
-dd-nats-subject-defs = { path = "../../libs/nats/subject-defs/generated/rust" }
-dd-runtime-config-client = { path = "../../libs/runtime-config-client-rs" }
+dd-nats-subject-defs = { path = "vendor/dd-nats-subject-defs" }
+dd-runtime-config-client = { path = "vendor/dd-runtime-config-client" }
 futures-util = "0.3"
 hex = "0.4"
 hmac = "0.12"
