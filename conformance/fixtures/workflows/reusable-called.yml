@@ -1,0 +1,55 @@
+name: conformance-reusable-called
+
+on:
+  workflow_call:
+    inputs:
+      phrase:
+        description: Deterministic text returned by the called workflow.
+        required: true
+        type: string
+      multiplier:
+        description: Number of repetitions.
+        required: false
+        default: 1
+        type: number
+    secrets:
+      conformance_secret:
+        description: Optional secret used only to verify context availability.
+        required: false
+    outputs:
+      rendered:
+        description: Repeated phrase from the called workflow.
+        value: ${{ jobs.render.outputs.rendered }}
+      secret_present:
+        description: Whether the optional secret context was populated.
+        value: ${{ jobs.render.outputs.secret_present }}
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    outputs:
+      rendered: ${{ steps.render.outputs.rendered }}
+      secret_present: ${{ steps.render.outputs.secret_present }}
+    steps:
+      - id: render
+        name: Render deterministic output
+        shell: bash
+        env:
+          PHRASE: ${{ inputs.phrase }}
+          MULTIPLIER: ${{ inputs.multiplier }}
+          SECRET_PRESENT: ${{ secrets.conformance_secret != '' }}
+        run: |
+          set -euo pipefail
+          [[ "${MULTIPLIER}" =~ ^[0-9]+$ ]]
+          rendered=''
+          for ((index = 0; index < MULTIPLIER; index += 1)); do
+            if [[ -n "${rendered}" ]]; then
+              rendered+='|'
+            fi
+            rendered+="${PHRASE}"
+          done
+          printf 'rendered=%s\n' "${rendered}" >> "${GITHUB_OUTPUT}"
+          printf 'secret_present=%s\n' "${SECRET_PRESENT}" >> "${GITHUB_OUTPUT}"

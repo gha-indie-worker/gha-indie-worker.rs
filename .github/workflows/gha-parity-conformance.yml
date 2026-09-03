@@ -1,0 +1,126 @@
+name: GitHub Actions parity conformance
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gha-parity-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compile the audit utilities
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            tools/audit_gha_parity.py \
+            tools/compare_gha_traces.py \
+            test/test_gha_parity_audit.py \
+            test/test_compare_gha_traces.py
+
+      - name: Run adversarial conformance-policy tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 test/test_gha_parity_audit.py -v
+          python3 test/test_compare_gha_traces.py -v
+
+      - name: Enforce honest parity status and evidence
+        shell: bash
+        env:
+          GHA_REQUIRE_FULL_PARITY: 'false'
+        run: |
+          set -euo pipefail
+          python3 tools/audit_gha_parity.py
+
+      - name: Reject tab-indented or structurally incomplete workflow fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          fixtures = sorted(Path('conformance/fixtures/workflows').glob('*.y*ml'))
+          if not fixtures:
+              raise SystemExit('no workflow fixtures found')
+          for path in fixtures:
+              text = path.read_text(encoding='utf-8')
+              if '\t' in text:
+                  raise SystemExit(f'{path}: workflow fixture must not contain tab indentation')
+              for marker in ('name:', 'on:', 'jobs:'):
+                  if marker not in text:
+                      raise SystemExit(f'{path}: missing required workflow marker {marker}')
+          print(f'validated {len(fixtures)} workflow fixture files')
+          PY
+
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact revision and parents
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Verify the Rust workspace when present
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f Cargo.toml ]]; then
+            echo 'No root Cargo.toml; Rust workspace verification is not applicable.'
+            exit 0
+          fi
+
+          if git rev-parse --verify 'HEAD^2' >/dev/null 2>&1; then
+            comparison_base="$(git merge-base 'HEAD^1' 'HEAD^2')"
+            comparison_head='HEAD^2'
+          else
+            comparison_base='HEAD^'
+            comparison_head='HEAD'
+          fi
+
+          mapfile -d '' candidate_rust < <(
+            git diff --name-only -z "$comparison_base" "$comparison_head" -- '*.rs'
+          )
+          changed_rust=()
+          for path in "${candidate_rust[@]}"; do
+            if [[ -L "$path" ]]; then
+              echo "Changed Rust source must not be a symlink: $path" >&2
+              exit 1
+            fi
+            if [[ -f "$path" ]]; then
+              changed_rust+=("$path")
+            fi
+          done
+
+          if (( ${#changed_rust[@]} > 0 )); then
+            printf 'Rust formatting applies only to changed source files:\n'
+            printf '  %s\n' "${changed_rust[@]}"
+            rustfmt --edition 2021 --check "${changed_rust[@]}"
+          else
+            echo 'No Rust source file changed; preserving unrelated baseline formatting debt outside this PR.'
+          fi
+
+          # Manifest and lock changes are validated semantically by Cargo rather
+          # than using repository-wide rustfmt, which would make an unrelated
+          # pre-existing source-formatting backlog block a focused PR.
+          cargo metadata --locked --no-deps --format-version 1 >/dev/null
+          cargo test --workspace --all-targets --all-features --locked
+          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings

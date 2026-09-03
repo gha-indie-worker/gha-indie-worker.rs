@@ -1,0 +1,109 @@
+name: conformance-failure-control
+
+on:
+  workflow_dispatch:
+    inputs:
+      induce_hard_failure:
+        description: Exercise downstream failure() and always() semantics.
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  tolerated:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      soft_outcome: ${{ steps.soft.outcome }}
+      soft_conclusion: ${{ steps.soft.conclusion }}
+    steps:
+      - id: soft
+        name: Fail with continue-on-error
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          exit 7
+
+      - name: Verify outcome and conclusion diverge
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.soft.outcome }}
+          CONCLUSION: ${{ steps.soft.conclusion }}
+        run: |
+          set -euo pipefail
+          test "${OUTCOME}" = "failure"
+          test "${CONCLUSION}" = "success"
+
+      - name: Run under success()
+        if: ${{ success() }}
+        shell: bash
+        run: printf '%s\n' 'success predicate observed after tolerated failure'
+
+      - name: Do not run under failure()
+        if: ${{ failure() }}
+        shell: bash
+        run: exit 93
+
+      - name: Always runs
+        if: ${{ always() }}
+        shell: bash
+        run: printf '%s\n' 'always predicate observed'
+
+  hard_failure:
+    if: ${{ inputs.induce_hard_failure }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Produce an intentional hard failure
+        shell: bash
+        run: exit 11
+
+      - name: Observe failure predicate
+        if: ${{ failure() }}
+        shell: bash
+        run: printf '%s\n' 'failure predicate observed'
+
+      - name: Observe always predicate
+        if: ${{ always() }}
+        shell: bash
+        run: printf '%s\n' 'always predicate observed after failure'
+
+      - name: Must be skipped after failure
+        if: ${{ success() }}
+        shell: bash
+        run: exit 94
+
+  downstream:
+    if: ${{ always() }}
+    needs:
+      - tolerated
+      - hard_failure
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify needs results for the selected scenario
+        shell: bash
+        env:
+          INDUCE_HARD_FAILURE: ${{ inputs.induce_hard_failure }}
+          TOLERATED_RESULT: ${{ needs.tolerated.result }}
+          HARD_RESULT: ${{ needs.hard_failure.result }}
+          SOFT_OUTCOME: ${{ needs.tolerated.outputs.soft_outcome }}
+          SOFT_CONCLUSION: ${{ needs.tolerated.outputs.soft_conclusion }}
+        run: |
+          set -euo pipefail
+          test "${TOLERATED_RESULT}" = "success"
+          test "${SOFT_OUTCOME}" = "failure"
+          test "${SOFT_CONCLUSION}" = "success"
+          if [[ "${INDUCE_HARD_FAILURE}" = "true" ]]; then
+            test "${HARD_RESULT}" = "failure"
+          else
+            test "${HARD_RESULT}" = "skipped"
+          fi
+
+      - name: Cancellation predicate is false in ordinary completion
+        if: ${{ cancelled() }}
+        shell: bash
+        run: exit 95
