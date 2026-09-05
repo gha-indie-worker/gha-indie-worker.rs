@@ -1,0 +1,46 @@
+name: Protocol review artifact
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "crates/gha-indie-protocol/**"
+      - ".github/workflows/protocol-review-artifact.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  format-and-package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact pull-request head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal --component rustfmt
+      - name: Format committed protocol sources
+        run: |
+          set -euo pipefail
+          cargo +1.97.0 metadata \
+            --locked \
+            --no-deps \
+            --format-version 1 \
+            --manifest-path crates/gha-indie-protocol/Cargo.toml \
+            > /dev/null
+          cargo +1.97.0 fmt --manifest-path crates/gha-indie-protocol/Cargo.toml --all
+      - name: Upload complete formatted crate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: protocol-review-files
+          path: crates/gha-indie-protocol
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 9
