@@ -142,33 +142,27 @@ fn all_756_valid_evidence_states_obey_the_fallback_safety_contract() {
 
                     assert!(!result.reason.is_empty());
                     if result.kind == AdmissionFailureKind::Unknown {
-                        assert_eq!(
-                            result.confidence,
-                            AdmissionEvidenceConfidence::Ambiguous
-                        );
+                        assert_eq!(result.confidence, AdmissionEvidenceConfidence::Ambiguous);
                         assert!(!result.fallback_allowed);
                     }
 
                     if result.fallback_allowed {
-                        assert_eq!(
-                            result.confidence,
-                            AdmissionEvidenceConfidence::Explicit
-                        );
+                        assert_eq!(result.confidence, AdmissionEvidenceConfidence::Explicit);
                         assert!(matches!(
                             result.kind,
                             AdmissionFailureKind::BillingOrSpending
                                 | AdmissionFailureKind::RunnerLabelOrCapacity
                         ));
-                        assert!(matches!(diagnostic, DiagnosticCase::Billing | DiagnosticCase::Capacity));
+                        assert!(matches!(
+                            diagnostic,
+                            DiagnosticCase::Billing | DiagnosticCase::Capacity
+                        ));
                         assert!(is_terminal_admission_failure(status, conclusion));
                         assert!(!steps_observed.is_some_and(|steps| steps > 0));
                     }
 
                     if is_canceled(conclusion) {
-                        assert_eq!(
-                            result.kind,
-                            AdmissionFailureKind::CanceledOrSuperseded
-                        );
+                        assert_eq!(result.kind, AdmissionFailureKind::CanceledOrSuperseded);
                         assert!(!result.fallback_allowed);
                         continue;
                     }
@@ -180,30 +174,21 @@ fn all_756_valid_evidence_states_obey_the_fallback_safety_contract() {
                     }
 
                     if steps_observed.is_some_and(|steps| steps > 0) {
-                        assert_eq!(
-                            result.kind,
-                            AdmissionFailureKind::ExecutedCodeFailure
-                        );
+                        assert_eq!(result.kind, AdmissionFailureKind::ExecutedCodeFailure);
                         assert!(!result.fallback_allowed);
                         continue;
                     }
 
                     match diagnostic {
                         DiagnosticCase::Billing => {
-                            assert_eq!(
-                                result.kind,
-                                AdmissionFailureKind::BillingOrSpending
-                            );
+                            assert_eq!(result.kind, AdmissionFailureKind::BillingOrSpending);
                             assert_eq!(
                                 result.fallback_allowed,
                                 is_terminal_admission_failure(status, conclusion)
                             );
                         }
                         DiagnosticCase::Capacity => {
-                            assert_eq!(
-                                result.kind,
-                                AdmissionFailureKind::RunnerLabelOrCapacity
-                            );
+                            assert_eq!(result.kind, AdmissionFailureKind::RunnerLabelOrCapacity);
                             assert_eq!(
                                 result.fallback_allowed,
                                 is_terminal_admission_failure(status, conclusion)
@@ -257,10 +242,7 @@ fn all_108_conflicting_diagnostic_states_fail_closed() {
                 });
                 checked += 1;
                 assert_eq!(result.kind, AdmissionFailureKind::Unknown);
-                assert_eq!(
-                    result.confidence,
-                    AdmissionEvidenceConfidence::Ambiguous
-                );
+                assert_eq!(result.confidence, AdmissionEvidenceConfidence::Ambiguous);
                 assert!(!result.fallback_allowed);
             }
         }
@@ -286,10 +268,7 @@ fn malformed_provider_references_never_authorize_fallback() {
             platform_diagnostics: &[diagnostic],
         });
         assert_eq!(result.kind, AdmissionFailureKind::Unknown);
-        assert_eq!(
-            result.confidence,
-            AdmissionEvidenceConfidence::Ambiguous
-        );
+        assert_eq!(result.confidence, AdmissionEvidenceConfidence::Ambiguous);
         assert!(!result.fallback_allowed);
     }
 }
