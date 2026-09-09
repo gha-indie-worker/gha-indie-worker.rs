@@ -168,6 +168,19 @@ pub(crate) async fn run_logged_command_inner(
     display_args: Option<Vec<String>>,
     stdin: Option<Vec<u8>>,
 ) -> Result<(), String> {
+    if program == config.git_bin {
+        if let Some(repo_url) = args
+            .iter()
+            .position(|arg| arg == "--")
+            .and_then(|position| args.get(position + 1))
+        {
+            // The clone URL is already a validated execution input. Register
+            // its normalized owner/repo before the child starts so even clone
+            // progress emitted on stderr carries queryable repository metadata.
+            log_sidecar::register_job_from_clone(log_path, repo_url);
+        }
+    }
+
     let display_args = display_args.unwrap_or_else(|| args.clone());
     append_log(
         log_path,
