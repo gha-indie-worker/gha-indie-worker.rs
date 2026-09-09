@@ -1,5 +1,7 @@
 use std::{
-    env, path::Path, process::Stdio,
+    env,
+    path::Path,
+    process::Stdio,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -71,7 +73,8 @@ impl LogSidecarConfig {
             DEFAULT_QUEUE_CAPACITY,
         )
         .min(MAX_QUEUE_CAPACITY);
-        let shutdown_ms = positive_u64_env("BUILD_SERVER_LOG_SIDECAR_SHUTDOWN_MS", 8_000).min(8_000);
+        let shutdown_ms =
+            positive_u64_env("BUILD_SERVER_LOG_SIDECAR_SHUTDOWN_MS", 8_000).min(8_000);
 
         Some(Self {
             bin,
@@ -454,11 +457,7 @@ fn inherit_metadata_fd(command: &mut Command, source_fd: i32) -> io::Result<()> 
                 if flags < 0 {
                     return Err(io::Error::last_os_error());
                 }
-                if unix_sys::fcntl(
-                    source_fd,
-                    unix_sys::F_SETFD,
-                    flags & !unix_sys::FD_CLOEXEC,
-                ) != 0
+                if unix_sys::fcntl(source_fd, unix_sys::F_SETFD, flags & !unix_sys::FD_CLOEXEC) != 0
                 {
                     return Err(io::Error::last_os_error());
                 }
