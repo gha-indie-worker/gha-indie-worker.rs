@@ -26,7 +26,10 @@ async fn real_worker_producer_streams_exact_bytes_through_reference_sidecar() {
         );
         return;
     };
-    assert!(sidecar_bin.is_absolute(), "reference sidecar path must be absolute");
+    assert!(
+        sidecar_bin.is_absolute(),
+        "reference sidecar path must be absolute"
+    );
     assert!(sidecar_bin.is_file(), "reference sidecar binary must exist");
 
     let temp = unique_temp_dir();
