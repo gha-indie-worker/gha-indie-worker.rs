@@ -133,7 +133,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      INTERFACES_REVISION: e985286cac2feb12d073a8bff4acd65a9a030664
+      INTERFACES_REVISION: a69575677dfabb83b72322690851d998ef8561f8
       TJSV_REVISION: a4b731fbf82c4d162abd74fd03758fa32bb76176
     steps:
       - name: Check out exact producer candidate
@@ -219,6 +219,13 @@ jobs:
           TSJSV_VERIFY_DECLARATIONS: '["GhaIndieWorker.BuildLogEvent","GhaIndieWorker.BuildLogMetadata","GhaIndieWorker.BuildLogStream"]'
           TSJSV_VERIFY_VERIFICATION: target/tjsv/build-log-producer/producer-verification.json
         run: node .tjsv/scripts/verify-consumer.mjs
+
+      - name: Prove corrected Rust interface projection
+        working-directory: contract-authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --all-targets build_log_metadata::tests:: -- --nocapture
 
       - name: Prove real Rust producer wire and failure-isolation semantics
         shell: bash
