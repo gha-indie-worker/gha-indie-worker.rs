@@ -29,6 +29,7 @@ mod gha_workflow;
 mod http;
 mod jobs;
 mod lambda_exec;
+mod log_sidecar;
 mod profiles;
 mod state;
 mod types;
