@@ -60,8 +60,8 @@ jobs:
           standalone_scripts_root = Path("scripts")
           extension_hashes = {
               "main.rs": "dd811cc879bd9ab1a88dfbaa8ee2a9eb3d30e379",
-              "exec.rs": "0c547db9ccd6ae2c9847efa0917659ab7e2f5994",
-              "log_sidecar.rs": "9290f494b2cdb98f51b7bfe0ed65dba486a3d81c",
+              "exec.rs": "3589da36a500fbbb7adb58ea2a691631ee45ff81",
+              "log_sidecar.rs": "3805ad675c4502d801e6041e2ac6f88d0a704ad3",
               "admission.rs": "db0812072de0a3ba5d1ce5965a28dc2ff0d09f5a",
               "expression.rs": "944ef5e0c05010a9a46aedc7728e244ec21c17ab",
               "gha_workflow.rs": "af608b77c568dfb17e4966f8a6f0a86377df45b7",
@@ -161,8 +161,10 @@ jobs:
           test "$(git hash-object readme.md)" = "c947cec02f207d743d8a454c3e85a1ff73fe6825"
           grep -F '42b7471fa680331fe4977db42db8497ab9549cd9' SOURCE_PROVENANCE.md
           grep -F 'dd811cc879bd9ab1a88dfbaa8ee2a9eb3d30e379' SOURCE_PROVENANCE.md
-          grep -F '0c547db9ccd6ae2c9847efa0917659ab7e2f5994' SOURCE_PROVENANCE.md
-          grep -F '9290f494b2cdb98f51b7bfe0ed65dba486a3d81c' SOURCE_PROVENANCE.md
+          grep -F '3589da36a500fbbb7adb58ea2a691631ee45ff81' SOURCE_PROVENANCE.md
+          grep -F '3805ad675c4502d801e6041e2ac6f88d0a704ad3' SOURCE_PROVENANCE.md
+          grep -F 'a789f2985b762ba1980bf0030451ef4c4018117b' SOURCE_PROVENANCE.md
+          grep -F 'a4b731fbf82c4d162abd74fd03758fa32bb76176' SOURCE_PROVENANCE.md
           grep -F 'db0812072de0a3ba5d1ce5965a28dc2ff0d09f5a' SOURCE_PROVENANCE.md
           grep -F '944ef5e0c05010a9a46aedc7728e244ec21c17ab' SOURCE_PROVENANCE.md
           grep -F 'e23d0f643a632cd80d5e99e7387896d2b06f4516' SOURCE_PROVENANCE.md
