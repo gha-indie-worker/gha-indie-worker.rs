@@ -193,7 +193,9 @@ fn receiver_spec() -> Option<ReceiverSpec> {
         Ok(raw) => match serde_json::from_str::<Vec<String>>(&raw) {
             Ok(args) if args.len() <= 64 && args.iter().all(|arg| arg.len() <= 4096) => args,
             _ => {
-                tracing::warn!("build log receiver disabled: args JSON is invalid or exceeds bounds");
+                tracing::warn!(
+                    "build log receiver disabled: args JSON is invalid or exceeds bounds"
+                );
                 return None;
             }
         },
@@ -291,14 +293,21 @@ pub(crate) async fn shutdown() {
         guard.jobs.clear();
         guard.supervisor.take()
     };
-    let Some(mut supervisor) = supervisor else {
+    let Some(supervisor) = supervisor else {
         return;
     };
 
-    if timeout(MAX_SHUTDOWN_BUDGET, &mut supervisor).await.is_err() {
-        supervisor.abort();
+    if !await_supervisor_with_budget(supervisor, MAX_SHUTDOWN_BUDGET).await {
         tracing::warn!("build log receiver exceeded the hard 8-second shutdown budget");
     }
+}
+
+async fn await_supervisor_with_budget(mut supervisor: JoinHandle<()>, budget: Duration) -> bool {
+    if timeout(budget, &mut supervisor).await.is_ok() {
+        return true;
+    }
+    supervisor.abort();
+    false
 }
 
 #[cfg(unix)]
@@ -308,8 +317,8 @@ fn spawn_supervisor(
     accounting: Arc<Accounting>,
 ) -> io::Result<JoinHandle<()>> {
     use std::{
-        os::{fd::AsRawFd, unix::net::UnixStream},
         os::unix::process::CommandExt,
+        os::{fd::AsRawFd, unix::net::UnixStream},
     };
 
     let (metadata_writer, metadata_child) = UnixStream::pair()?;
@@ -500,12 +509,7 @@ async fn write_drop_summary(
         dropped_chunks: Some(dropped_chunks),
         dropped_bytes: Some(dropped_bytes),
     };
-    match timeout(
-        WRITE_TIMEOUT,
-        write_metadata(metadata_writer, &metadata),
-    )
-    .await
-    {
+    match timeout(WRITE_TIMEOUT, write_metadata(metadata_writer, &metadata)).await {
         Ok(result) => result,
         Err(_) => Err(io::Error::new(
             io::ErrorKind::TimedOut,
@@ -568,10 +572,16 @@ fn github_job_context(repo_url: &str) -> JobContext {
     };
     let path = path.trim_end_matches('/').trim_end_matches(".git");
     let mut components = path.split('/');
-    let Some(owner) = components.next().filter(|value| valid_github_component(value)) else {
+    let Some(owner) = components
+        .next()
+        .filter(|value| valid_github_component(value))
+    else {
         return JobContext::default();
     };
-    let Some(repo) = components.next().filter(|value| valid_github_component(value)) else {
+    let Some(repo) = components
+        .next()
+        .filter(|value| valid_github_component(value))
+    else {
         return JobContext::default();
     };
     if components.next().is_some() {
@@ -594,6 +604,34 @@ fn valid_github_component(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    use std::io::Read as _;
+
+    #[cfg(unix)]
+    fn socket_pair() -> (tokio::net::UnixStream, std::os::unix::net::UnixStream) {
+        let (writer, reader) = std::os::unix::net::UnixStream::pair().expect("unix socket pair");
+        writer
+            .set_nonblocking(true)
+            .expect("set writer nonblocking");
+        (
+            tokio::net::UnixStream::from_std(writer).expect("tokio unix stream"),
+            reader,
+        )
+    }
+
+    #[cfg(unix)]
+    fn queued(stream: LogStream, sequence: u32, data: &[u8]) -> QueuedChunk {
+        QueuedChunk {
+            job_id: "build-1".to_string(),
+            stream,
+            sequence,
+            timestamp: "2026-09-09T19:45:00Z".to_string(),
+            repository: Some("gha-indie-worker/gha-indie-worker.rs".to_string()),
+            github_organization: Some("gha-indie-worker".to_string()),
+            data: data.to_vec(),
+        }
+    }
 
     #[test]
     fn full_queue_drops_sidecar_copy_without_blocking() {
@@ -645,6 +683,143 @@ mod tests {
         assert!(encoded.contains("\"byteLength\":3"));
         assert!(encoded.contains("\"stream\":\"stderr\""));
         assert!(encoded.contains("\"githubOrganization\":\"gha-indie-worker\""));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn writer_loop_preserves_metadata_order_and_raw_bytes() {
+        let accounting = Accounting::default();
+        let (sender, receiver) = mpsc::channel(4);
+        sender
+            .try_send(queued(LogStream::Stdout, 1, b"one"))
+            .expect("queue stdout");
+        sender
+            .try_send(queued(LogStream::Stderr, 1, &[0xff, 0x00]))
+            .expect("queue stderr");
+        sender
+            .try_send(queued(LogStream::Stdout, 2, b"two"))
+            .expect("queue second stdout");
+        drop(sender);
+
+        let (metadata_writer, mut metadata_reader) = socket_pair();
+        let (data_writer, mut data_reader) = socket_pair();
+        writer_loop(receiver, metadata_writer, data_writer, &accounting)
+            .await
+            .expect("writer loop");
+
+        let mut metadata_text = String::new();
+        metadata_reader
+            .read_to_string(&mut metadata_text)
+            .expect("read metadata");
+        let records = metadata_text
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("metadata json"))
+            .collect::<Vec<_>>();
+        assert_eq!(records.len(), 5);
+        assert_eq!(records[0]["event"], "chunk");
+        assert_eq!(records[0]["stream"], "stdout");
+        assert_eq!(records[0]["sequence"], 1);
+        assert_eq!(records[0]["byteLength"], 3);
+        assert_eq!(records[1]["stream"], "stderr");
+        assert_eq!(records[1]["sequence"], 1);
+        assert_eq!(records[1]["byteLength"], 2);
+        assert_eq!(records[2]["stream"], "stdout");
+        assert_eq!(records[2]["sequence"], 2);
+        assert_eq!(records[3]["event"], "stream_closed");
+        assert_eq!(records[4]["event"], "stream_closed");
+
+        let mut raw = Vec::new();
+        data_reader.read_to_end(&mut raw).expect("read raw bytes");
+        assert_eq!(raw, vec![b'o', b'n', b'e', 0xff, 0x00, b't', b'w', b'o']);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn writer_loop_emits_bounded_drop_receipt_before_close() {
+        let accounting = Accounting::default();
+        accounting.record_drop(65_536);
+        accounting.record_drop(17);
+        let (sender, receiver) = mpsc::channel(1);
+        drop(sender);
+
+        let (metadata_writer, mut metadata_reader) = socket_pair();
+        let (data_writer, _data_reader) = socket_pair();
+        writer_loop(receiver, metadata_writer, data_writer, &accounting)
+            .await
+            .expect("writer loop");
+
+        let mut metadata_text = String::new();
+        metadata_reader
+            .read_to_string(&mut metadata_text)
+            .expect("read metadata");
+        let records = metadata_text
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("metadata json"))
+            .collect::<Vec<_>>();
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0]["event"], "dropped");
+        assert_eq!(records[0]["stream"], "worker");
+        assert_eq!(records[0]["droppedChunks"], 2);
+        assert_eq!(records[0]["droppedBytes"], 65_553);
+        assert_eq!(accounting.dropped_chunks.load(Ordering::Acquire), 0);
+        assert_eq!(accounting.dropped_bytes.load(Ordering::Acquire), 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn closed_receiver_is_optional_sink_failure() {
+        let accounting = Accounting::default();
+        let (sender, receiver) = mpsc::channel(1);
+        sender
+            .try_send(queued(LogStream::Stdout, 1, b"still-primary"))
+            .expect("queue chunk");
+        drop(sender);
+
+        let (metadata_writer, metadata_reader) = socket_pair();
+        let (data_writer, data_reader) = socket_pair();
+        drop(metadata_reader);
+        drop(data_reader);
+
+        assert!(
+            writer_loop(receiver, metadata_writer, data_writer, &accounting)
+                .await
+                .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn non_reading_receiver_hits_sidecar_write_deadline() {
+        let accounting = Accounting::default();
+        let (sender, receiver) = mpsc::channel(128);
+        let payload = vec![b'x'; MAX_CHUNK_BYTES];
+        for sequence in 1..=128 {
+            sender
+                .try_send(queued(LogStream::Stdout, sequence, &payload))
+                .expect("queue pressure chunk");
+        }
+        drop(sender);
+
+        let (metadata_writer, _metadata_reader) = socket_pair();
+        let (data_writer, _data_reader) = socket_pair();
+        let error = tokio::time::timeout(
+            Duration::from_secs(2),
+            writer_loop(receiver, metadata_writer, data_writer, &accounting),
+        )
+        .await
+        .expect("writer loop must stay bounded")
+        .expect_err("non-reading receiver must fail the optional sink");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[tokio::test]
+    async fn supervisor_budget_aborts_hung_receiver() {
+        let supervisor = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        });
+        let started = std::time::Instant::now();
+        assert!(!await_supervisor_with_budget(supervisor, Duration::from_millis(20)).await);
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]
