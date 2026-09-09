@@ -26,7 +26,7 @@ jobs:
           toolchain: '1.90.0'
           components: rustfmt, clippy
       - name: Check canonical worker source formatting
-        run: rustfmt --edition 2021 --config skip_children=true --check src/main.rs src/expression.rs src/gha_workflow.rs src/http.rs src/jobs.rs src/lib.rs src/linux_runner.rs src/workflow_runner.rs src/validation.rs src/bin/gha-linux-runner.rs src/bin/gha-linux-workflow.rs
+        run: rustfmt --edition 2021 --config skip_children=true --check src/main.rs src/exec.rs src/log_sidecar.rs src/expression.rs src/gha_workflow.rs src/http.rs src/jobs.rs src/lib.rs src/linux_runner.rs src/workflow_runner.rs src/validation.rs src/bin/gha-linux-runner.rs src/bin/gha-linux-workflow.rs
       - name: Check compatibility crate formatting
         run: rustfmt --edition 2021 --check vendor/dd-telemetry/src/lib.rs vendor/dd-nats-subject-defs/src/lib.rs vendor/dd-runtime-config-client/src/lib.rs
       - run: cargo clippy --locked --all-targets -- -D warnings
@@ -59,7 +59,9 @@ jobs:
           canonical_scripts_root = Path("canonical/remote/deployments/build-server-rs/scripts")
           standalone_scripts_root = Path("scripts")
           extension_hashes = {
-              "main.rs": "a3da1bdae02618a7382fc24aa73e3ad8edb721aa",
+              "main.rs": "dd811cc879bd9ab1a88dfbaa8ee2a9eb3d30e379",
+              "exec.rs": "0c547db9ccd6ae2c9847efa0917659ab7e2f5994",
+              "log_sidecar.rs": "9290f494b2cdb98f51b7bfe0ed65dba486a3d81c",
               "admission.rs": "db0812072de0a3ba5d1ce5965a28dc2ff0d09f5a",
               "expression.rs": "944ef5e0c05010a9a46aedc7728e244ec21c17ab",
               "gha_workflow.rs": "af608b77c568dfb17e4966f8a6f0a86377df45b7",
@@ -158,7 +160,9 @@ jobs:
           diff -ru "$source_root/generated" generated
           test "$(git hash-object readme.md)" = "c947cec02f207d743d8a454c3e85a1ff73fe6825"
           grep -F '42b7471fa680331fe4977db42db8497ab9549cd9' SOURCE_PROVENANCE.md
-          grep -F 'a3da1bdae02618a7382fc24aa73e3ad8edb721aa' SOURCE_PROVENANCE.md
+          grep -F 'dd811cc879bd9ab1a88dfbaa8ee2a9eb3d30e379' SOURCE_PROVENANCE.md
+          grep -F '0c547db9ccd6ae2c9847efa0917659ab7e2f5994' SOURCE_PROVENANCE.md
+          grep -F '9290f494b2cdb98f51b7bfe0ed65dba486a3d81c' SOURCE_PROVENANCE.md
           grep -F 'db0812072de0a3ba5d1ce5965a28dc2ff0d09f5a' SOURCE_PROVENANCE.md
           grep -F '944ef5e0c05010a9a46aedc7728e244ec21c17ab' SOURCE_PROVENANCE.md
           grep -F 'e23d0f643a632cd80d5e99e7387896d2b06f4516' SOURCE_PROVENANCE.md
