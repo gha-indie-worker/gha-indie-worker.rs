@@ -1,0 +1,113 @@
+name: Live log sidecar contract
+
+on:
+  pull_request:
+    paths:
+      - 'src/exec.rs'
+      - 'src/log_sidecar.rs'
+      - 'src/main.rs'
+      - 'tests/log_sidecar_contract.rs'
+      - 'docs/LOG_SIDECAR.md'
+      - '.github/workflows/live-log-sidecar-contract.yml'
+  push:
+    branches: [dev, main]
+    paths:
+      - 'src/exec.rs'
+      - 'src/log_sidecar.rs'
+      - 'src/main.rs'
+      - 'tests/log_sidecar_contract.rs'
+      - 'docs/LOG_SIDECAR.md'
+      - '.github/workflows/live-log-sidecar-contract.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-log-sidecar-contract-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  INTERFACES_REVISION: a789f2985b762ba1980bf0030451ef4c4018117b
+  TJSV_REVISION: a4b731fbf82c4d162abd74fd03758fa32bb76176
+  TJSV_PACKAGE: https://github.com/ORESoftware/typespec-json-schema-validator/archive/a4b731fbf82c4d162abd74fd03758fa32bb76176.tar.gz
+
+jobs:
+  producer-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out exact worker candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Check out admitted interface authority
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: gha-indie-worker/gha-indie-worker-interfaces
+          ref: ${{ env.INTERFACES_REVISION }}
+          path: contract-authority
+          persist-credentials: false
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Verify exact candidate and authority revisions
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$(git -C contract-authority rev-parse HEAD)" = "$INTERFACES_REVISION"
+
+      - name: Set up Node 22 for TJSV
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Re-admit pinned TypeSpec and JSON Schema authorities with TJSV
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/tjsv/live-log-sidecar
+          npx --yes --package="$TJSV_PACKAGE" tjsv check \
+            --typespec=contract-authority/contracts/build-log-stream/main.tsp \
+            --schema=contract-authority/contracts/build-log-stream/authored.schema.json \
+            --instances=contract-authority/contracts/build-log-stream/instances \
+            --report=target/tjsv/live-log-sidecar/report.json \
+            --output-dir=target/tjsv/live-log-sidecar/generated-schema-b \
+            --max-probes=256 \
+            --int64-strategy=number \
+            --seal-object-schemas=true
+
+      - name: Set up Rust 1.90
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: '1.90.0'
+          components: rustfmt, clippy
+
+      - name: Check contract harness formatting
+        run: rustfmt --edition 2021 --check --config skip_children=true tests/log_sidecar_contract.rs
+
+      - name: Clippy real producer contract harness
+        env:
+          GHAIW_LOG_SIDECAR_CONTRACT_ROOT: ${{ github.workspace }}/contract-authority/contracts/build-log-stream
+        run: cargo clippy --locked --test log_sidecar_contract -- -D warnings
+
+      - name: Test exact wire vectors and real FD3 producer lifecycle
+        env:
+          GHAIW_LOG_SIDECAR_CONTRACT_ROOT: ${{ github.workspace }}/contract-authority/contracts/build-log-stream
+        run: cargo test --locked --test log_sidecar_contract -- --nocapture
+
+      - name: Upload TJSV producer evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: worker-live-log-tjsv-${{ github.sha }}
+          path: target/tjsv/live-log-sidecar/
+          if-no-files-found: error
+          retention-days: 30
