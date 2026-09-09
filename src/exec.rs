@@ -6,12 +6,17 @@ use std::{
 
 use tokio::{
     fs::{self, OpenOptions},
-    io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader},
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     process::Command,
     time::timeout,
 };
 
-use crate::config::Config;
+use crate::{
+    config::Config,
+    log_sidecar::{CommandOutcome, LogSidecar, LogStream, SidecarTap},
+};
+
+const LOG_PUMP_CHUNK_BYTES: usize = 16 * 1024;
 
 pub(crate) fn shellish(value: &str) -> String {
     if value.chars().all(|ch| {
@@ -50,12 +55,15 @@ pub(crate) fn redacted_build_args(args: &[String]) -> Vec<String> {
 }
 
 pub(crate) async fn append_log(path: &Path, message: &str, max_bytes: u64) {
+    append_log_bytes(path, message.as_bytes(), max_bytes).await;
+}
+
+pub(crate) async fn append_log_bytes(path: &Path, bytes: &[u8], max_bytes: u64) {
     let current_len = fs::metadata(path).await.map(|meta| meta.len()).unwrap_or(0);
     if current_len >= max_bytes {
         return;
     }
     let remaining = (max_bytes - current_len) as usize;
-    let bytes = message.as_bytes();
     let limit = remaining.min(bytes.len());
     if limit == 0 {
         return;
@@ -73,27 +81,50 @@ pub(crate) async fn append_log(path: &Path, message: &str, max_bytes: u64) {
     }
 }
 
-pub(crate) async fn pipe_reader<R>(reader: R, log_path: PathBuf, prefix: &'static str, max_bytes: u64)
-where
+async fn write_primary_stdio(stream: LogStream, bytes: &[u8]) {
+    match stream {
+        LogStream::Stdout => {
+            let mut stdout = tokio::io::stdout();
+            let _ = stdout.write_all(bytes).await;
+            let _ = stdout.flush().await;
+        }
+        LogStream::Stderr => {
+            let mut stderr = tokio::io::stderr();
+            let _ = stderr.write_all(bytes).await;
+            let _ = stderr.flush().await;
+        }
+    }
+}
+
+pub(crate) async fn pipe_reader<R>(
+    mut reader: R,
+    log_path: PathBuf,
+    prefix: &'static str,
+    max_bytes: u64,
+    stream: LogStream,
+    sidecar: Option<SidecarTap>,
+) where
     R: AsyncRead + Unpin,
 {
-    let mut reader = BufReader::new(reader);
-    let mut line = Vec::new();
+    let mut buffer = vec![0_u8; LOG_PUMP_CHUNK_BYTES];
     loop {
-        line.clear();
-        match reader.read_until(b'\n', &mut line).await {
+        match reader.read(&mut buffer).await {
             Ok(0) => break,
-            Ok(_) => {
-                let text = String::from_utf8_lossy(&line);
-                append_log(&log_path, &format!("{prefix}{text}"), max_bytes).await;
+            Ok(read) => {
+                let bytes = &buffer[..read];
+                write_primary_stdio(stream, bytes).await;
+                if !prefix.is_empty() {
+                    append_log(&log_path, prefix, max_bytes).await;
+                }
+                append_log_bytes(&log_path, bytes, max_bytes).await;
+                if let Some(sidecar) = sidecar.as_ref() {
+                    sidecar.try_data(stream, bytes);
+                }
             }
             Err(error) => {
-                append_log(
-                    &log_path,
-                    &format!("{prefix}failed to read command output: {error}\n"),
-                    max_bytes,
-                )
-                .await;
+                let message = format!("{prefix}failed to read command output: {error}\n");
+                append_log(&log_path, &message, max_bytes).await;
+                write_primary_stdio(LogStream::Stderr, message.as_bytes()).await;
                 break;
             }
         }
@@ -141,12 +172,15 @@ pub(crate) async fn run_logged_command_inner(
     stdin: Option<Vec<u8>>,
 ) -> Result<(), String> {
     let display_args = display_args.unwrap_or_else(|| args.clone());
-    append_log(
-        log_path,
-        &format!("\n$ {}\n", printable_command(program, &display_args)),
-        config.max_log_bytes,
-    )
-    .await;
+    let command_line = format!("\n$ {}\n", printable_command(program, &display_args));
+    append_log(log_path, &command_line, config.max_log_bytes).await;
+    write_primary_stdio(LogStream::Stdout, command_line.as_bytes()).await;
+
+    // Sidecar startup is deliberately fail-open: build execution keeps its
+    // existing fail-closed security policy, while an optional observability
+    // sink can disappear without changing build success or blocking stdio.
+    let sidecar = LogSidecar::spawn(log_path, program).await;
+    let sidecar_tap = sidecar.as_ref().map(LogSidecar::tap);
 
     let mut command = Command::new(program);
     command
@@ -184,15 +218,24 @@ pub(crate) async fn run_logged_command_inner(
         }
     }
 
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("failed to spawn {program}: {error}"))?;
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            if let Some(sidecar) = sidecar {
+                sidecar.finish(CommandOutcome::WaitFailed).await;
+            }
+            return Err(format!("failed to spawn {program}: {error}"));
+        }
+    };
     if let Some(input) = stdin {
         if let Some(mut child_stdin) = child.stdin.take() {
-            child_stdin
-                .write_all(&input)
-                .await
-                .map_err(|error| format!("failed to write stdin for {program}: {error}"))?;
+            if let Err(error) = child_stdin.write_all(&input).await {
+                let _ = child.start_kill();
+                if let Some(sidecar) = sidecar {
+                    sidecar.finish(CommandOutcome::WaitFailed).await;
+                }
+                return Err(format!("failed to write stdin for {program}: {error}"));
+            }
         }
     }
 
@@ -202,6 +245,8 @@ pub(crate) async fn run_logged_command_inner(
             log_path.to_path_buf(),
             "",
             config.max_log_bytes,
+            LogStream::Stdout,
+            sidecar_tap.clone(),
         ))
     });
     let stderr_task = child.stderr.take().map(|stderr| {
@@ -210,19 +255,24 @@ pub(crate) async fn run_logged_command_inner(
             log_path.to_path_buf(),
             "",
             config.max_log_bytes,
+            LogStream::Stderr,
+            sidecar_tap,
         ))
     });
 
-    let status = match timeout(config.job_timeout, child.wait()).await {
-        Ok(Ok(status)) => status,
-        Ok(Err(error)) => return Err(format!("{program} failed to wait: {error}")),
+    enum WaitResult {
+        Exited(std::process::ExitStatus),
+        Failed(String),
+        TimedOut,
+    }
+
+    let wait_result = match timeout(config.job_timeout, child.wait()).await {
+        Ok(Ok(status)) => WaitResult::Exited(status),
+        Ok(Err(error)) => WaitResult::Failed(format!("{program} failed to wait: {error}")),
         Err(_) => {
             let _ = child.kill().await;
             let _ = child.wait().await;
-            return Err(format!(
-                "{program} timed out after {:?}",
-                config.job_timeout
-            ));
+            WaitResult::TimedOut
         }
     };
 
@@ -233,17 +283,40 @@ pub(crate) async fn run_logged_command_inner(
         let _ = task.await;
     }
 
-    append_log(
-        log_path,
-        &format!("exit status: {status}\n"),
-        config.max_log_bytes,
-    )
-    .await;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("{program} exited with {status}"))
+    match wait_result {
+        WaitResult::Exited(status) => {
+            let status_line = format!("exit status: {status}\n");
+            append_log(log_path, &status_line, config.max_log_bytes).await;
+            write_primary_stdio(LogStream::Stdout, status_line.as_bytes()).await;
+            if let Some(sidecar) = sidecar {
+                sidecar
+                    .finish(CommandOutcome::Exited {
+                        success: status.success(),
+                        code: status.code(),
+                    })
+                    .await;
+            }
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("{program} exited with {status}"))
+            }
+        }
+        WaitResult::Failed(error) => {
+            if let Some(sidecar) = sidecar {
+                sidecar.finish(CommandOutcome::WaitFailed).await;
+            }
+            Err(error)
+        }
+        WaitResult::TimedOut => {
+            if let Some(sidecar) = sidecar {
+                sidecar.finish(CommandOutcome::TimedOut).await;
+            }
+            Err(format!(
+                "{program} timed out after {:?}",
+                config.job_timeout
+            ))
+        }
     }
 }
 
