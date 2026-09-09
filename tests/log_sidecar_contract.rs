@@ -69,7 +69,10 @@ fn admitted_wire_vectors_match_the_real_worker_encoder() {
 }
 
 #[cfg(unix)]
-async fn capture_terminal_metadata(suffix: &str, outcome: CommandOutcome) -> Vec<serde_json::Value> {
+async fn capture_terminal_metadata(
+    suffix: &str,
+    outcome: CommandOutcome,
+) -> Vec<serde_json::Value> {
     let unique = format!(
         "ghaiw-sidecar-contract-{}-{}-{suffix}",
         std::process::id(),
