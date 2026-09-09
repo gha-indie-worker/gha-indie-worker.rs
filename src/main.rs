@@ -20,6 +20,7 @@ mod gh_secrets;
 mod http;
 mod jobs;
 mod lambda_exec;
+mod log_sidecar;
 mod nats_submit;
 mod profiles;
 mod state;
@@ -49,6 +50,11 @@ async fn main() {
     if let Err(error) = fs::create_dir_all(&config.work_root).await {
         panic!("failed to create build server work root: {error}");
     }
+
+    // The receiver is optional and failure-isolated. Invalid configuration or
+    // spawn failure disables only the sidecar copy; normal worker stdio and
+    // bounded file logging remain available.
+    log_sidecar::init();
 
     // Optional Postgres persistence (own database dd_build_server on RDS). A
     // connection failure is fatal only when a URL was configured — it signals
@@ -131,10 +137,14 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(address)
         .await
         .expect("failed to bind tcp listener");
-    axum::serve(listener, app.layer(dd_telemetry::http_trace_layer()))
+    let serve_result = axum::serve(listener, app.layer(dd_telemetry::http_trace_layer()))
         .with_graceful_shutdown(shutdown_signal())
-        .await
-        .expect("axum server crashed");
+        .await;
+
+    // A single hard deadline covers drain + EOF + receiver exit + forced
+    // termination. Sidecar cleanup never extends worker shutdown by >8s.
+    log_sidecar::shutdown().await;
+    serve_result.expect("axum server crashed");
 }
 
 async fn shutdown_signal() {
