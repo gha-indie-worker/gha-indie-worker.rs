@@ -3,9 +3,7 @@ mod log_sidecar;
 
 use std::{env, fs, path::Path, time::Duration};
 
-use log_sidecar::{
-    encode_data_frame, CommandOutcome, LogSidecar, LogStream, PROTOCOL,
-};
+use log_sidecar::{encode_data_frame, CommandOutcome, LogSidecar, LogStream, PROTOCOL};
 
 fn contract_root() -> Option<std::path::PathBuf> {
     env::var_os("GHAIW_LOG_SIDECAR_CONTRACT_ROOT").map(std::path::PathBuf::from)
@@ -94,15 +92,18 @@ async fn real_worker_sidecar_emits_contract_shaped_fd3_metadata() {
     let temp = env::temp_dir().join(unique);
     fs::create_dir_all(&temp).expect("create test directory");
     let metadata_path = temp.join("metadata.ndjson");
-    let script = format!(
-        "cat <&3 > '{}'; cat >/dev/null",
-        metadata_path.display().to_string().replace('\\'', "'\\''")
-    );
+    let script = "cat <&3 > \"$1\"; cat >/dev/null";
 
     env::set_var("BUILD_SERVER_LOG_SIDECAR_BIN", "/bin/sh");
     env::set_var(
         "BUILD_SERVER_LOG_SIDECAR_ARGS_JSON",
-        serde_json::to_string(&vec!["-c", script.as_str()]).expect("args JSON"),
+        serde_json::to_string(&vec![
+            "-c".to_string(),
+            script.to_string(),
+            "ghaiw-contract-test".to_string(),
+            metadata_path.to_string_lossy().into_owned(),
+        ])
+        .expect("args JSON"),
     );
     env::set_var("BUILD_SERVER_LOG_SIDECAR_QUEUE_CAPACITY", "8");
     env::set_var("BUILD_SERVER_LOG_SIDECAR_SHUTDOWN_MS", "2000");
