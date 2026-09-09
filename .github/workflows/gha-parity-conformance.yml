@@ -113,7 +113,11 @@ jobs:
           if (( ${#changed_rust[@]} > 0 )); then
             printf 'Rust formatting applies only to changed source files:\n'
             printf '  %s\n' "${changed_rust[@]}"
-            rustfmt --edition 2021 --check "${changed_rust[@]}"
+            # rustfmt follows `mod` declarations by default. That would turn a
+            # changed main.rs into a repository-wide formatting check and make
+            # unrelated baseline debt block a focused PR. Keep this gate honest:
+            # format exactly the source paths selected above and no descendants.
+            rustfmt --edition 2021 --config skip_children=true --check "${changed_rust[@]}"
           else
             echo 'No Rust source file changed; preserving unrelated baseline formatting debt outside this PR.'
           fi
