@@ -133,7 +133,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      INTERFACES_REVISION: a69575677dfabb83b72322690851d998ef8561f8
+      INTERFACES_REVISION: 7165a361462e624195e91cf88ec472b7d6e9c1da
       TJSV_REVISION: a4b731fbf82c4d162abd74fd03758fa32bb76176
     steps:
       - name: Check out exact producer candidate
