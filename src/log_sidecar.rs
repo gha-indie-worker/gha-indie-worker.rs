@@ -1,8 +1,7 @@
 use std::{
-    env,
-    io::{self, Write},
+    collections::HashMap,
+    env, io,
     path::{Path, PathBuf},
-    process::Stdio,
     sync::{
         atomic::{AtomicU32, Ordering},
         Arc, Mutex, OnceLock,
@@ -10,24 +9,34 @@ use std::{
     time::Duration,
 };
 
+#[cfg(unix)]
+use std::process::Stdio;
+
 use serde::Serialize;
+use tokio::{sync::mpsc, task::JoinHandle, time::timeout};
+
+#[cfg(unix)]
 use tokio::{
+    io::AsyncWriteExt,
     process::{Child, Command},
-    sync::mpsc,
-    task::JoinHandle,
-    time::timeout,
 };
 
+#[cfg(unix)]
 const METADATA_FD: i32 = 3;
+#[cfg(unix)]
 const DATA_FD: i32 = 4;
 const METADATA_SCHEMA: &str = "gha-indie-worker.build-log-metadata/v1";
 const MAX_CHUNK_BYTES: usize = 64 * 1024;
 const DEFAULT_QUEUE_CHUNKS: usize = 128;
 const MAX_QUEUE_CHUNKS: usize = 1024;
+#[cfg(unix)]
 const WRITE_TIMEOUT: Duration = Duration::from_millis(250);
+#[cfg(unix)]
 const RECEIVER_EXIT_BUDGET: Duration = Duration::from_secs(7);
+#[cfg(unix)]
 const RECEIVER_KILL_BUDGET: Duration = Duration::from_millis(500);
 pub(crate) const MAX_SHUTDOWN_BUDGET: Duration = Duration::from_secs(8);
+const WORKER_GLOBAL_JOB_ID: &str = "worker-global";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LogStream {
@@ -44,12 +53,20 @@ impl LogStream {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct JobContext {
+    repository: Option<String>,
+    github_organization: Option<String>,
+}
+
 #[derive(Debug)]
 struct QueuedChunk {
     job_id: String,
     stream: LogStream,
     sequence: u32,
     timestamp: String,
+    repository: Option<String>,
+    github_organization: Option<String>,
     data: Vec<u8>,
 }
 
@@ -77,7 +94,10 @@ impl Accounting {
 
     fn record_drop(&self, bytes: usize) {
         saturating_add(&self.dropped_chunks, 1);
-        saturating_add(&self.dropped_bytes, u32::try_from(bytes).unwrap_or(u32::MAX));
+        saturating_add(
+            &self.dropped_bytes,
+            u32::try_from(bytes).unwrap_or(u32::MAX),
+        );
     }
 
     fn take_drops(&self) -> (u32, u32) {
@@ -109,14 +129,15 @@ struct FanoutSender {
 }
 
 impl FanoutSender {
-    fn emit(&self, log_path: &Path, stream: LogStream, bytes: &[u8]) {
-        let job_id = job_id_from_log_path(log_path);
+    fn emit(&self, job_id: &str, context: &JobContext, stream: LogStream, bytes: &[u8]) {
         for chunk in bytes.chunks(MAX_CHUNK_BYTES) {
             let queued = QueuedChunk {
-                job_id: job_id.clone(),
+                job_id: job_id.to_string(),
                 stream,
                 sequence: self.accounting.next_sequence(stream),
                 timestamp: timestamp(),
+                repository: context.repository.clone(),
+                github_organization: context.github_organization.clone(),
                 data: chunk.to_vec(),
             };
             if self.sender.try_send(queued).is_err() {
@@ -129,6 +150,7 @@ impl FanoutSender {
 struct RuntimeState {
     fanout: Option<FanoutSender>,
     supervisor: Option<JoinHandle<()>>,
+    jobs: HashMap<String, JobContext>,
 }
 
 impl RuntimeState {
@@ -136,6 +158,7 @@ impl RuntimeState {
         Self {
             fanout: None,
             supervisor: None,
+            jobs: HashMap::new(),
         }
     }
 }
@@ -178,12 +201,15 @@ fn receiver_spec() -> Option<ReceiverSpec> {
 
     let environment = env::var("BUILD_SERVER_LOG_RECEIVER_ENV_ALLOWLIST")
         .ok()
-        .into_iter()
-        .flat_map(|raw| raw.split(',').map(str::trim).map(str::to_string).collect::<Vec<_>>())
-        .filter(|key| valid_env_key(key))
-        .take(32)
-        .filter_map(|key| env::var(&key).ok().map(|value| (key, value)))
-        .collect::<Vec<_>>();
+        .map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|key| valid_env_key(key))
+                .take(32)
+                .filter_map(|key| env::var(key).ok().map(|value| (key.to_string(), value)))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
 
     let queue_chunks = env::var("BUILD_SERVER_LOG_RECEIVER_QUEUE_CHUNKS")
         .ok()
@@ -231,14 +257,34 @@ pub(crate) fn init() {
     }
 }
 
-pub(crate) fn emit(log_path: &Path, stream: LogStream, bytes: &[u8]) {
-    let fanout = state()
+pub(crate) fn register_job(job_id: &str, repo_url: &str) {
+    let context = github_job_context(repo_url);
+    state()
         .lock()
         .expect("log sidecar state mutex poisoned")
-        .fanout
-        .clone();
+        .jobs
+        .insert(job_id.to_string(), context);
+}
+
+pub(crate) fn unregister_job(job_id: &str) {
+    state()
+        .lock()
+        .expect("log sidecar state mutex poisoned")
+        .jobs
+        .remove(job_id);
+}
+
+pub(crate) fn emit(log_path: &Path, stream: LogStream, bytes: &[u8]) {
+    let job_id = job_id_from_log_path(log_path);
+    let (fanout, context) = {
+        let guard = state().lock().expect("log sidecar state mutex poisoned");
+        (
+            guard.fanout.clone(),
+            guard.jobs.get(&job_id).cloned().unwrap_or_default(),
+        )
+    };
     if let Some(fanout) = fanout {
-        fanout.emit(log_path, stream, bytes);
+        fanout.emit(&job_id, &context, stream, bytes);
     }
 }
 
@@ -246,6 +292,7 @@ pub(crate) async fn shutdown() {
     let supervisor = {
         let mut guard = state().lock().expect("log sidecar state mutex poisoned");
         guard.fanout.take();
+        guard.jobs.clear();
         guard.supervisor.take()
     };
     let Some(mut supervisor) = supervisor else {
@@ -271,8 +318,8 @@ fn spawn_supervisor(
 
     let (metadata_writer, metadata_child) = UnixStream::pair()?;
     let (data_writer, data_child) = UnixStream::pair()?;
-    metadata_writer.set_write_timeout(Some(WRITE_TIMEOUT))?;
-    data_writer.set_write_timeout(Some(WRITE_TIMEOUT))?;
+    metadata_writer.set_nonblocking(true)?;
+    data_writer.set_nonblocking(true)?;
 
     let metadata_parent_fd = metadata_child.as_raw_fd();
     let data_parent_fd = data_child.as_raw_fd();
@@ -311,6 +358,8 @@ fn spawn_supervisor(
     drop(metadata_child);
     drop(data_child);
 
+    let metadata_writer = tokio::net::UnixStream::from_std(metadata_writer)?;
+    let data_writer = tokio::net::UnixStream::from_std(data_writer)?;
     Ok(tokio::spawn(supervise(
         child,
         receiver,
@@ -341,17 +390,13 @@ fn spawn_supervisor(
 async fn supervise(
     mut child: Child,
     receiver: mpsc::Receiver<QueuedChunk>,
-    metadata_writer: std::os::unix::net::UnixStream,
-    data_writer: std::os::unix::net::UnixStream,
+    metadata_writer: tokio::net::UnixStream,
+    data_writer: tokio::net::UnixStream,
     accounting: Arc<Accounting>,
 ) {
-    let writer = tokio::task::spawn_blocking(move || {
-        writer_loop(receiver, metadata_writer, data_writer, &accounting)
-    });
-    match writer.await {
-        Ok(Ok(())) => {}
-        Ok(Err(_)) => tracing::warn!("build log receiver I/O closed; primary logging continues"),
-        Err(_) => tracing::warn!("build log receiver writer task ended unexpectedly"),
+    match writer_loop(receiver, metadata_writer, data_writer, &accounting).await {
+        Ok(()) => {}
+        Err(_) => tracing::warn!("build log receiver I/O closed; primary logging continues"),
     }
 
     match timeout(RECEIVER_EXIT_BUDGET, child.wait()).await {
@@ -365,16 +410,14 @@ async fn supervise(
 }
 
 #[cfg(unix)]
-fn writer_loop(
+async fn writer_loop(
     mut receiver: mpsc::Receiver<QueuedChunk>,
-    mut metadata_writer: std::os::unix::net::UnixStream,
-    mut data_writer: std::os::unix::net::UnixStream,
+    mut metadata_writer: tokio::net::UnixStream,
+    mut data_writer: tokio::net::UnixStream,
     accounting: &Accounting,
 ) -> io::Result<()> {
-    let mut last_job_id = String::from("worker-global");
-    while let Some(chunk) = receiver.blocking_recv() {
-        last_job_id.clone_from(&chunk.job_id);
-        write_drop_summary(&mut metadata_writer, accounting, &last_job_id)?;
+    while let Some(chunk) = receiver.recv().await {
+        write_drop_summary(&mut metadata_writer, accounting).await?;
         let metadata = WireMetadata {
             schema_version: METADATA_SCHEMA,
             event: "chunk",
@@ -383,38 +426,55 @@ fn writer_loop(
             sequence: chunk.sequence,
             byte_length: u32::try_from(chunk.data.len()).unwrap_or(u32::MAX),
             timestamp: &chunk.timestamp,
+            repository: chunk.repository.as_deref(),
+            github_organization: chunk.github_organization.as_deref(),
             dropped_chunks: None,
             dropped_bytes: None,
         };
-        write_metadata(&mut metadata_writer, &metadata)?;
-        data_writer.write_all(&chunk.data)?;
+        let write = async {
+            write_metadata(&mut metadata_writer, &metadata).await?;
+            data_writer.write_all(&chunk.data).await
+        };
+        match timeout(WRITE_TIMEOUT, write).await {
+            Ok(result) => result?,
+            Err(_) => return Err(io::Error::new(io::ErrorKind::TimedOut, "sidecar write timed out")),
+        }
     }
 
-    write_drop_summary(&mut metadata_writer, accounting, &last_job_id)?;
+    write_drop_summary(&mut metadata_writer, accounting).await?;
     for stream in [LogStream::Stdout, LogStream::Stderr] {
         let sequence = accounting.next_sequence(stream);
         let timestamp = timestamp();
         let metadata = WireMetadata {
             schema_version: METADATA_SCHEMA,
             event: "stream_closed",
-            job_id: &last_job_id,
+            job_id: WORKER_GLOBAL_JOB_ID,
             stream: stream.wire_name(),
             sequence,
             byte_length: 0,
             timestamp: &timestamp,
+            repository: None,
+            github_organization: None,
             dropped_chunks: None,
             dropped_bytes: None,
         };
-        write_metadata(&mut metadata_writer, &metadata)?;
+        match timeout(
+            WRITE_TIMEOUT,
+            write_metadata(&mut metadata_writer, &metadata),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_) => return Err(io::Error::new(io::ErrorKind::TimedOut, "sidecar close timed out")),
+        }
     }
     Ok(())
 }
 
 #[cfg(unix)]
-fn write_drop_summary(
-    metadata_writer: &mut std::os::unix::net::UnixStream,
+async fn write_drop_summary(
+    metadata_writer: &mut tokio::net::UnixStream,
     accounting: &Accounting,
-    job_id: &str,
 ) -> io::Result<()> {
     let (dropped_chunks, dropped_bytes) = accounting.take_drops();
     if dropped_chunks == 0 && dropped_bytes == 0 {
@@ -424,24 +484,38 @@ fn write_drop_summary(
     let metadata = WireMetadata {
         schema_version: METADATA_SCHEMA,
         event: "dropped",
-        job_id,
+        job_id: WORKER_GLOBAL_JOB_ID,
         stream: "worker",
         sequence: accounting.next_worker_sequence(),
         byte_length: 0,
         timestamp: &timestamp,
+        repository: None,
+        github_organization: None,
         dropped_chunks: Some(dropped_chunks),
         dropped_bytes: Some(dropped_bytes),
     };
-    write_metadata(metadata_writer, &metadata)
+    match timeout(
+        WRITE_TIMEOUT,
+        write_metadata(metadata_writer, &metadata),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "sidecar drop accounting timed out",
+        )),
+    }
 }
 
 #[cfg(unix)]
-fn write_metadata(
-    writer: &mut std::os::unix::net::UnixStream,
+async fn write_metadata(
+    writer: &mut tokio::net::UnixStream,
     metadata: &WireMetadata<'_>,
 ) -> io::Result<()> {
-    serde_json::to_writer(&mut *writer, metadata).map_err(io::Error::other)?;
-    writer.write_all(b"\n")
+    let mut encoded = serde_json::to_vec(metadata).map_err(io::Error::other)?;
+    encoded.push(b'\n');
+    writer.write_all(&encoded).await
 }
 
 #[derive(Serialize)]
@@ -454,6 +528,10 @@ struct WireMetadata<'a> {
     sequence: u32,
     byte_length: u32,
     timestamp: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repository: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    github_organization: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     dropped_chunks: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -470,8 +548,41 @@ fn job_id_from_log_path(log_path: &Path) -> String {
         .and_then(Path::file_name)
         .and_then(|value| value.to_str())
         .filter(|value| !value.is_empty())
-        .unwrap_or("worker-global")
+        .unwrap_or(WORKER_GLOBAL_JOB_ID)
         .to_string()
+}
+
+fn github_job_context(repo_url: &str) -> JobContext {
+    let path = repo_url
+        .strip_prefix("https://github.com/")
+        .or_else(|| repo_url.strip_prefix("ssh://git@github.com/"))
+        .or_else(|| repo_url.strip_prefix("git@github.com:"));
+    let Some(path) = path else {
+        return JobContext::default();
+    };
+    let path = path.trim_end_matches('/').trim_end_matches(".git");
+    let mut components = path.split('/');
+    let Some(owner) = components.next().filter(|value| valid_github_component(value)) else {
+        return JobContext::default();
+    };
+    let Some(repo) = components.next().filter(|value| valid_github_component(value)) else {
+        return JobContext::default();
+    };
+    if components.next().is_some() {
+        return JobContext::default();
+    }
+    JobContext {
+        repository: Some(format!("{owner}/{repo}")),
+        github_organization: Some(owner.to_string()),
+    }
+}
+
+fn valid_github_component(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 100
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
 #[cfg(test)]
@@ -486,11 +597,24 @@ mod tests {
             sender,
             accounting: accounting.clone(),
         };
-        let path = Path::new("/tmp/jobs/build-1/build.log");
-        fanout.emit(path, LogStream::Stdout, b"first");
-        fanout.emit(path, LogStream::Stdout, b"second");
+        fanout.emit(
+            "build-1",
+            &github_job_context("https://github.com/gha-indie-worker/gha-indie-worker.rs.git"),
+            LogStream::Stdout,
+            b"first",
+        );
+        fanout.emit(
+            "build-1",
+            &JobContext::default(),
+            LogStream::Stdout,
+            b"second",
+        );
         let first = receiver.try_recv().expect("first sidecar copy queued");
         assert_eq!(first.data, b"first");
+        assert_eq!(
+            first.repository.as_deref(),
+            Some("gha-indie-worker/gha-indie-worker.rs")
+        );
         assert_eq!(accounting.dropped_chunks.load(Ordering::Acquire), 1);
         assert_eq!(accounting.dropped_bytes.load(Ordering::Acquire), 6);
     }
@@ -505,6 +629,8 @@ mod tests {
             sequence: 4,
             byte_length: 3,
             timestamp: "2026-09-09T19:45:00Z",
+            repository: Some("gha-indie-worker/gha-indie-worker.rs"),
+            github_organization: Some("gha-indie-worker"),
             dropped_chunks: None,
             dropped_bytes: None,
         };
@@ -512,15 +638,37 @@ mod tests {
         assert!(encoded.contains("\"schemaVersion\""));
         assert!(encoded.contains("\"byteLength\":3"));
         assert!(encoded.contains("\"stream\":\"stderr\""));
+        assert!(encoded.contains("\"githubOrganization\":\"gha-indie-worker\""));
+    }
+
+    #[test]
+    fn repo_url_is_normalized_for_indexing() {
+        assert_eq!(
+            github_job_context("https://github.com/gha-indie-worker/gha-indie-worker.rs.git"),
+            JobContext {
+                repository: Some("gha-indie-worker/gha-indie-worker.rs".to_string()),
+                github_organization: Some("gha-indie-worker".to_string()),
+            }
+        );
+        assert_eq!(
+            github_job_context("git@github.com:ORESoftware/ores-otel.git").repository.as_deref(),
+            Some("ORESoftware/ores-otel")
+        );
+        assert_eq!(github_job_context("file:///tmp/repo"), JobContext::default());
     }
 
     #[test]
     fn log_path_derives_stable_job_id() {
         assert_eq!(
-            job_id_from_log_path(Path::new("/var/lib/dd-build-server/jobs/build-42/build.log")),
+            job_id_from_log_path(Path::new(
+                "/var/lib/dd-build-server/jobs/build-42/build.log"
+            )),
             "build-42"
         );
-        assert_eq!(job_id_from_log_path(Path::new("build.log")), "worker-global");
+        assert_eq!(
+            job_id_from_log_path(Path::new("build.log")),
+            WORKER_GLOBAL_JOB_ID
+        );
     }
 
     #[test]
