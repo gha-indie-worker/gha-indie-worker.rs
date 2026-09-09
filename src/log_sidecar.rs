@@ -29,6 +29,7 @@ const METADATA_SCHEMA: &str = "gha-indie-worker.build-log-metadata/v1";
 const MAX_CHUNK_BYTES: usize = 64 * 1024;
 const DEFAULT_QUEUE_CHUNKS: usize = 128;
 const MAX_QUEUE_CHUNKS: usize = 1024;
+const MAX_JOB_CONTEXTS: usize = 4096;
 #[cfg(unix)]
 const WRITE_TIMEOUT: Duration = Duration::from_millis(250);
 #[cfg(unix)]
@@ -257,21 +258,16 @@ pub(crate) fn init() {
     }
 }
 
-pub(crate) fn register_job(job_id: &str, repo_url: &str) {
+pub(crate) fn register_job_from_clone(log_path: &Path, repo_url: &str) {
+    let job_id = job_id_from_log_path(log_path);
     let context = github_job_context(repo_url);
-    state()
-        .lock()
-        .expect("log sidecar state mutex poisoned")
-        .jobs
-        .insert(job_id.to_string(), context);
-}
-
-pub(crate) fn unregister_job(job_id: &str) {
-    state()
-        .lock()
-        .expect("log sidecar state mutex poisoned")
-        .jobs
-        .remove(job_id);
+    let mut guard = state().lock().expect("log sidecar state mutex poisoned");
+    if guard.jobs.len() >= MAX_JOB_CONTEXTS && !guard.jobs.contains_key(&job_id) {
+        if let Some(oldest_key) = guard.jobs.keys().next().cloned() {
+            guard.jobs.remove(&oldest_key);
+        }
+    }
+    guard.jobs.insert(job_id, context);
 }
 
 pub(crate) fn emit(log_path: &Path, stream: LogStream, bytes: &[u8]) {
@@ -437,7 +433,12 @@ async fn writer_loop(
         };
         match timeout(WRITE_TIMEOUT, write).await {
             Ok(result) => result?,
-            Err(_) => return Err(io::Error::new(io::ErrorKind::TimedOut, "sidecar write timed out")),
+            Err(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "sidecar write timed out",
+                ))
+            }
         }
     }
 
@@ -465,7 +466,12 @@ async fn writer_loop(
         .await
         {
             Ok(result) => result?,
-            Err(_) => return Err(io::Error::new(io::ErrorKind::TimedOut, "sidecar close timed out")),
+            Err(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "sidecar close timed out",
+                ))
+            }
         }
     }
     Ok(())
@@ -651,10 +657,15 @@ mod tests {
             }
         );
         assert_eq!(
-            github_job_context("git@github.com:ORESoftware/ores-otel.git").repository.as_deref(),
+            github_job_context("git@github.com:ORESoftware/ores-otel.git")
+                .repository
+                .as_deref(),
             Some("ORESoftware/ores-otel")
         );
-        assert_eq!(github_job_context("file:///tmp/repo"), JobContext::default());
+        assert_eq!(
+            github_job_context("file:///tmp/repo"),
+            JobContext::default()
+        );
     }
 
     #[test]
