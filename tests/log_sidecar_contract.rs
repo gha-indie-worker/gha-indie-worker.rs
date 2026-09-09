@@ -1,7 +1,11 @@
 #[path = "../src/log_sidecar.rs"]
 mod log_sidecar;
 
-use std::{env, fs, path::PathBuf, time::Duration};
+use std::{
+    env, fs,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use log_sidecar::{encode_data_frame, CommandOutcome, LogSidecar, LogStream, PROTOCOL};
 
@@ -129,6 +133,113 @@ async fn capture_terminal_metadata(
 }
 
 #[cfg(unix)]
+async fn capture_receiver_environment() -> String {
+    let unique = format!(
+        "ghaiw-sidecar-env-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_nanos()
+    );
+    let temp = env::temp_dir().join(unique);
+    fs::create_dir_all(&temp).expect("create environment test directory");
+    let env_path = temp.join("receiver.env");
+    let script = "env > \"$1\"; cat <&3 >/dev/null; cat >/dev/null";
+
+    env::set_var("GHAIW_FAULT_TEST_ALLOWED", "allowed-value");
+    env::set_var("GHAIW_FAULT_TEST_UNLISTED", "must-not-cross-boundary");
+    env::set_var("BUILD_SERVER_LOG_SIDECAR_BIN", "/bin/sh");
+    env::set_var(
+        "BUILD_SERVER_LOG_SIDECAR_ARGS_JSON",
+        serde_json::to_string(&vec![
+            "-c".to_string(),
+            script.to_string(),
+            "ghaiw-env-test".to_string(),
+            env_path.to_string_lossy().into_owned(),
+        ])
+        .expect("environment args JSON"),
+    );
+    env::set_var(
+        "BUILD_SERVER_LOG_SIDECAR_ENV_ALLOWLIST",
+        "GHAIW_FAULT_TEST_ALLOWED",
+    );
+    env::set_var("BUILD_SERVER_LOG_SIDECAR_QUEUE_CAPACITY", "8");
+    env::set_var("BUILD_SERVER_LOG_SIDECAR_SHUTDOWN_MS", "2000");
+
+    let sidecar = LogSidecar::spawn(
+        &PathBuf::from("/var/jobs/build-contract-env/build.log"),
+        "cargo",
+    )
+    .await
+    .expect("environment receiver should spawn");
+    sidecar
+        .finish(CommandOutcome::Exited {
+            success: true,
+            code: Some(0),
+        })
+        .await;
+
+    for key in [
+        "BUILD_SERVER_LOG_SIDECAR_BIN",
+        "BUILD_SERVER_LOG_SIDECAR_ARGS_JSON",
+        "BUILD_SERVER_LOG_SIDECAR_ENV_ALLOWLIST",
+        "BUILD_SERVER_LOG_SIDECAR_QUEUE_CAPACITY",
+        "BUILD_SERVER_LOG_SIDECAR_SHUTDOWN_MS",
+        "GHAIW_FAULT_TEST_ALLOWED",
+        "GHAIW_FAULT_TEST_UNLISTED",
+    ] {
+        env::remove_var(key);
+    }
+
+    let captured = fs::read_to_string(&env_path).expect("captured receiver environment");
+    let _ = fs::remove_dir_all(temp);
+    captured
+}
+
+#[cfg(unix)]
+async fn measure_hung_receiver_shutdown() -> Duration {
+    let script = "cat <&3 >/dev/null; cat >/dev/null; sleep 60";
+    env::set_var("BUILD_SERVER_LOG_SIDECAR_BIN", "/bin/sh");
+    env::set_var(
+        "BUILD_SERVER_LOG_SIDECAR_ARGS_JSON",
+        serde_json::to_string(&vec![
+            "-c".to_string(),
+            script.to_string(),
+            "ghaiw-hang-test".to_string(),
+        ])
+        .expect("hang args JSON"),
+    );
+    env::set_var("BUILD_SERVER_LOG_SIDECAR_QUEUE_CAPACITY", "8");
+    env::set_var("BUILD_SERVER_LOG_SIDECAR_SHUTDOWN_MS", "100");
+
+    let sidecar = LogSidecar::spawn(
+        &PathBuf::from("/var/jobs/build-contract-hang/build.log"),
+        "cargo",
+    )
+    .await
+    .expect("hung receiver should spawn");
+    let started = Instant::now();
+    sidecar
+        .finish(CommandOutcome::Exited {
+            success: true,
+            code: Some(0),
+        })
+        .await;
+    let elapsed = started.elapsed();
+
+    for key in [
+        "BUILD_SERVER_LOG_SIDECAR_BIN",
+        "BUILD_SERVER_LOG_SIDECAR_ARGS_JSON",
+        "BUILD_SERVER_LOG_SIDECAR_QUEUE_CAPACITY",
+        "BUILD_SERVER_LOG_SIDECAR_SHUTDOWN_MS",
+    ] {
+        env::remove_var(key);
+    }
+    elapsed
+}
+
+#[cfg(unix)]
 #[tokio::test]
 async fn real_worker_sidecar_emits_all_contract_shaped_fd3_terminal_outcomes() {
     let Some(root) = contract_root() else {
@@ -188,4 +299,21 @@ async fn real_worker_sidecar_emits_all_contract_shaped_fd3_terminal_outcomes() {
         assert!(lines[1]["droppedFrames"].is_u64());
         assert!(lines[1]["droppedBytes"].is_u64());
     }
+
+    let receiver_env = capture_receiver_environment().await;
+    assert!(receiver_env
+        .lines()
+        .any(|line| line == "GHAIW_FAULT_TEST_ALLOWED=allowed-value"));
+    assert!(!receiver_env
+        .lines()
+        .any(|line| line.starts_with("GHAIW_FAULT_TEST_UNLISTED=")));
+    assert!(receiver_env
+        .lines()
+        .any(|line| line == format!("GHAIW_LOG_SIDECAR_PROTOCOL={PROTOCOL}")));
+
+    let shutdown_elapsed = measure_hung_receiver_shutdown().await;
+    assert!(
+        shutdown_elapsed < Duration::from_secs(2),
+        "hung receiver blocked shutdown for {shutdown_elapsed:?}"
+    );
 }
