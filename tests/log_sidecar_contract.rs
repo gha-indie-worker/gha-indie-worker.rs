@@ -1,7 +1,7 @@
 #[path = "../src/log_sidecar.rs"]
 mod log_sidecar;
 
-use std::{env, fs, path::Path, time::Duration};
+use std::{env, fs, path::PathBuf, time::Duration};
 
 use log_sidecar::{encode_data_frame, CommandOutcome, LogSidecar, LogStream, PROTOCOL};
 
@@ -33,7 +33,10 @@ fn admitted_wire_vectors_match_the_real_worker_encoder() {
         .collect::<Result<Vec<_>, _>>()
         .expect("wire-vector entries");
     entries.sort_by_key(|entry| entry.file_name());
-    assert!(!entries.is_empty(), "at least one admitted wire vector is required");
+    assert!(
+        !entries.is_empty(),
+        "at least one admitted wire vector is required"
+    );
 
     for entry in entries {
         if entry.path().extension().and_then(|value| value.to_str()) != Some("json") {
@@ -66,23 +69,9 @@ fn admitted_wire_vectors_match_the_real_worker_encoder() {
 }
 
 #[cfg(unix)]
-#[tokio::test]
-async fn real_worker_sidecar_emits_contract_shaped_fd3_metadata() {
-    let Some(root) = contract_root() else {
-        eprintln!("GHAIW_LOG_SIDECAR_CONTRACT_ROOT not set; dedicated contract CI supplies it");
-        return;
-    };
-
-    let fixture: serde_json::Value = serde_json::from_slice(
-        &fs::read(
-            root.join("instances/LogSidecarCommandStarted/valid/command-started.json"),
-        )
-        .expect("metadata fixture"),
-    )
-    .expect("metadata fixture JSON");
-
+async fn capture_terminal_metadata(suffix: &str, outcome: CommandOutcome) -> Vec<serde_json::Value> {
     let unique = format!(
-        "ghaiw-sidecar-contract-{}-{}",
+        "ghaiw-sidecar-contract-{}-{}-{suffix}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -108,16 +97,15 @@ async fn real_worker_sidecar_emits_contract_shaped_fd3_metadata() {
     env::set_var("BUILD_SERVER_LOG_SIDECAR_QUEUE_CAPACITY", "8");
     env::set_var("BUILD_SERVER_LOG_SIDECAR_SHUTDOWN_MS", "2000");
 
-    let sidecar = LogSidecar::spawn(Path::new("/var/jobs/build-contract/build.log"), "cargo")
+    let job_id = format!("build-contract-{suffix}");
+    let log_path = PathBuf::from(format!("/var/jobs/{job_id}/build.log"));
+    let sidecar = LogSidecar::spawn(&log_path, "cargo")
         .await
         .expect("configured fake receiver should spawn");
-    sidecar.tap().try_data(LogStream::Stdout, b"contract-data\n");
     sidecar
-        .finish(CommandOutcome::Exited {
-            success: true,
-            code: Some(0),
-        })
-        .await;
+        .tap()
+        .try_data(LogStream::Stdout, b"contract-data\n");
+    sidecar.finish(outcome).await;
 
     for key in [
         "BUILD_SERVER_LOG_SIDECAR_BIN",
@@ -133,22 +121,68 @@ async fn real_worker_sidecar_emits_contract_shaped_fd3_metadata() {
         .lines()
         .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("metadata JSON line"))
         .collect::<Vec<_>>();
-    assert_eq!(lines.len(), 2, "start and terminal metadata are required");
-
-    assert_eq!(lines[0]["schemaVersion"], fixture["schemaVersion"]);
-    assert_eq!(lines[0]["event"], fixture["event"]);
-    assert_eq!(lines[0]["program"], "cargo");
-    assert_eq!(lines[0]["jobId"], "build-contract");
-    assert!(lines[0]["atMs"].is_u64());
-
-    assert_eq!(lines[1]["schemaVersion"], fixture["schemaVersion"]);
-    assert_eq!(lines[1]["event"], "command_finished");
-    assert_eq!(lines[1]["program"], "cargo");
-    assert_eq!(lines[1]["jobId"], "build-contract");
-    assert_eq!(lines[1]["success"], true);
-    assert_eq!(lines[1]["exitCode"], 0);
-    assert!(lines[1]["droppedFrames"].is_u64());
-    assert!(lines[1]["droppedBytes"].is_u64());
-
     let _ = fs::remove_dir_all(temp);
+    lines
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn real_worker_sidecar_emits_all_contract_shaped_fd3_terminal_outcomes() {
+    let Some(root) = contract_root() else {
+        eprintln!("GHAIW_LOG_SIDECAR_CONTRACT_ROOT not set; dedicated contract CI supplies it");
+        return;
+    };
+
+    let fixture: serde_json::Value = serde_json::from_slice(
+        &fs::read(root.join("instances/LogSidecarCommandStarted/valid/command-started.json"))
+            .expect("metadata fixture"),
+    )
+    .expect("metadata fixture JSON");
+
+    let cases = [
+        (
+            "finished",
+            CommandOutcome::Exited {
+                success: true,
+                code: Some(0),
+            },
+            "command_finished",
+            true,
+            Some(0_i64),
+        ),
+        (
+            "timed-out",
+            CommandOutcome::TimedOut,
+            "command_timed_out",
+            false,
+            None,
+        ),
+        (
+            "wait-failed",
+            CommandOutcome::WaitFailed,
+            "command_wait_failed",
+            false,
+            None,
+        ),
+    ];
+
+    for (suffix, outcome, expected_event, expected_success, expected_exit_code) in cases {
+        let lines = capture_terminal_metadata(suffix, outcome).await;
+        assert_eq!(lines.len(), 2, "start and terminal metadata are required");
+
+        assert_eq!(lines[0]["schemaVersion"], fixture["schemaVersion"]);
+        assert_eq!(lines[0]["event"], fixture["event"]);
+        assert_eq!(lines[0]["program"], "cargo");
+        assert_eq!(lines[0]["jobId"], format!("build-contract-{suffix}"));
+        assert!(lines[0]["atMs"].is_u64());
+
+        assert_eq!(lines[1]["schemaVersion"], fixture["schemaVersion"]);
+        assert_eq!(lines[1]["event"], expected_event);
+        assert_eq!(lines[1]["program"], "cargo");
+        assert_eq!(lines[1]["jobId"], format!("build-contract-{suffix}"));
+        assert_eq!(lines[1]["success"].as_bool(), Some(expected_success));
+        assert_eq!(lines[1]["exitCode"].as_i64(), expected_exit_code);
+        assert!(lines[1]["droppedFrames"].is_u64());
+        assert!(lines[1]["droppedBytes"].is_u64());
+    }
 }
