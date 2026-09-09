@@ -33,7 +33,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  provenance-and-equivalence:
+  # This job id intentionally matches the protected-branch required context.
+  provenance:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
