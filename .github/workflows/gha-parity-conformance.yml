@@ -128,3 +128,109 @@ jobs:
           cargo metadata --locked --no-deps --format-version 1 >/dev/null
           cargo test --workspace --all-targets --all-features --locked
           cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+  build-log-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      INTERFACES_REVISION: e985286cac2feb12d073a8bff4acd65a9a030664
+      TJSV_REVISION: a4b731fbf82c4d162abd74fd03758fa32bb76176
+    steps:
+      - name: Check out exact producer candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Check out admitted build-log interface authority
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: gha-indie-worker/gha-indie-worker-interfaces
+          ref: ${{ env.INTERFACES_REVISION }}
+          path: contract-authority
+          persist-credentials: false
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Check out current immutable TJSV validator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ORESoftware/typespec-json-schema-validator
+          ref: ${{ env.TJSV_REVISION }}
+          path: .tjsv
+          persist-credentials: false
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Prove exact producer, authority, and TJSV revisions
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$(git -C contract-authority rev-parse HEAD)" = "$INTERFACES_REVISION"
+          test "$(git -C .tjsv rev-parse HEAD)" = "$TJSV_REVISION"
+
+      - name: Set up Node 22 for TJSV
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+
+      - name: Audit TJSV production dependency graph
+        working-directory: .tjsv
+        env:
+          TSJSV_NPM_AUDIT_RECEIPT: ${{ runner.temp }}/tjsv-npm-audit-receipt.json
+        run: node ./scripts/npm-audit-gate.mjs
+
+      - name: Install lockfile-pinned TJSV toolchain
+        working-directory: .tjsv
+        run: npm ci --omit=dev
+
+      - name: Re-admit independent TypeSpec and JSON Schema build-log authorities
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/tjsv/build-log-producer
+          node .tjsv/bin/typespec-json-schema-validator.mjs check \
+            --typespec=contract-authority/contracts/build-log.tsp \
+            --schema=contract-authority/contracts/build-log.schema.json \
+            --instances=contract-authority/contracts/instances \
+            --report=target/tjsv/build-log-producer/report.json \
+            --sarif=target/tjsv/build-log-producer/report.sarif \
+            --contract-ir=target/tjsv/build-log-producer/contract-ir.json \
+            --output-dir=target/tjsv/build-log-producer/generated-schema-b \
+            --max-probes=256 \
+            --int64-strategy=string \
+            --seal-object-schemas=true \
+            --polymorphic-models-strategy=oneOf
+
+      - name: Verify current contract inputs before producer promotion
+        shell: bash
+        env:
+          TSJSV_VERIFY_IR: target/tjsv/build-log-producer/contract-ir.json
+          TSJSV_VERIFY_REPORT: target/tjsv/build-log-producer/report.json
+          TSJSV_VERIFY_TYPESPEC: contract-authority/contracts/build-log.tsp
+          TSJSV_VERIFY_AUTHORED: contract-authority/contracts/build-log.schema.json
+          TSJSV_VERIFY_GENERATED: target/tjsv/build-log-producer/generated-schema-b/typespec.generated.schema.json
+          TSJSV_VERIFY_DECLARATIONS: '["GhaIndieWorker.BuildLogEvent","GhaIndieWorker.BuildLogMetadata","GhaIndieWorker.BuildLogStream"]'
+          TSJSV_VERIFY_VERIFICATION: target/tjsv/build-log-producer/producer-verification.json
+        run: node .tjsv/scripts/verify-consumer.mjs
+
+      - name: Prove real Rust producer wire and failure-isolation semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked log_sidecar::tests:: -- --nocapture
+
+      - name: Upload deterministic TJSV producer evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-log-producer-tjsv-${{ github.sha }}
+          path: target/tjsv/build-log-producer/
+          if-no-files-found: error
+          retention-days: 30
