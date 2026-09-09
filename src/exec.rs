@@ -11,7 +11,10 @@ use tokio::{
     time::timeout,
 };
 
-use crate::config::Config;
+use crate::{
+    config::Config,
+    log_sidecar::{self, LogStream},
+};
 
 pub(crate) fn shellish(value: &str) -> String {
     if value.chars().all(|ch| {
@@ -73,8 +76,28 @@ pub(crate) async fn append_log(path: &Path, message: &str, max_bytes: u64) {
     }
 }
 
-pub(crate) async fn pipe_reader<R>(reader: R, log_path: PathBuf, prefix: &'static str, max_bytes: u64)
-where
+async fn mirror_primary_stdio(stream: LogStream, bytes: &[u8]) {
+    match stream {
+        LogStream::Stdout => {
+            let mut stdout = tokio::io::stdout();
+            let _ = stdout.write_all(bytes).await;
+            let _ = stdout.flush().await;
+        }
+        LogStream::Stderr => {
+            let mut stderr = tokio::io::stderr();
+            let _ = stderr.write_all(bytes).await;
+            let _ = stderr.flush().await;
+        }
+    }
+}
+
+pub(crate) async fn pipe_reader<R>(
+    reader: R,
+    log_path: PathBuf,
+    stream: LogStream,
+    prefix: &'static str,
+    max_bytes: u64,
+) where
     R: AsyncRead + Unpin,
 {
     let mut reader = BufReader::new(reader);
@@ -84,6 +107,11 @@ where
         match reader.read_until(b'\n', &mut line).await {
             Ok(0) => break,
             Ok(_) => {
+                // Worker stdio is the primary live path. The optional sidecar
+                // copy uses `try_send` internally and can never backpressure
+                // this write or the existing bounded file log.
+                mirror_primary_stdio(stream, &line).await;
+                log_sidecar::emit(&log_path, stream, &line);
                 let text = String::from_utf8_lossy(&line);
                 append_log(&log_path, &format!("{prefix}{text}"), max_bytes).await;
             }
@@ -200,6 +228,7 @@ pub(crate) async fn run_logged_command_inner(
         tokio::spawn(pipe_reader(
             stdout,
             log_path.to_path_buf(),
+            LogStream::Stdout,
             "",
             config.max_log_bytes,
         ))
@@ -208,6 +237,7 @@ pub(crate) async fn run_logged_command_inner(
         tokio::spawn(pipe_reader(
             stderr,
             log_path.to_path_buf(),
+            LogStream::Stderr,
             "",
             config.max_log_bytes,
         ))
