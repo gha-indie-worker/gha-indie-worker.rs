@@ -1,0 +1,106 @@
+name: IndieBuild repository contract
+
+on:
+  pull_request:
+  push:
+    branches: [dev, main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out worker candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out exact flags-2-env IndieBuild consumer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: gha-indie-worker/gha-indie-worker-cli
+          ref: 2ec2f0797d199e5a0b89aefdf22d7d66e90df189
+          path: .indiebuild-cli
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: '1.90.0'
+
+      - name: Validate repository TOML through canonical flags-2-env CLI
+        working-directory: .indiebuild-cli
+        run: >-
+          cargo run --quiet -- indiebuild-validate
+          --indiebuild-config="${{ github.workspace }}/.indiebuild.toml"
+          --json > "${{ runner.temp }}/indiebuild.normalized.json"
+
+      - name: Check out exact IndieBuild peer authorities
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: gha-indie-worker/gha-indie-worker-interfaces
+          ref: 9d7f7376627f59e43efcceb927062614ab8a7b76
+          path: .indiebuild-contracts
+          persist-credentials: false
+
+      - name: Check out immutable TJSV verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ORESoftware/typespec-json-schema-validator
+          ref: a4b731fbf82c4d162abd74fd03758fa32bb76176
+          path: .tjsv
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.13.0'
+          package-manager-cache: false
+
+      - name: Audit TJSV production dependencies
+        working-directory: .tjsv
+        env:
+          TSJSV_NPM_AUDIT_RECEIPT: ${{ runner.temp }}/tjsv-npm-audit-receipt.json
+        run: node ./scripts/npm-audit-gate.mjs
+
+      - name: Install TJSV lockfile-pinned toolchain
+        working-directory: .tjsv
+        run: npm ci --omit=dev
+
+      - name: Re-admit independent TypeSpec and JSON Schema authorities
+        run: |
+          set -euo pipefail
+          node .tjsv/bin/typespec-json-schema-validator.mjs check \
+            --typespec=.indiebuild-contracts/contracts/indiebuild.tsp \
+            --schema=.indiebuild-contracts/contracts/indiebuild.schema.json \
+            --instances=.indiebuild-contracts/contracts/instances/IndieBuildConfig \
+            --report=.typespec-json-schema-validator/indiebuild-report.json \
+            --sarif=.typespec-json-schema-validator/indiebuild-report.sarif \
+            --contract-ir=.typespec-json-schema-validator/indiebuild-contract-ir.json \
+            --output-dir=.typespec-json-schema-validator/indiebuild-generated \
+            --max-probes=64 \
+            --int64-strategy=string \
+            --seal-object-schemas=true \
+            --polymorphic-models-strategy=oneOf
+
+      - name: Verify current authority inputs before consumption
+        env:
+          TSJSV_VERIFY_IR: .typespec-json-schema-validator/indiebuild-contract-ir.json
+          TSJSV_VERIFY_REPORT: .typespec-json-schema-validator/indiebuild-report.json
+          TSJSV_VERIFY_TYPESPEC: .indiebuild-contracts/contracts/indiebuild.tsp
+          TSJSV_VERIFY_AUTHORED: .indiebuild-contracts/contracts/indiebuild.schema.json
+          TSJSV_VERIFY_GENERATED: .typespec-json-schema-validator/indiebuild-generated/typespec.generated.schema.json
+          TSJSV_VERIFY_DECLARATIONS: '["GhaIndieWorker.IndieBuildRepositoryRole","GhaIndieWorker.IndieBuildTargetRole","GhaIndieWorker.IndieBuildPlatform","GhaIndieWorker.IndieBuildTarget","GhaIndieWorker.IndieBuildConfig"]'
+          TSJSV_VERIFY_VERIFICATION: .typespec-json-schema-validator/indiebuild-consumer-verification.json
+        run: node .tjsv/scripts/verify-consumer.mjs
+
+      - name: Retain deterministic IndieBuild evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gha-indie-worker-indiebuild-evidence
+          path: |
+            .typespec-json-schema-validator/
+            ${{ runner.temp }}/indiebuild.normalized.json
+          if-no-files-found: error
+          include-hidden-files: true
