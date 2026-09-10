@@ -131,7 +131,10 @@ mod tests {
             "FIDUCIA_API_KEY",
             "BUILD_SERVER_GITHUB_WEBHOOK_SECRET",
         ] {
-            assert!(!allowlist_is_safe(key), "{key} must stay outside receiver authority");
+            assert!(
+                !allowlist_is_safe(key),
+                "{key} must stay outside receiver authority"
+            );
         }
     }
 
@@ -160,7 +163,10 @@ mod tests {
             "RUSTC_WRAPPER",
             "SSLKEYLOGFILE",
         ] {
-            assert!(!allowlist_is_safe(key), "{key} can change receiver execution semantics");
+            assert!(
+                !allowlist_is_safe(key),
+                "{key} can change receiver execution semantics"
+            );
         }
     }
 
