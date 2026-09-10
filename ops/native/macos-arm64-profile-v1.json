@@ -1,0 +1,16 @@
+{
+  "schema": "gha-indie-worker.native-profile/v1",
+  "profile_id": "macos-arm64-untrusted-v1",
+  "os": "macos",
+  "architecture": "arm64",
+  "trust_tier": "public-untrusted",
+  "dedicated_user": {"required": true, "administrator": false},
+  "connectivity": {"control_plane": "outbound-only", "mutual_authentication": true},
+  "isolation": {"boundary": "disposable-vm-or-reimageable-host", "snapshot_required": true},
+  "signing": {"identities_available": false, "provisioning_profiles_available": false},
+  "toolchains": {"xcode": "pinned-by-image", "rust": "pinned-by-profile", "flutter": "pinned-by-profile", "node": "pinned-by-profile"},
+  "cleanup": ["keychain", "provisioning-profiles", "simulator-data", "derived-data", "package-caches", "temp", "background-processes", "launch-items", "workspace"],
+  "quarantine_on": ["cleanup-failure", "integrity-failure", "patch-stale", "capability-drift", "attestation-failure"],
+  "terminal_receipts": ["success", "failure", "canceled", "timed-out", "host-lost"],
+  "minimum_independent_slots_before_production": 2
+}

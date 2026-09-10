@@ -299,7 +299,10 @@ pub(crate) async fn sync_secrets(State(state): State<AppState>, headers: HeaderM
     (StatusCode::OK, Json(json!({ "outcomes": outcomes }))).into_response()
 }
 
-pub(crate) async fn sync_secrets_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
+pub(crate) async fn sync_secrets_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&headers, &state) {
         return response;
     }
@@ -535,7 +538,7 @@ mod e2e {
             containerd_namespace: "dd-build-test".to_string(),
             allowed_repo_prefixes: vec!["https://github.com/ORESoftware/".to_string()],
             allowed_image_prefixes: vec![
-                "710156900967.dkr.ecr.us-east-1.amazonaws.com/".to_string(),
+                "710156900967.dkr.ecr.us-east-1.amazonaws.com/".to_string()
             ],
             allowed_namespaces: HashSet::from(["default".to_string()]),
             allowed_profiles: HashSet::from(["playwright".to_string()]),
@@ -606,7 +609,10 @@ mod e2e {
     }
 
     async fn send(router: Router, request: Request<Body>) -> (StatusCode, String) {
-        let response = router.oneshot(request).await.expect("router handled request");
+        let response = router
+            .oneshot(request)
+            .await
+            .expect("router handled request");
         let status = response.status();
         let bytes = to_bytes(response.into_body(), 4 * 1024 * 1024)
             .await
@@ -615,10 +621,7 @@ mod e2e {
     }
 
     fn get(uri: &str) -> Request<Body> {
-        Request::builder()
-            .uri(uri)
-            .body(Body::empty())
-            .unwrap()
+        Request::builder().uri(uri).body(Body::empty()).unwrap()
     }
 
     fn post_json(uri: &str, auth: Option<&str>, body: &serde_json::Value) -> Request<Body> {
@@ -669,7 +672,11 @@ mod e2e {
     #[tokio::test]
     async fn submit_with_wrong_secret_is_unauthorized() {
         let body = json!({ "repoUrl": "https://github.com/ORESoftware/x.git" });
-        let (status, _) = send(app(test_config()), post_json("/builds", Some("wrong"), &body)).await;
+        let (status, _) = send(
+            app(test_config()),
+            post_json("/builds", Some("wrong"), &body),
+        )
+        .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
@@ -705,10 +712,17 @@ mod e2e {
 
     #[tokio::test]
     async fn secrets_sync_requires_auth_then_reports_disabled() {
-        let (status, _) = send(app(test_config()), post_json("/secrets/sync", None, &json!({}))).await;
+        let (status, _) = send(
+            app(test_config()),
+            post_json("/secrets/sync", None, &json!({})),
+        )
+        .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
-        let (status, body) =
-            send(app(test_config()), post_json("/secrets/sync", Some(AUTH), &json!({}))).await;
+        let (status, body) = send(
+            app(test_config()),
+            post_json("/secrets/sync", Some(AUTH), &json!({})),
+        )
+        .await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert!(body.contains("disabled"));
     }
@@ -792,6 +806,21 @@ mod e2e {
     }
 
     #[tokio::test]
+    async fn submit_rejects_missing_or_mutable_profile_revisions() {
+        for git_ref in [None, Some("main")] {
+            let mut body = json!({
+                "jobKind": "run-profile",
+                "repoUrl": "https://github.com/ORESoftware/x.git",
+                "profile": "playwright"
+            });
+            if let Some(git_ref) = git_ref {
+                body["gitRef"] = json!(git_ref);
+            }
+            assert_submit_rejected(body).await;
+        }
+    }
+
+    #[tokio::test]
     async fn submit_with_empty_allowlist_fails_closed() {
         let mut config = test_config();
         config.allowed_repo_prefixes = Vec::new();
@@ -867,7 +896,9 @@ mod e2e {
             branch: Some("dev".to_string()),
             tags: false,
             events: Some(vec!["push".to_string()]),
-            image: Some("710156900967.dkr.ecr.us-east-1.amazonaws.com/x:dev-{shortSha}".to_string()),
+            image: Some(
+                "710156900967.dkr.ecr.us-east-1.amazonaws.com/x:dev-{shortSha}".to_string(),
+            ),
             profile: None,
             context_dir: None,
             dockerfile: None,
@@ -972,7 +1003,10 @@ mod e2e {
         ] {
             let (status, body) = send(app(test_config()), authed_get(uri)).await;
             assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
-            assert!(!body.contains("root:"), "{uri} appears to have read /etc/passwd");
+            assert!(
+                !body.contains("root:"),
+                "{uri} appears to have read /etc/passwd"
+            );
         }
     }
 

@@ -1,0 +1,215 @@
+name: Workflow planner
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "src/lib.rs"
+      - "src/workflow.rs"
+      - "src/workflow_guard.rs"
+      - "src/workflow_yaml.rs"
+      - "src/bin/gha-workflow-plan.rs"
+      - "src/bin/gha-workflow-server.rs"
+      - "Cargo.toml"
+      - ".github/workflows/workflow-planner.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/lib.rs"
+      - "src/workflow.rs"
+      - "src/workflow_guard.rs"
+      - "src/workflow_yaml.rs"
+      - "src/bin/gha-workflow-plan.rs"
+      - "src/bin/gha-workflow-server.rs"
+      - "Cargo.toml"
+      - ".github/workflows/workflow-planner.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  planner:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal --component rustfmt,clippy
+      - name: Assemble standalone planner harness
+        run: |
+          if [ -d .planner-ci ]; then
+            find .planner-ci -depth -delete
+          fi
+          mkdir -p .planner-ci/src/bin
+          cp src/expression.rs src/lib.rs src/linux_runner.rs src/workflow.rs src/workflow_guard.rs src/workflow_runner.rs src/workflow_yaml.rs .planner-ci/src/
+          cp src/bin/gha-workflow-plan.rs src/bin/gha-workflow-server.rs .planner-ci/src/bin/
+          cat > .planner-ci/Cargo.toml <<'EOF'
+          [package]
+          name = "dd-build-server"
+          version = "0.1.0"
+          edition = "2021"
+          publish = false
+
+          [features]
+          default = []
+          linux-runner = []
+
+          [dependencies]
+          axum = { version = "0.7", features = ["macros"] }
+          serde = { version = "1", features = ["derive"] }
+          serde_json = "1"
+          serde_yaml = "=0.9.34"
+          tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal"] }
+          tracing = "0.1"
+          EOF
+      - name: Check formatting
+        run: cargo +1.97.0 fmt --manifest-path .planner-ci/Cargo.toml --all -- --check
+      - name: Run strict Clippy
+        run: cargo +1.97.0 clippy --manifest-path .planner-ci/Cargo.toml --all-targets -- -D warnings
+      - name: Run planner tests
+        run: cargo +1.97.0 test --manifest-path .planner-ci/Cargo.toml --all-targets
+      - name: Exercise CLI planning and admission
+        run: |
+          set -euo pipefail
+          cat > .planner-ci/sample.yml <<'EOF'
+          name: bounded-matrix
+          on: push
+          jobs:
+            build:
+              runs-on: ubuntu-latest
+              strategy:
+                matrix:
+                  rust: [stable, beta]
+              steps:
+                - run: cargo test
+            report:
+              needs: build
+              runs-on: ubuntu-latest
+              steps:
+                - run: echo complete
+          EOF
+          cargo +1.97.0 run --quiet --manifest-path .planner-ci/Cargo.toml --bin gha-workflow-plan -- .planner-ci/sample.yml > .planner-ci/plan.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          plan = json.loads(Path(".planner-ci/plan.json").read_text())
+          assert plan["schemaVersion"] == "gha-indie-worker.plan.v2"
+          assert plan["jobOrder"] == ["build", "report"]
+          assert len(plan["jobs"]) == 3
+          report = next(job for job in plan["jobs"] if job["baseJobId"] == "report")
+          assert report["needsInstances"] == ["build[1]", "build[2]"]
+          PY
+
+          python3 - <<'PY'
+          from pathlib import Path
+          Path(".planner-ci/oversized-cli.yml").write_bytes(b"x" * (1024 * 1024 + 1))
+          PY
+          if cargo +1.97.0 run --quiet --manifest-path .planner-ci/Cargo.toml \
+            --bin gha-workflow-plan -- .planner-ci/oversized-cli.yml \
+            > .planner-ci/oversized-file.out 2> .planner-ci/oversized-file.err; then
+            echo "CLI unexpectedly accepted an oversized file" >&2
+            exit 1
+          fi
+          grep -q "1048576-byte admission limit" .planner-ci/oversized-file.err
+
+          if cat .planner-ci/oversized-cli.yml | cargo +1.97.0 run --quiet \
+            --manifest-path .planner-ci/Cargo.toml --bin gha-workflow-plan -- - \
+            > .planner-ci/oversized-stdin.out 2> .planner-ci/oversized-stdin.err; then
+            echo "CLI unexpectedly accepted oversized stdin" >&2
+            exit 1
+          fi
+          grep -q "1048576-byte admission limit" .planner-ci/oversized-stdin.err
+      - name: Exercise HTTP admission boundary
+        run: |
+          set -euo pipefail
+          GHA_WORKFLOW_HOST=127.0.0.1 GHA_WORKFLOW_PORT=18090 \
+            cargo +1.97.0 run --quiet --manifest-path .planner-ci/Cargo.toml --bin gha-workflow-server \
+            > .planner-ci/server.log 2>&1 &
+          server_pid=$!
+          cleanup() {
+            kill "$server_pid" 2>/dev/null || true
+            wait "$server_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          for _ in $(seq 1 50); do
+            if curl --fail --silent --show-error http://127.0.0.1:18090/healthz > .planner-ci/health.json; then
+              break
+            fi
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              cat .planner-ci/server.log
+              exit 1
+            fi
+            sleep 0.1
+          done
+          test -s .planner-ci/health.json || { cat .planner-ci/server.log; exit 1; }
+
+          curl --fail --silent --show-error http://127.0.0.1:18090/ > .planner-ci/descriptor.json
+          curl --fail --silent --show-error \
+            -H 'content-type: text/plain; charset=utf-8' \
+            --data-binary @.planner-ci/sample.yml \
+            http://127.0.0.1:18090/v1/workflows/plan > .planner-ci/server-plan.json
+
+          cat > .planner-ci/unsupported.yml <<'EOF'
+          jobs:
+            build:
+              runs-on: ubuntu-latest
+              container: ubuntu:latest
+              steps:
+                - run: echo unsafe semantic
+          EOF
+          unsupported_status=$(curl --silent --show-error \
+            -H 'content-type: text/plain; charset=utf-8' \
+            --data-binary @.planner-ci/unsupported.yml \
+            --output .planner-ci/unsupported-error.json \
+            --write-out '%{http_code}' \
+            http://127.0.0.1:18090/v1/workflows/plan)
+          test "$unsupported_status" = "422"
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          descriptor = json.loads(Path(".planner-ci/descriptor.json").read_text())
+          assert descriptor["limits"]["maxFlowCollectionDepth"] == 64
+          assert descriptor["limits"]["maxPlannedJobs"] == 1024
+          assert descriptor["unsupportedFields"] == "rejected rather than ignored"
+
+          plan = json.loads(Path(".planner-ci/server-plan.json").read_text())
+          assert plan["schemaVersion"] == "gha-indie-worker.plan.v2"
+          assert len(plan["jobs"]) == 3
+
+          error = json.loads(Path(".planner-ci/unsupported-error.json").read_text())
+          assert error["code"] == "invalid_yaml"
+          assert "unsupported field" in error["message"]
+          PY
+
+          python3 - <<'PY'
+          from pathlib import Path
+          Path(".planner-ci/oversized.yml").write_bytes(b"x" * (1024 * 1024 + 1))
+          PY
+          oversized_status=$(curl --silent --show-error \
+            -H 'content-type: text/plain; charset=utf-8' \
+            --data-binary @.planner-ci/oversized.yml \
+            --output .planner-ci/oversized-error.txt \
+            --write-out '%{http_code}' \
+            http://127.0.0.1:18090/v1/workflows/plan)
+          test "$oversized_status" = "413"
+
+          cleanup
+          trap - EXIT
+          if GHA_WORKFLOW_PORT=not-a-port \
+            cargo +1.97.0 run --quiet --manifest-path .planner-ci/Cargo.toml --bin gha-workflow-server \
+            > .planner-ci/invalid-port.log 2>&1; then
+            echo "server unexpectedly accepted an invalid port" >&2
+            exit 1
+          fi
+          grep -q "invalid GHA_WORKFLOW_PORT" .planner-ci/invalid-port.log

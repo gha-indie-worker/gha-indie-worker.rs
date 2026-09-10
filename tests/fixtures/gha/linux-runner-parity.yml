@@ -1,0 +1,82 @@
+name: Linux runner differential fixture
+
+env:
+  WORKFLOW_ONLY: workflow
+
+defaults:
+  run:
+    shell: sh
+
+jobs:
+  parity:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        value: [42]
+    env:
+      LEVEL: job
+    defaults:
+      run:
+        working-directory: work
+    steps:
+      - name: Prepare shared workspace
+        working-directory: .
+        run: mkdir -p work
+
+      - name: Produce persistent environment and output
+        id: producer
+        env:
+          LEVEL: step
+        run: |
+          printf '%s:%s:%s:%s' "$LEVEL" '${{ env.LEVEL }}' "$WORKFLOW_ONLY" '${{ env.WORKFLOW_ONLY }}' > result.txt
+          echo 'PERSISTED=from-env' >> "$GITHUB_ENV"
+          echo 'value=${{ matrix.value }}' >> "$GITHUB_OUTPUT"
+
+      - name: Default bash has errexit without pipefail
+        id: default_pipe
+        run: false | true
+
+      - name: Explicit bash enables pipefail
+        id: tolerated_pipe
+        shell: bash
+        continue-on-error: true
+        run: false | true
+
+      - name: Continue after tolerated failure
+        id: after
+        if: success()
+        run: printf '|%s|${{ steps.producer.outputs.value }}' "$PERSISTED" >> result.txt
+
+      - name: Publish multiline file commands and PATH
+        id: file_commands
+        run: |
+          mkdir -p tools
+          printf '#!/bin/sh\nprintf from-path\n' > tools/parity-tool
+          chmod +x tools/parity-tool
+          printf '%s\n' "$PWD/tools" >> "$GITHUB_PATH"
+          {
+            echo 'MULTILINE_ENV<<PARITY_ENV'
+            echo 'env-one'
+            echo 'env-two'
+            echo 'PARITY_ENV'
+          } >> "$GITHUB_ENV"
+          {
+            echo 'multiline<<PARITY_OUTPUT'
+            echo 'output-one'
+            echo 'output-two'
+            echo 'PARITY_OUTPUT'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Consume multiline file commands and PATH
+        id: consume_commands
+        run: |
+          printf '|path=%s|env=%s|output=%s' \
+            "$(parity-tool)" \
+            "$MULTILINE_ENV" \
+            '${{ steps.file_commands.outputs.multiline }}' >> result.txt
+
+      - name: Failure branch stays skipped
+        id: must_skip
+        if: failure()
+        run: echo wrong >> result.txt

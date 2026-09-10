@@ -76,13 +76,37 @@ SHA-256 hashes are persisted, for change detection — never the values. Rules c
 `BUILD_SERVER_GH_SYNC_RULES`/`_PATH`; the PAT from `GH_PAT` (dd-agent-secrets) or
 `GH_SECRETS_SYNC_TOKEN`. Disabled by default (`BUILD_SERVER_GH_SYNC_ENABLED`).
 
+## Bounded GitHub Actions workflow YAML
+
+The authenticated `/gha/workflows/plan` endpoint consumes an ordinary workflow file together with
+its exact repository, workflow path, and revision. `/gha/workflows/runs` accepts the same document
+only when workflow execution is explicitly enabled and every job maps to an installed fixed
+profile. Planning and execution use the same strict YAML admission path: duplicate keys, merge
+keys, aliases, anchors, tags, tabs, directives, multiple documents, and excessive input fail before
+profile classification.
+
+Profile classification is fail-closed at the command boundary. Each `run` command must be inside
+the reviewed command surface of the selected profile; shell composition, redirection, repository
+scripts, publishing/deployment operations, and unrelated commands produce a non-executable plan.
+The worker runs the fixed reviewed profile, not the workflow's literal shell source, so this lane
+provides bounded verification coverage rather than byte-for-byte command parity.
+
+The independent event policy accepts only unfiltered `push`, `pull_request`, and
+`workflow_dispatch` declarations. Other events, trigger filters, and manual inputs remain visible
+in a non-executable compatibility plan instead of being silently ignored. The explicit API does
+not decide whether an event matches a workflow; the authenticated upstream dispatcher must prove
+the event, ref, workflow path, and immutable revision. This is a fixed-profile continuity path, not
+a claim that the service reproduces GitHub's proprietary workflow control plane.
+
 The server intentionally does not accept caller-supplied shell commands. A submitted job is a
 `build-server.v1` JSON document:
 
 - `schemaVersion`: optional; when present it must be `build-server.v1`.
 - `jobKind`: optional; `build-image`, `build-and-deploy`, or `run-profile`.
 - `repoUrl`: `https://`, `ssh://`, or `git@` repo URL.
-- `gitRef`: optional branch or tag, passed to `git clone --branch`.
+- `gitRef`: optional branch or tag for image jobs. For `run-profile`, it is required and must be
+  an exact lowercase 40-character commit SHA; the worker shallow-fetches that object and checks it
+  out detached.
 - `image`: explicit image tag or digest to build. The deployment currently allowlists
   `710156900967.dkr.ecr.us-east-1.amazonaws.com/`.
 - `contextDir` and `dockerfile`: relative paths inside the cloned repo.
@@ -93,7 +117,7 @@ The server intentionally does not accept caller-supplied shell commands. A submi
 - `deploy.path`: relative path inside the cloned repo.
 - `deploy.namespace`: namespace allowlisted by `BUILD_SERVER_ALLOWED_NAMESPACES`.
 
-For `jobKind: run-profile`, supply `repoUrl`, optional `gitRef`, and `profile`. Omit `image`,
+For `jobKind: run-profile`, supply `repoUrl`, an exact immutable `gitRef`, and `profile`. Omit `image`,
 `push`, `deploy`, `buildArgs`, and `dockerfile`; the server rejects them for profile jobs. The
 profile name selects an operator-reviewed runner image, commands, and artifact paths compiled into
 the server:
@@ -115,7 +139,7 @@ Example:
   "schemaVersion": "build-server.v1",
   "jobKind": "run-profile",
   "repoUrl": "https://github.com/sonus-auris/sonus-auris-ui.dart.git",
-  "gitRef": "main",
+  "gitRef": "0123456789abcdef0123456789abcdef01234567",
   "profile": "flutter-android-debug"
 }
 ```
@@ -199,8 +223,9 @@ service-account token automounting.
 Current hardening:
 
 - API auth header compared in constant time over SHA-256 digests (no timing/length leak)
-- git clone runs with `protocol.{ext,file,local}.allow=never`, `--no-tags`, and a `--` separator so
-  a repo URL can never be reinterpreted as a git option or a non-network transport
+- git checkout runs with `protocol.{ext,file,local}.allow=never`; mutable image-job refs use a
+  shallow `--no-tags` clone with an option separator, while immutable profile jobs shallow-fetch
+  the exact commit object and check it out detached
 - command execution uses direct argv, not `/bin/sh -c`
 - child commands run with a stripped environment
 - repo, image, namespace, and path allowlists
