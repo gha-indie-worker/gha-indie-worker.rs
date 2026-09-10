@@ -21,6 +21,7 @@ mod http;
 mod jobs;
 mod lambda_exec;
 mod log_sidecar;
+mod log_sidecar_security;
 mod nats_submit;
 mod profiles;
 mod state;
@@ -53,8 +54,16 @@ async fn main() {
 
     // The receiver is optional and failure-isolated. Invalid configuration or
     // spawn failure disables only the sidecar copy; normal worker stdio and
-    // bounded file logging remain available.
-    log_sidecar::init();
+    // bounded file logging remain available. Explicit environment inheritance
+    // is additionally fail-closed against worker credentials, protocol
+    // overrides, and process/runtime injection controls.
+    if log_sidecar_security::receiver_environment_is_safe() {
+        log_sidecar::init();
+    } else {
+        tracing::warn!(
+            "build log receiver disabled: environment allowlist contains a reserved or unsafe variable"
+        );
+    }
 
     // Optional Postgres persistence (own database dd_build_server on RDS). A
     // connection failure is fatal only when a URL was configured — it signals
