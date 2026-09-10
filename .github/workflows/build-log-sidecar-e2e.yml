@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  REFERENCE_SIDECAR_REVISION: d702555675e5d3f3875388b4fe09bbfd026eafbc
+  REFERENCE_SIDECAR_REVISION: 53d822af7d9e485c2c2753f7aa66cfc796593a5c
 
 jobs:
   worker-to-sidecar:
