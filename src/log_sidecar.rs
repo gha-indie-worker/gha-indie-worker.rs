@@ -10,7 +10,10 @@ use std::{
 };
 
 #[cfg(unix)]
-use std::process::Stdio;
+use std::{
+    os::fd::{AsRawFd, OwnedFd},
+    process::Stdio,
+};
 
 use serde::Serialize;
 use tokio::{sync::mpsc, task::JoinHandle, time::timeout};
@@ -18,6 +21,7 @@ use tokio::{sync::mpsc, task::JoinHandle, time::timeout};
 #[cfg(unix)]
 use tokio::{
     io::AsyncWriteExt,
+    net::unix::pipe::{self, Sender},
     process::{Child, Command},
 };
 
@@ -311,23 +315,45 @@ async fn await_supervisor_with_budget(mut supervisor: JoinHandle<()>, budget: Du
 }
 
 #[cfg(unix)]
+fn move_out_of_protocol_fds(fd: OwnedFd) -> io::Result<OwnedFd> {
+    if !matches!(fd.as_raw_fd(), METADATA_FD | DATA_FD) {
+        return Ok(fd);
+    }
+
+    // `dup2(oldfd, oldfd)` does not clear close-on-exec. Keep every
+    // protocol descriptor occupied while cloning until the source is
+    // outside FD3/FD4, then `dup2` can safely install inheritable
+    // blocking read ends at the documented child descriptors.
+    let mut held = Vec::new();
+    let mut current = fd;
+    while matches!(current.as_raw_fd(), METADATA_FD | DATA_FD) {
+        let next = current.try_clone()?;
+        held.push(current);
+        current = next;
+    }
+    drop(held);
+    Ok(current)
+}
+
+#[cfg(unix)]
 fn spawn_supervisor(
     spec: ReceiverSpec,
     receiver: mpsc::Receiver<QueuedChunk>,
     accounting: Arc<Accounting>,
 ) -> io::Result<JoinHandle<()>> {
-    use std::{
-        os::unix::process::CommandExt,
-        os::{fd::AsRawFd, unix::net::UnixStream},
-    };
+    use std::os::unix::process::CommandExt;
 
-    let (metadata_writer, metadata_child) = UnixStream::pair()?;
-    let (data_writer, data_child) = UnixStream::pair()?;
-    metadata_writer.set_nonblocking(true)?;
-    data_writer.set_nonblocking(true)?;
+    // The reference receiver reopens FD3/FD4 through `/dev/fd`, so
+    // these must be real pipes rather than Unix-domain socketpairs.
+    // Tokio keeps the parent write ends asynchronous and cancellable;
+    // the child receives blocking read ends for ordinary file reads.
+    let (metadata_writer, metadata_child) = pipe::pipe()?;
+    let (data_writer, data_child) = pipe::pipe()?;
+    let metadata_child = move_out_of_protocol_fds(metadata_child.into_blocking_fd()?)?;
+    let data_child = move_out_of_protocol_fds(data_child.into_blocking_fd()?)?;
 
-    let metadata_parent_fd = metadata_child.as_raw_fd();
-    let data_parent_fd = data_child.as_raw_fd();
+    let metadata_child_fd = metadata_child.as_raw_fd();
+    let data_child_fd = data_child.as_raw_fd();
     let mut command = Command::new(&spec.program);
     command
         .args(&spec.args)
@@ -343,16 +369,16 @@ fn spawn_supervisor(
         command.env(key, value);
     }
 
-    // SAFETY: `pre_exec` is limited to async-signal-safe `dup2` calls. The
-    // source descriptors are owned by `UnixStream`s kept alive until `spawn`
-    // returns. `dup2` atomically installs the read streams at the documented
-    // child descriptor numbers and clears close-on-exec on those targets.
+    // SAFETY: `pre_exec` is limited to async-signal-safe `dup2` calls.
+    // Sources are guaranteed outside FD3/FD4, so each `dup2` also
+    // clears close-on-exec on its target. OwnedFd sources stay alive
+    // until `spawn` returns.
     unsafe {
         command.as_std_mut().pre_exec(move || {
-            if dup2(metadata_parent_fd, METADATA_FD) == -1 {
+            if dup2(metadata_child_fd, METADATA_FD) == -1 {
                 return Err(io::Error::last_os_error());
             }
-            if dup2(data_parent_fd, DATA_FD) == -1 {
+            if dup2(data_child_fd, DATA_FD) == -1 {
                 return Err(io::Error::last_os_error());
             }
             Ok(())
@@ -363,8 +389,6 @@ fn spawn_supervisor(
     drop(metadata_child);
     drop(data_child);
 
-    let metadata_writer = tokio::net::UnixStream::from_std(metadata_writer)?;
-    let data_writer = tokio::net::UnixStream::from_std(data_writer)?;
     Ok(tokio::spawn(supervise(
         child,
         receiver,
@@ -395,8 +419,8 @@ fn spawn_supervisor(
 async fn supervise(
     mut child: Child,
     receiver: mpsc::Receiver<QueuedChunk>,
-    metadata_writer: tokio::net::UnixStream,
-    data_writer: tokio::net::UnixStream,
+    metadata_writer: Sender,
+    data_writer: Sender,
     accounting: Arc<Accounting>,
 ) {
     match writer_loop(receiver, metadata_writer, data_writer, &accounting).await {
@@ -417,8 +441,8 @@ async fn supervise(
 #[cfg(unix)]
 async fn writer_loop(
     mut receiver: mpsc::Receiver<QueuedChunk>,
-    mut metadata_writer: tokio::net::UnixStream,
-    mut data_writer: tokio::net::UnixStream,
+    mut metadata_writer: Sender,
+    mut data_writer: Sender,
     accounting: &Accounting,
 ) -> io::Result<()> {
     while let Some(chunk) = receiver.recv().await {
@@ -488,7 +512,7 @@ async fn writer_loop(
 
 #[cfg(unix)]
 async fn write_drop_summary(
-    metadata_writer: &mut tokio::net::UnixStream,
+    metadata_writer: &mut Sender,
     accounting: &Accounting,
 ) -> io::Result<()> {
     let (dropped_chunks, dropped_bytes) = accounting.take_drops();
@@ -519,10 +543,7 @@ async fn write_drop_summary(
 }
 
 #[cfg(unix)]
-async fn write_metadata(
-    writer: &mut tokio::net::UnixStream,
-    metadata: &WireMetadata<'_>,
-) -> io::Result<()> {
+async fn write_metadata(writer: &mut Sender, metadata: &WireMetadata<'_>) -> io::Result<()> {
     let mut encoded = serde_json::to_vec(metadata).map_err(io::Error::other)?;
     encoded.push(b'\n');
     writer.write_all(&encoded).await
@@ -609,15 +630,12 @@ mod tests {
     use std::io::Read as _;
 
     #[cfg(unix)]
-    fn socket_pair() -> (tokio::net::UnixStream, std::os::unix::net::UnixStream) {
-        let (writer, reader) = std::os::unix::net::UnixStream::pair().expect("unix socket pair");
-        writer
-            .set_nonblocking(true)
-            .expect("set writer nonblocking");
-        (
-            tokio::net::UnixStream::from_std(writer).expect("tokio unix stream"),
-            reader,
-        )
+    fn pipe_pair() -> (Sender, std::fs::File) {
+        let (writer, reader) = pipe::pipe().expect("anonymous unix pipe");
+        let reader = reader
+            .into_blocking_fd()
+            .expect("blocking anonymous pipe reader");
+        (writer, std::fs::File::from(reader))
     }
 
     #[cfg(unix)]
@@ -701,8 +719,8 @@ mod tests {
             .expect("queue second stdout");
         drop(sender);
 
-        let (metadata_writer, mut metadata_reader) = socket_pair();
-        let (data_writer, mut data_reader) = socket_pair();
+        let (metadata_writer, mut metadata_reader) = pipe_pair();
+        let (data_writer, mut data_reader) = pipe_pair();
         writer_loop(receiver, metadata_writer, data_writer, &accounting)
             .await
             .expect("writer loop");
@@ -742,8 +760,8 @@ mod tests {
         let (sender, receiver) = mpsc::channel(1);
         drop(sender);
 
-        let (metadata_writer, mut metadata_reader) = socket_pair();
-        let (data_writer, _data_reader) = socket_pair();
+        let (metadata_writer, mut metadata_reader) = pipe_pair();
+        let (data_writer, _data_reader) = pipe_pair();
         writer_loop(receiver, metadata_writer, data_writer, &accounting)
             .await
             .expect("writer loop");
@@ -775,8 +793,8 @@ mod tests {
             .expect("queue chunk");
         drop(sender);
 
-        let (metadata_writer, metadata_reader) = socket_pair();
-        let (data_writer, data_reader) = socket_pair();
+        let (metadata_writer, metadata_reader) = pipe_pair();
+        let (data_writer, data_reader) = pipe_pair();
         drop(metadata_reader);
         drop(data_reader);
 
@@ -800,8 +818,8 @@ mod tests {
         }
         drop(sender);
 
-        let (metadata_writer, _metadata_reader) = socket_pair();
-        let (data_writer, _data_reader) = socket_pair();
+        let (metadata_writer, _metadata_reader) = pipe_pair();
+        let (data_writer, _data_reader) = pipe_pair();
         let error = tokio::time::timeout(
             Duration::from_secs(2),
             writer_loop(receiver, metadata_writer, data_writer, &accounting),
