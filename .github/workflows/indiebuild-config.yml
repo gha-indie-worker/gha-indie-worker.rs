@@ -22,7 +22,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: gha-indie-worker/gha-indie-worker-cli
-          ref: 2ec2f0797d199e5a0b89aefdf22d7d66e90df189
+          ref: 0f4564b5fa8cce04d78f1928b1248b3f29ddbeef
           path: .indiebuild-cli
           persist-credentials: false
 
@@ -41,7 +41,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: gha-indie-worker/gha-indie-worker-interfaces
-          ref: 9d7f7376627f59e43efcceb927062614ab8a7b76
+          ref: 634859430cba8b295c64a6b84c8ef814e0cb31a8
           path: .indiebuild-contracts
           persist-credentials: false
 
@@ -74,7 +74,7 @@ jobs:
           node .tjsv/bin/typespec-json-schema-validator.mjs check \
             --typespec=.indiebuild-contracts/contracts/indiebuild.tsp \
             --schema=.indiebuild-contracts/contracts/indiebuild.schema.json \
-            --instances=.indiebuild-contracts/contracts/instances/IndieBuildConfig \
+            --instances=.indiebuild-contracts/contracts/indiebuild-instances \
             --report=.typespec-json-schema-validator/indiebuild-report.json \
             --sarif=.typespec-json-schema-validator/indiebuild-report.sarif \
             --contract-ir=.typespec-json-schema-validator/indiebuild-contract-ir.json \
