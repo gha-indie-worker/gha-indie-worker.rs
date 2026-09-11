@@ -121,27 +121,6 @@ pub(crate) async fn healthz(State(state): State<AppState>) -> impl IntoResponse 
         .values()
         .filter(|job| matches!(job.status, BuildStatus::Queued))
         .count();
-    let mut allowed_namespaces = state
-        .config
-        .allowed_namespaces
-        .iter()
-        .cloned()
-        .collect::<Vec<_>>();
-    allowed_namespaces.sort();
-    let mut allowed_repo_prefixes = state.config.allowed_repo_prefixes.clone();
-    allowed_repo_prefixes.sort();
-    let mut allowed_image_prefixes = state.config.allowed_image_prefixes.clone();
-    allowed_image_prefixes.sort();
-    let mut allowed_profiles = state
-        .config
-        .allowed_profiles
-        .iter()
-        .cloned()
-        .collect::<Vec<_>>();
-    allowed_profiles.sort();
-    let mut allowed_profile_repo_prefixes = state.config.allowed_profile_repo_prefixes.clone();
-    allowed_profile_repo_prefixes.sort();
-
     Json(HealthResponse {
         ok: true,
         service: SERVICE_NAME,
@@ -149,14 +128,22 @@ pub(crate) async fn healthz(State(state): State<AppState>) -> impl IntoResponse 
         deploy_enabled: state.config.deploy_enabled,
         push_enabled: state.config.push_enabled,
         ecr_login_enabled: state.config.ecr_login_enabled,
-        allowed_repo_prefixes,
-        allowed_image_prefixes,
-        allowed_namespaces,
-        allowed_profiles,
-        allowed_profile_repo_prefixes,
+        allowed_repo_prefixes: sorted(state.config.allowed_repo_prefixes.iter().cloned()),
+        allowed_image_prefixes: sorted(state.config.allowed_image_prefixes.iter().cloned()),
+        allowed_namespaces: sorted(state.config.allowed_namespaces.iter().cloned()),
+        allowed_profiles: sorted(state.config.allowed_profiles.iter().cloned()),
+        allowed_profile_repo_prefixes: sorted(
+            state.config.allowed_profile_repo_prefixes.iter().cloned(),
+        ),
         queued,
         running: state.counters.running.load(Ordering::Relaxed),
     })
+}
+
+fn sorted(values: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut values = values.into_iter().collect::<Vec<_>>();
+    values.sort();
+    values
 }
 
 pub(crate) async fn readyz(State(state): State<AppState>) -> Response {
