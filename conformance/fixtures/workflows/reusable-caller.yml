@@ -15,6 +15,11 @@ jobs:
     with:
       phrase: pontifex
       multiplier: 3
+      # Capture caller identity before control enters the reusable workflow.
+      # A remote reusable workflow must not substitute its own repository/ref
+      # when actions/checkout runs without an explicit repository/ref.
+      expected_repository: ${{ github.repository }}
+      expected_sha: ${{ github.sha }}
     secrets:
       conformance_secret: ${{ secrets.CONFORMANCE_SECRET }}
 
@@ -22,11 +27,13 @@ jobs:
     needs: call
     runs-on: ubuntu-latest
     steps:
-      - name: Verify called-workflow outputs
+      - name: Verify called-workflow outputs and checkout identity
         shell: bash
         env:
           RENDERED: ${{ needs.call.outputs.rendered }}
           SECRET_PRESENT: ${{ needs.call.outputs.secret_present }}
+          CHECKOUT_REPOSITORY_MATCH: ${{ needs.call.outputs.checkout_repository_match }}
+          CHECKOUT_SHA_MATCH: ${{ needs.call.outputs.checkout_sha_match }}
         run: |
           set -euo pipefail
           test "${RENDERED}" = 'pontifex|pontifex|pontifex'
@@ -34,3 +41,5 @@ jobs:
             true|false) ;;
             *) exit 97 ;;
           esac
+          test "${CHECKOUT_REPOSITORY_MATCH}" = true
+          test "${CHECKOUT_SHA_MATCH}" = true
