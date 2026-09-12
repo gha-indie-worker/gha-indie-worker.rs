@@ -159,6 +159,13 @@ class GhaParityAuditTests(unittest.TestCase):
         called = (
             REPO_ROOT / 'conformance/fixtures/workflows/reusable-called.yml'
         ).read_text(encoding='utf-8')
+        exported = (
+            REPO_ROOT / '.github/workflows/conformance-reusable-called.yml'
+        ).read_text(encoding='utf-8')
+
+        # The callable cross-repository endpoint must be the exact audited
+        # fixture, not a second implementation that can drift silently.
+        self.assertEqual(called, exported)
 
         checkout = re.search(r'uses:\s+actions/checkout@([0-9a-f]{40}|[0-9a-f]{64})', called)
         self.assertIsNotNone(checkout, 'reusable workflow must pin actions/checkout to an exact commit')
