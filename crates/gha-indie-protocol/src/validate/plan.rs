@@ -5,8 +5,8 @@ use serde_json::Value;
 use super::identifiers::{validate_base_job_id, validate_instance_id};
 use crate::model::{PlannedJob, ProtocolError, WorkflowPlan};
 use crate::{
-    ALLOWED_RUNNER_LABELS, MAX_BASE_JOBS, MAX_DEPENDENCIES, MAX_MATRIX_JSON_BYTES,
-    MAX_MATRIX_KEYS, MAX_PLAN_JOBS, PLAN_SCHEMA,
+    ALLOWED_RUNNER_LABELS, MAX_BASE_JOBS, MAX_DEPENDENCIES, MAX_MATRIX_JSON_BYTES, MAX_MATRIX_KEYS,
+    MAX_PLAN_JOBS, PLAN_SCHEMA,
 };
 
 pub(crate) fn validate_plan(plan: &WorkflowPlan) -> Result<(), ProtocolError> {
