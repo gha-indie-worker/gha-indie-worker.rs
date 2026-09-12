@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 import unittest
@@ -17,7 +18,8 @@ AUDIT = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = AUDIT
 SPEC.loader.exec_module(AUDIT)
 
-CATALOG_SOURCE = Path(__file__).resolve().parents[1] / AUDIT.DEFAULT_CATALOG_PATH
+REPO_ROOT = Path(__file__).resolve().parents[1]
+CATALOG_SOURCE = REPO_ROOT / AUDIT.DEFAULT_CATALOG_PATH
 
 
 class ParityRepository:
@@ -149,6 +151,35 @@ class GhaParityAuditTests(unittest.TestCase):
 
     def test_require_full_mode_rejects_unproven_catalog(self) -> None:
         self.assertIn('PARITY-CLAIM-005', self.repo.codes(require_full=True))
+
+    def test_reusable_workflow_fixture_binds_default_checkout_to_caller_identity(self) -> None:
+        caller = (
+            REPO_ROOT / 'conformance/fixtures/workflows/reusable-caller.yml'
+        ).read_text(encoding='utf-8')
+        called = (
+            REPO_ROOT / 'conformance/fixtures/workflows/reusable-called.yml'
+        ).read_text(encoding='utf-8')
+
+        checkout = re.search(r'uses:\s+actions/checkout@([0-9a-f]{40}|[0-9a-f]{64})', called)
+        self.assertIsNotNone(checkout, 'reusable workflow must pin actions/checkout to an exact commit')
+        self.assertIn('persist-credentials: false', called)
+
+        # Caller identity must be captured before control enters the reusable
+        # workflow. This makes a remote callee checking out its own repository
+        # or ref fail rather than looking superficially successful.
+        self.assertIn('expected_repository: ${{ github.repository }}', caller)
+        self.assertIn('expected_sha: ${{ github.sha }}', caller)
+        self.assertIn('EXPECTED_REPOSITORY: ${{ inputs.expected_repository }}', called)
+        self.assertIn('EXPECTED_SHA: ${{ inputs.expected_sha }}', called)
+        self.assertIn('git remote get-url origin', called)
+        self.assertIn('git rev-parse HEAD', called)
+
+        for output in ('checkout_repository_match', 'checkout_sha_match'):
+            self.assertIn(f'{output}:', called)
+            self.assertIn(f'needs.call.outputs.{output}', caller)
+
+        self.assertIn('test "${CHECKOUT_REPOSITORY_MATCH}" = true', caller)
+        self.assertIn('test "${CHECKOUT_SHA_MATCH}" = true', caller)
 
 
 if __name__ == '__main__':
