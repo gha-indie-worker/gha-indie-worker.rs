@@ -13,6 +13,7 @@ use tokio::{
     sync::{RwLock, Semaphore},
 };
 
+mod admission;
 mod config;
 mod db;
 mod ecr;
