@@ -20,3 +20,7 @@ sops-private*.txt
 # Local temporary directories and repository-owned worktrees
 tmp/
 temp/
+
+# Cargo build output (was captured by a working-tree snapshot; never commit)
+/target/
+**/target/
