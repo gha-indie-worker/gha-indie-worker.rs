@@ -17,3 +17,6 @@ env/dec/
 keys.txt
 sops-private*.txt
 # Repository-local temporary data and authorized Git worktrees
+# Local temporary directories and repository-owned worktrees
+tmp/
+temp/
