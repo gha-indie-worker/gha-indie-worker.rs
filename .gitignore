@@ -16,3 +16,4 @@ env/dec/
 *.age-key
 keys.txt
 sops-private*.txt
+# Repository-local temporary data and authorized Git worktrees
