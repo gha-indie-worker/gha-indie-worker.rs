@@ -4,12 +4,14 @@ on:
   pull_request:
     paths:
       - src/admission.rs
+      - src/admission_formal.rs
       - src/main.rs
       - .github/workflows/admission-classifier.yml
   push:
     branches: [main]
     paths:
       - src/admission.rs
+      - src/admission_formal.rs
       - src/main.rs
       - .github/workflows/admission-classifier.yml
   workflow_dispatch:
@@ -22,7 +24,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  contract:
+  rust:
+    name: rust
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -38,10 +41,107 @@ jobs:
           toolchain: stable
           components: rustfmt
       - name: Check formatting
-        run: rustfmt --edition 2021 --check src/admission.rs
+        run: |
+          rustfmt --edition 2021 --check \
+            src/admission.rs \
+            src/admission_formal.rs
       - name: Compile and run the dependency-free classifier contract
         shell: bash
         run: |
           set -euo pipefail
-          rustc --edition 2021 --test -D warnings src/admission.rs -o "${RUNNER_TEMP}/admission-classifier-tests"
+          rustc --edition 2021 --test -D warnings \
+            src/admission.rs \
+            -o "${RUNNER_TEMP}/admission-classifier-tests"
           "${RUNNER_TEMP}/admission-classifier-tests"
+      - name: Exhaustively verify all bounded evidence states
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --edition 2021 --test -D warnings \
+            src/admission_formal.rs \
+            -o "${RUNNER_TEMP}/admission-classifier-formal-tests"
+          "${RUNNER_TEMP}/admission-classifier-formal-tests"
+
+  provenance:
+    name: provenance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          show-progress: false
+          submodules: false
+      - name: Verify pure classifier and bounded-model inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          python3 - <<'PY'
+          from pathlib import Path
+
+          classifier = Path("src/admission.rs").read_text(encoding="utf-8")
+          model = Path("src/admission_formal.rs").read_text(encoding="utf-8")
+          workflow = Path(
+              ".github/workflows/admission-classifier.yml"
+          ).read_text(encoding="utf-8")
+
+          for token in (
+              "zero-step or missing-runner evidence alone is ambiguous; fail closed",
+              "PlatformDiagnosticSource::CheckRunAnnotation",
+              "PlatformDiagnosticSource::AuthorizedActionsApi",
+              "if steps_started",
+          ):
+              assert token in classifier, token
+
+          for forbidden in (
+              "std::fs",
+              "std::process",
+              "Command::",
+              "reqwest",
+              "octocrab",
+              "unsafe {",
+          ):
+              assert forbidden not in classifier, forbidden
+
+          for token in (
+              "all_756_valid_evidence_states",
+              "all_108_conflicting_diagnostic_states",
+              "malformed_provider_references_never_authorize_fallback",
+              "assert!(!result.fallback_allowed)",
+          ):
+              assert token in model, token
+
+          for required_job in ("  rust:\n", "  provenance:\n", "  gitleaks:\n"):
+              assert required_job in workflow, required_job
+          PY
+          sha256sum \
+            src/admission.rs \
+            src/admission_formal.rs \
+            .github/workflows/admission-classifier.yml
+
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          show-progress: false
+          submodules: false
+      - name: Reject credential-shaped material in the classifier slice
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RInE \
+            '(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|lin_api_[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)' \
+            src/admission.rs \
+            src/admission_formal.rs \
+            .github/workflows/admission-classifier.yml; then
+            echo "credential-shaped material is forbidden" >&2
+            exit 1
+          fi
+          git diff --check
