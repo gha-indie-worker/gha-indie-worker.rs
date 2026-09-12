@@ -1,0 +1,185 @@
+name: Build log TJSV current canary
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-log-tjsv-current-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  peer-authority-canary:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      INTERFACES_REVISION: 7165a361462e624195e91cf88ec472b7d6e9c1da
+      TJSV_REVISION: 93dd73cb246a09b0a1c62d7192cc62ca6ecbe405
+    steps:
+      - name: Check out exact worker candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Check out immutable build-log peer authorities
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: gha-indie-worker/gha-indie-worker-interfaces
+          ref: ${{ env.INTERFACES_REVISION }}
+          path: contract-authority
+          persist-credentials: false
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Check out current immutable TJSV
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ORESoftware/typespec-json-schema-validator
+          ref: ${{ env.TJSV_REVISION }}
+          path: .tjsv-current
+          persist-credentials: false
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Prove exact revisions
+        shell: bash
+        env:
+          EXPECTED_WORKER_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_WORKER_SHA"
+          test "$(git -C contract-authority rev-parse HEAD)" = "$INTERFACES_REVISION"
+          test "$(git -C .tjsv-current rev-parse HEAD)" = "$TJSV_REVISION"
+
+      - name: Set up Node 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+
+      - name: Audit and install TJSV production graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd .tjsv-current
+            TSJSV_NPM_AUDIT_RECEIPT="${RUNNER_TEMP}/tjsv-current-npm-audit.json" node ./scripts/npm-audit-gate.mjs
+            npm ci --omit=dev
+          )
+
+      - name: Prove peer authorities are immutable and admitted
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/tjsv-current/pass/generated
+          tsp='contract-authority/contracts/build-log.tsp'
+          schema='contract-authority/contracts/build-log.schema.json'
+          sha256sum "$tsp" "$schema" > "${RUNNER_TEMP}/authority-before.sha256"
+
+          node .tjsv-current/bin/typespec-json-schema-validator.mjs check \
+            --typespec="$tsp" \
+            --schema="$schema" \
+            --instances=contract-authority/contracts/instances \
+            --report=target/tjsv-current/pass/report.json \
+            --contract-ir=target/tjsv-current/pass/contract-ir.json \
+            --output-dir=target/tjsv-current/pass/generated \
+            --max-probes=256 \
+            --int64-strategy=string \
+            --seal-object-schemas=true \
+            --polymorphic-models-strategy=oneOf
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('target/tjsv-current/pass/report.json').read_text())
+          if report.get('status') != 'passed':
+              raise SystemExit('current TJSV did not admit the independent build-log authorities')
+          ir = json.loads(Path('target/tjsv-current/pass/contract-ir.json').read_text())
+          raw = json.dumps(ir, sort_keys=True)
+          required = ('independent', 'comparison-evidence-only')
+          for token in required:
+              if token not in raw:
+                  raise SystemExit(f'Contract IR is missing authority-role evidence: {token}')
+          generated = Path('target/tjsv-current/pass/generated/typespec.generated.schema.json')
+          if not generated.is_file():
+              raise SystemExit('TypeSpec-generated JSON Schema B evidence was not produced')
+          PY
+
+          sha256sum "$tsp" "$schema" > "${RUNNER_TEMP}/authority-after.sha256"
+          cmp "${RUNNER_TEMP}/authority-before.sha256" "${RUNNER_TEMP}/authority-after.sha256"
+
+      - name: Prove one-authority drift fails closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/tjsv-current/drift/generated
+          cp contract-authority/contracts/build-log.schema.json target/tjsv-current/drift/authored.schema.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path('target/tjsv-current/drift/authored.schema.json')
+          schema = json.loads(path.read_text())
+          values = schema['$defs']['BuildLogStream']['enum']
+          if 'sidecar-drift-probe' in values:
+              raise SystemExit('negative-control enum marker already exists')
+          values.append('sidecar-drift-probe')
+          path.write_text(json.dumps(schema, indent=2, sort_keys=True) + '\n')
+          PY
+
+          set +e
+          node .tjsv-current/bin/typespec-json-schema-validator.mjs check \
+            --typespec=contract-authority/contracts/build-log.tsp \
+            --schema=target/tjsv-current/drift/authored.schema.json \
+            --instances=contract-authority/contracts/instances \
+            --report=target/tjsv-current/drift/report.json \
+            --contract-ir=target/tjsv-current/drift/contract-ir.json \
+            --output-dir=target/tjsv-current/drift/generated \
+            --max-probes=256 \
+            --int64-strategy=string \
+            --seal-object-schemas=true \
+            --polymorphic-models-strategy=oneOf
+          rc=$?
+          set -e
+          if (( rc == 0 )); then
+            echo 'TJSV incorrectly admitted deliberate JSON-Schema-only drift' >&2
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('target/tjsv-current/drift/report.json').read_text())
+          if report.get('status') == 'passed':
+              raise SystemExit('negative-control report unexpectedly passed')
+          findings = report.get('findings')
+          if not isinstance(findings, list) or not findings:
+              raise SystemExit('negative-control rejection emitted no findings')
+          ir = json.loads(Path('target/tjsv-current/drift/contract-ir.json').read_text())
+          if ir.get('status') == 'passed':
+              raise SystemExit('negative-control Contract IR is admissible')
+          PY
+
+      - name: Re-prove authored sources after negative control
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum \
+            contract-authority/contracts/build-log.tsp \
+            contract-authority/contracts/build-log.schema.json \
+            > "${RUNNER_TEMP}/authority-final.sha256"
+          cmp "${RUNNER_TEMP}/authority-before.sha256" "${RUNNER_TEMP}/authority-final.sha256"
+
+      - name: Upload TJSV canary evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-log-tjsv-current-${{ github.sha }}
+          path: target/tjsv-current/
+          if-no-files-found: error
+          retention-days: 30
