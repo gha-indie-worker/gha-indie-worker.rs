@@ -12,6 +12,14 @@ on:
         required: false
         default: 1
         type: number
+      expected_repository:
+        description: Caller repository captured before entering the reusable workflow.
+        required: true
+        type: string
+      expected_sha:
+        description: Caller commit captured before entering the reusable workflow.
+        required: true
+        type: string
     secrets:
       conformance_secret:
         description: Optional secret used only to verify context availability.
@@ -23,6 +31,12 @@ on:
       secret_present:
         description: Whether the optional secret context was populated.
         value: ${{ jobs.render.outputs.secret_present }}
+      checkout_repository_match:
+        description: Whether default checkout resolved to the caller repository.
+        value: ${{ jobs.render.outputs.checkout_repository_match }}
+      checkout_sha_match:
+        description: Whether default checkout resolved to the caller commit.
+        value: ${{ jobs.render.outputs.checkout_sha_match }}
 
 permissions:
   contents: read
@@ -33,7 +47,54 @@ jobs:
     outputs:
       rendered: ${{ steps.render.outputs.rendered }}
       secret_present: ${{ steps.render.outputs.secret_present }}
+      checkout_repository_match: ${{ steps.checkout_identity.outputs.repository_match }}
+      checkout_sha_match: ${{ steps.checkout_identity.outputs.sha_match }}
     steps:
+      - name: Check out default reusable-workflow revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: checkout_identity
+        name: Prove default checkout is caller repository and commit
+        shell: bash
+        env:
+          EXPECTED_REPOSITORY: ${{ inputs.expected_repository }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          [[ "${EXPECTED_REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+          [[ "${EXPECTED_SHA}" =~ ^[0-9a-f]{40}$|^[0-9a-f]{64}$ ]]
+
+          actual_sha="$(git rev-parse HEAD)"
+          remote_url="$(git remote get-url origin)"
+          actual_repository="$(
+            printf '%s\n' "${remote_url}" |
+              sed -E \
+                -e 's#^https://([^@/]+@)?github\.com/##' \
+                -e 's#^git@github\.com:##' \
+                -e 's#^ssh://git@github\.com/##' \
+                -e 's#\.git$##'
+          )"
+
+          repository_match=false
+          sha_match=false
+          if [[ "${actual_repository}" = "${EXPECTED_REPOSITORY}" ]]; then
+            repository_match=true
+          fi
+          if [[ "${actual_sha}" = "${EXPECTED_SHA}" ]]; then
+            sha_match=true
+          fi
+
+          printf 'repository_match=%s\n' "${repository_match}" >> "${GITHUB_OUTPUT}"
+          printf 'sha_match=%s\n' "${sha_match}" >> "${GITHUB_OUTPUT}"
+
+          # This is the regression boundary for remote reusable workflows: the
+          # called workflow definition may live in another repository/ref, but
+          # a default checkout must remain bound to the caller repository/SHA.
+          test "${repository_match}" = true
+          test "${sha_match}" = true
+
       - id: render
         name: Render deterministic output
         shell: bash
