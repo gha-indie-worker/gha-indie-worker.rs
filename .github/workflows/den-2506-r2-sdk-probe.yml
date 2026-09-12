@@ -1,0 +1,74 @@
+name: DEN-2506 R2 SDK and worker lockgraph probe
+
+on:
+  pull_request:
+    paths:
+      - "probes/daedalus-r2-sdk/**"
+      - "probes/daedalus-meshy-worker-lockgraph/**"
+      - ".github/workflows/den-2506-r2-sdk-probe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  compile-and-test-sdk-surface:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out without retained credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Verify no credential-like material is present
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -R -nE 'ghp_|lin_api_|cfat_|sk-svcacct-|[0-9a-f]{32}\.r2\.cloudflarestorage\.com' probes/daedalus-r2-sdk; then
+            echo "credential-like or account-specific material found in public SDK probe" >&2
+            exit 1
+          fi
+      - name: Rustfmt probe
+        run: cargo fmt --manifest-path probes/daedalus-r2-sdk/Cargo.toml -- --check
+      - name: Compile all probe targets
+        run: cargo check --manifest-path probes/daedalus-r2-sdk/Cargo.toml --all-targets
+      - name: Run SDK accessor tests
+        run: cargo test --manifest-path probes/daedalus-r2-sdk/Cargo.toml --all-targets
+
+  resolve-worker-lockgraph:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Check out without retained credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Verify lockgraph is dependency-only and credential-free
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -R -nE 'ghp_|lin_api_|cfat_|sk-svcacct-|[0-9a-f]{32}\.r2\.cloudflarestorage\.com' probes/daedalus-meshy-worker-lockgraph; then
+            echo "credential-like or account-specific material found in worker lockgraph" >&2
+            exit 1
+          fi
+          if find probes/daedalus-meshy-worker-lockgraph -type f ! -name 'Cargo.toml' ! -name 'Cargo.lock' ! -name '*.rs' ! -name 'README.md' -print -quit | grep -q .; then
+            echo "unexpected file type in dependency-only worker lockgraph" >&2
+            exit 1
+          fi
+      - name: Resolve exact worker dependency graph in the ephemeral checkout
+        run: cargo generate-lockfile --manifest-path probes/daedalus-meshy-worker-lockgraph/crates/meshy-worker/Cargo.toml
+      - name: Validate locked metadata and compile dependency graph
+        run: |
+          cargo metadata --locked --manifest-path probes/daedalus-meshy-worker-lockgraph/crates/meshy-worker/Cargo.toml --format-version 1 > /tmp/den-2506-metadata.json
+          cargo check --locked --manifest-path probes/daedalus-meshy-worker-lockgraph/crates/meshy-worker/Cargo.toml --all-targets
+      - name: Publish the resolved worker lockfile as evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: den-2506-meshy-worker-lock-${{ github.run_id }}-${{ github.run_attempt }}
+          path: probes/daedalus-meshy-worker-lockgraph/crates/meshy-worker/Cargo.lock
+          if-no-files-found: error
+          retention-days: 7
+      - name: Prove the validation workflow did not mutate tracked state
+        run: |
+          set -euo pipefail
+          git diff --exit-code -- . ':!probes/daedalus-meshy-worker-lockgraph/crates/meshy-worker/Cargo.lock'
+          echo "The generated resolver artifact is evidence only; this workflow cannot write the reviewed branch."
