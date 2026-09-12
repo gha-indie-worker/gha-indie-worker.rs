@@ -1,0 +1,243 @@
+name: GitHub Actions parity conformance
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gha-parity-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compile the audit utilities
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            tools/audit_gha_parity.py \
+            tools/compare_gha_traces.py \
+            test/test_gha_parity_audit.py \
+            test/test_compare_gha_traces.py
+
+      - name: Run adversarial conformance-policy tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 test/test_gha_parity_audit.py -v
+          python3 test/test_compare_gha_traces.py -v
+
+      - name: Enforce honest parity status and evidence
+        shell: bash
+        env:
+          GHA_REQUIRE_FULL_PARITY: 'false'
+        run: |
+          set -euo pipefail
+          python3 tools/audit_gha_parity.py
+
+      - name: Reject tab-indented or structurally incomplete workflow fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          fixtures = sorted(Path('conformance/fixtures/workflows').glob('*.y*ml'))
+          if not fixtures:
+              raise SystemExit('no workflow fixtures found')
+          for path in fixtures:
+              text = path.read_text(encoding='utf-8')
+              if '\t' in text:
+                  raise SystemExit(f'{path}: workflow fixture must not contain tab indentation')
+              for marker in ('name:', 'on:', 'jobs:'):
+                  if marker not in text:
+                      raise SystemExit(f'{path}: missing required workflow marker {marker}')
+          print(f'validated {len(fixtures)} workflow fixture files')
+          PY
+
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact revision and parents
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Verify the Rust workspace when present
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f Cargo.toml ]]; then
+            echo 'No root Cargo.toml; Rust workspace verification is not applicable.'
+            exit 0
+          fi
+
+          if git rev-parse --verify 'HEAD^2' >/dev/null 2>&1; then
+            comparison_base="$(git merge-base 'HEAD^1' 'HEAD^2')"
+            comparison_head='HEAD^2'
+          else
+            comparison_base='HEAD^'
+            comparison_head='HEAD'
+          fi
+
+          mapfile -d '' candidate_rust < <(
+            git diff --name-only -z "$comparison_base" "$comparison_head" -- '*.rs'
+          )
+          changed_rust=()
+          for path in "${candidate_rust[@]}"; do
+            if [[ -L "$path" ]]; then
+              echo "Changed Rust source must not be a symlink: $path" >&2
+              exit 1
+            fi
+            if [[ -f "$path" ]]; then
+              changed_rust+=("$path")
+            fi
+          done
+
+          if (( ${#changed_rust[@]} > 0 )); then
+            printf 'Rust formatting applies only to changed source files:\n'
+            printf '  %s\n' "${changed_rust[@]}"
+            # rustfmt follows `mod` declarations by default. That would turn a
+            # changed main.rs into a repository-wide formatting check and make
+            # unrelated baseline debt block a focused PR. Keep this gate honest:
+            # format exactly the source paths selected above and no descendants.
+            rustfmt --edition 2021 --config skip_children=true --check "${changed_rust[@]}"
+          else
+            echo 'No Rust source file changed; preserving unrelated baseline formatting debt outside this PR.'
+          fi
+
+          # Manifest and lock changes are validated semantically by Cargo rather
+          # than using repository-wide rustfmt, which would make an unrelated
+          # pre-existing source-formatting backlog block a focused PR.
+          cargo metadata --locked --no-deps --format-version 1 >/dev/null
+          cargo test --workspace --all-targets --all-features --locked
+          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+  build-log-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      INTERFACES_REVISION: 7165a361462e624195e91cf88ec472b7d6e9c1da
+      TJSV_REVISION: a4b731fbf82c4d162abd74fd03758fa32bb76176
+    steps:
+      - name: Check out exact producer candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Check out admitted build-log interface authority
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: gha-indie-worker/gha-indie-worker-interfaces
+          ref: ${{ env.INTERFACES_REVISION }}
+          path: contract-authority
+          persist-credentials: false
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Check out current immutable TJSV validator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ORESoftware/typespec-json-schema-validator
+          ref: ${{ env.TJSV_REVISION }}
+          path: .tjsv
+          persist-credentials: false
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Prove exact producer, authority, and TJSV revisions
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$(git -C contract-authority rev-parse HEAD)" = "$INTERFACES_REVISION"
+          test "$(git -C .tjsv rev-parse HEAD)" = "$TJSV_REVISION"
+
+      - name: Set up Node 22 for TJSV
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+
+      - name: Audit TJSV production dependency graph
+        working-directory: .tjsv
+        env:
+          TSJSV_NPM_AUDIT_RECEIPT: ${{ runner.temp }}/tjsv-npm-audit-receipt.json
+        run: node ./scripts/npm-audit-gate.mjs
+
+      - name: Install lockfile-pinned TJSV toolchain
+        working-directory: .tjsv
+        run: npm ci --omit=dev
+
+      - name: Re-admit independent TypeSpec and JSON Schema build-log authorities
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/tjsv/build-log-producer
+          node .tjsv/bin/typespec-json-schema-validator.mjs check \
+            --typespec=contract-authority/contracts/build-log.tsp \
+            --schema=contract-authority/contracts/build-log.schema.json \
+            --instances=contract-authority/contracts/instances \
+            --report=target/tjsv/build-log-producer/report.json \
+            --sarif=target/tjsv/build-log-producer/report.sarif \
+            --contract-ir=target/tjsv/build-log-producer/contract-ir.json \
+            --output-dir=target/tjsv/build-log-producer/generated-schema-b \
+            --max-probes=256 \
+            --int64-strategy=string \
+            --seal-object-schemas=true \
+            --polymorphic-models-strategy=oneOf
+
+      - name: Verify current contract inputs before producer promotion
+        shell: bash
+        env:
+          TSJSV_VERIFY_IR: target/tjsv/build-log-producer/contract-ir.json
+          TSJSV_VERIFY_REPORT: target/tjsv/build-log-producer/report.json
+          TSJSV_VERIFY_TYPESPEC: contract-authority/contracts/build-log.tsp
+          TSJSV_VERIFY_AUTHORED: contract-authority/contracts/build-log.schema.json
+          TSJSV_VERIFY_GENERATED: target/tjsv/build-log-producer/generated-schema-b/typespec.generated.schema.json
+          TSJSV_VERIFY_DECLARATIONS: '["GhaIndieWorker.BuildLogEvent","GhaIndieWorker.BuildLogMetadata","GhaIndieWorker.BuildLogStream"]'
+          TSJSV_VERIFY_VERIFICATION: target/tjsv/build-log-producer/producer-verification.json
+        run: node .tjsv/scripts/verify-consumer.mjs
+
+      - name: Prove corrected Rust interface projection
+        working-directory: contract-authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --all-targets build_log_metadata::tests:: -- --nocapture
+
+      - name: Prove real Rust producer wire and failure-isolation semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked log_sidecar::tests:: -- --nocapture
+
+      - name: Upload deterministic TJSV producer evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-log-producer-tjsv-${{ github.sha }}
+          path: target/tjsv/build-log-producer/
+          if-no-files-found: error
+          retention-days: 30
