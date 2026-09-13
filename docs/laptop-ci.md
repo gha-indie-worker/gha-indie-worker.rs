@@ -28,7 +28,13 @@ The laptop profile deliberately sets:
 
 ## Prerequisites
 
-Install Rust/containerd+nerdctl (or the runtime needed by the selected profiles), `cloudflared`, and `ores-compose`.
+Install Rust, `cloudflared`, `ores-compose`, and one supported local container CLI: nerdctl/containerd, Docker Desktop, or Podman. `scripts/oci-cli-compat.sh` auto-detects in that order and removes only nerdctl's `-n <namespace>` prefix when invoking Docker or Podman; the Rust worker still constructs the fixed profile command and no caller-controlled shell command is introduced.
+
+Override auto-detection with:
+
+```sh
+export GHA_INDIE_CONTAINER_RUNTIME=docker   # or podman / nerdctl
+```
 
 The Cloudflare infrastructure for `ci-laptop.indiebuild.dev` lives in `gha-indie-worker-infra/cloudflare/laptop-tunnel`. Apply that Terraform root first, then place the resulting tunnel runtime token in your encrypted local environment as `CLOUDFLARE_TUNNEL_TOKEN`.
 
@@ -66,6 +72,10 @@ bash scripts/bootstrap-laptop-webhooks.sh ORESoftware/ores-compose gha-indie-wor
 ```
 
 The script is idempotent for the configured URL and subscribes only to `push`. A push to any branch can therefore run the matching profile even when GitHub Actions has no available hosted-runner minutes.
+
+## CI correctness boundary
+
+The current webhook implementation selects the pushed branch for cloning. Before this external worker is made a required merge check, harden it to bind the execution to the webhook's exact commit SHA and publish a GitHub commit status/check result for that SHA. Until then, treat it as an external verifier rather than a strict required-check replacement.
 
 ## Failure behavior
 
