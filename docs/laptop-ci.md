@@ -37,6 +37,8 @@ That file owns the local Postgres/Redis fallbacks, the four normal/admin server 
 
 The worker keeps automated infra checkouts beneath `BUILD_SERVER_ORG_WORKSPACE_ROOT` (default `~/.cache/gha-indie-worker/orgs`), never in a developer-owned source checkout.
 
+The `ci-worker` and `cloudflare-tunnel` services belong to the `control` profile. The always-on laptop session enables that profile; nested PR sessions omit it so they launch only the application/infrastructure topology and cannot recursively create another worker/tunnel or collide on the control port.
+
 ## Prerequisites and secrets
 
 Install Rust, `cloudflared`, `ores-compose`, and one supported local container CLI: nerdctl/containerd, Docker Desktop, or Podman. `scripts/oci-cli-compat.sh` auto-detects in that order and removes only nerdctl's `-n <namespace>` prefix when invoking Docker or Podman; the Rust worker still constructs the fixed profile command.
@@ -54,11 +56,11 @@ Do not commit any of these values.
 
 ## Start
 
-Start the org topology from the infra repo:
+Start the always-on control plane from the infra repo:
 
 ```sh
 cd ../gha-indie-worker-infra
-ores-compose up --session laptop-ci
+ores-compose up --session laptop-ci --profile control
 ```
 
 The canonical `.ores-compose.yaml` starts the worker on loopback, waits for `/healthz`, then starts `cloudflared`. Logs and second-terminal control remain part of the same ores-compose session:
@@ -68,7 +70,7 @@ ores-compose logs --session laptop-ci --follow
 ores-compose attach --session laptop-ci
 ```
 
-For a PR, the worker creates a distinct `pr-<number>-<sha>` session and tears it down after verification.
+For a PR, the worker creates a distinct `pr-<number>-<sha>` session without the `control` profile and tears it down after verification.
 
 ## Configure repository webhooks
 
