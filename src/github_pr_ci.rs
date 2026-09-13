@@ -106,7 +106,7 @@ async fn run(state: AppState, context: PullRequestContext) -> Result<(), String>
         let workflows = fetch_workflows(&state, &context).await?;
         let profiles = profiles_for_workflows(&workflows)?;
         if profiles.is_empty() {
-            return Err("no supported verification profiles were inferred from workflow YAML".to_string());
+            return Err("no supported pull-request verification profiles were inferred from workflow YAML".to_string());
         }
 
         for profile in profiles {
@@ -238,7 +238,38 @@ async fn ensure_infra_checkout(state: &AppState, infra_repo: &str) -> Result<(),
         .map(|(_, name)| name)
         .ok_or_else(|| "invalid infra repo".to_string())?;
     let destination = workspace_root.join(repo_name);
+    let repo_url = format!("https://github.com/{infra_repo}.git");
+    let extra_header = state
+        .config
+        .git_http_auth_header
+        .as_deref()
+        .map(|header| format!("http.extraHeader={header}"));
+
     if destination.join(".git").is_dir() {
+        // This is a worker-owned cache, so it is safe to refresh it to the
+        // remote default branch. We never reset a developer-owned checkout.
+        let mut fetch = tokio::process::Command::new(&state.config.git_bin);
+        if let Some(header) = extra_header.as_deref() {
+            fetch.arg("-c").arg(header);
+        }
+        let status = fetch
+            .args(["fetch", "--depth", "1", "origin", "HEAD"])
+            .current_dir(&destination)
+            .status()
+            .await
+            .map_err(|error| format!("failed to refresh infra repo: {error}"))?;
+        if !status.success() {
+            return Err(format!("git fetch of {infra_repo} failed with {status}"));
+        }
+        let status = tokio::process::Command::new(&state.config.git_bin)
+            .args(["reset", "--hard", "FETCH_HEAD"])
+            .current_dir(&destination)
+            .status()
+            .await
+            .map_err(|error| format!("failed to update infra checkout: {error}"))?;
+        if !status.success() {
+            return Err(format!("git reset of {infra_repo} failed with {status}"));
+        }
         return Ok(());
     }
     if destination.exists() {
@@ -249,18 +280,11 @@ async fn ensure_infra_checkout(state: &AppState, infra_repo: &str) -> Result<(),
     }
 
     let mut command = tokio::process::Command::new(&state.config.git_bin);
-    if let Some(header) = state.config.git_http_auth_header.as_deref() {
-        command.args(["-c", &format!("http.extraHeader={header}")]);
+    if let Some(header) = extra_header.as_deref() {
+        command.arg("-c").arg(header);
     }
     let status = command
-        .args([
-            "clone",
-            "--depth",
-            "1",
-            "--no-tags",
-            "--",
-            &format!("https://github.com/{infra_repo}.git"),
-        ])
+        .args(["clone", "--depth", "1", "--no-tags", "--", &repo_url])
         .arg(&destination)
         .status()
         .await
@@ -274,8 +298,13 @@ async fn ensure_infra_checkout(state: &AppState, infra_repo: &str) -> Result<(),
 fn profiles_for_workflows(workflows: &[(String, String)]) -> Result<Vec<String>, String> {
     let mut profiles = BTreeSet::new();
     let mut unsupported = Vec::new();
+    let mut pull_request_workflows = 0usize;
     for (name, yaml) in workflows {
         let plan = plan_workflow_yaml(yaml).map_err(|error| format!("{name}: {error}"))?;
+        if !plan.pull_request_trigger {
+            continue;
+        }
+        pull_request_workflows += 1;
         if !plan.unsupported.is_empty() {
             unsupported.extend(
                 plan.unsupported
@@ -285,9 +314,12 @@ fn profiles_for_workflows(workflows: &[(String, String)]) -> Result<Vec<String>,
         }
         profiles.extend(plan.profiles);
     }
+    if pull_request_workflows == 0 {
+        return Err("repository has workflow files, but none subscribe to pull_request".to_string());
+    }
     if !unsupported.is_empty() {
         return Err(format!(
-            "unsupported GitHub workflow constructs:\n{}",
+            "unsupported pull-request workflow constructs:\n{}",
             unsupported.join("\n")
         ));
     }
@@ -541,5 +573,20 @@ mod tests {
         let repo = validate_repo_name("ORESoftware/cloudflare-infra").unwrap();
         assert_eq!(repo, "ORESoftware/cloudflare-infra");
         assert!(validate_repo_name("../bad").is_err());
+    }
+
+    #[test]
+    fn ignores_non_pr_workflows_when_computing_profiles() {
+        let workflows = vec![
+            (
+                "ci.yml".to_string(),
+                "on: pull_request\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: cargo test\n".to_string(),
+            ),
+            (
+                "release.yml".to_string(),
+                "on: push\njobs:\n  deploy:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: vendor/deploy@v9\n".to_string(),
+            ),
+        ];
+        assert_eq!(profiles_for_workflows(&workflows).unwrap(), vec!["rust-verify"]);
     }
 }
