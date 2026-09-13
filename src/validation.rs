@@ -116,35 +116,36 @@ pub(crate) fn validate_relative_path(name: &str, value: &str) -> Result<PathBuf,
         return Err(format!("{name} must be relative to the repository root"));
     }
 
-    let mut clean = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::Normal(value) => {
-                let part = value
-                    .to_str()
-                    .ok_or_else(|| format!("{name} must be valid UTF-8"))?;
-                // Reject characters that are structural in a nerdctl `--mount`
-                // spec (`,` `=` `:`) or otherwise unsafe, so a path component
-                // can never inject an extra mount field (e.g. a second `src=`).
-                if part
-                    .chars()
-                    .any(|ch| matches!(ch, ',' | '=' | ':' | '\0') || ch.is_control())
-                {
-                    return Err(format!("{name} contains unsupported characters"));
+    let clean =
+        path.components()
+            .try_fold(PathBuf::new(), |mut clean, component| match component {
+                Component::Normal(value) => {
+                    let part = value
+                        .to_str()
+                        .ok_or_else(|| format!("{name} must be valid UTF-8"))?;
+                    // Reject characters that are structural in a nerdctl `--mount`
+                    // spec (`,` `=` `:`) or otherwise unsafe, so a path component
+                    // can never inject an extra mount field (e.g. a second `src=`).
+                    if part
+                        .chars()
+                        .any(|ch| matches!(ch, ',' | '=' | ':' | '\0') || ch.is_control())
+                    {
+                        return Err(format!("{name} contains unsupported characters"));
+                    }
+                    clean.push(value);
+                    Ok(clean)
                 }
-                clean.push(value);
-            }
-            Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(format!("{name} must stay inside the repository root"));
-            }
-        }
-    }
+                Component::CurDir => Ok(clean),
+                Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                    Err(format!("{name} must stay inside the repository root"))
+                }
+            })?;
 
     if clean.as_os_str().is_empty() {
-        clean.push(".");
+        Ok(PathBuf::from("."))
+    } else {
+        Ok(clean)
     }
-    Ok(clean)
 }
 
 pub(crate) fn validate_build_args(build_args: &Option<BTreeMap<String, String>>) -> Result<(), String> {
