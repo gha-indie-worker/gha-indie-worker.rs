@@ -35,27 +35,31 @@ impl PrComposeSession {
                 self.config_path.display()
             ));
         }
-        run_ores_compose(&self.infra_root, &[
+        let config = self.config_path.to_string_lossy().into_owned();
+        let args = [
             "up",
             "--config",
-            self.config_path.to_string_lossy().as_ref(),
+            config.as_str(),
             "--session",
-            &self.session_id,
+            self.session_id.as_str(),
             "--detach",
-        ]).await
+        ];
+        run_ores_compose(&self.infra_root, &args).await
     }
 
     pub async fn down(&self) -> Result<(), String> {
         if !self.config_path.is_file() {
             return Ok(());
         }
-        run_ores_compose(&self.infra_root, &[
+        let config = self.config_path.to_string_lossy().into_owned();
+        let args = [
             "down",
             "--config",
-            self.config_path.to_string_lossy().as_ref(),
+            config.as_str(),
             "--session",
-            &self.session_id,
-        ]).await
+            self.session_id.as_str(),
+        ];
+        run_ores_compose(&self.infra_root, &args).await
     }
 }
 
