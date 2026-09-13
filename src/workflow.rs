@@ -1,7 +1,6 @@
 use std::collections::BTreeSet;
 
 use serde::Serialize;
-use serde_yaml::{Mapping, Value};
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -17,69 +16,130 @@ impl WorkflowPlan {
     }
 }
 
-/// Translate a fail-closed subset of GitHub Actions YAML into existing,
-/// operator-reviewed gha-indie-worker profiles. We deliberately do not execute
-/// arbitrary `run:` text on the laptop host. Instead the workflow is used as a
-/// contract describing which toolchain/test family the PR expects, and the
-/// matching fixed profile runs inside the worker's sandbox container while the
-/// org ores-compose session is live.
+/// Translate a deliberately small, fail-closed subset of GitHub Actions YAML
+/// into existing operator-reviewed gha-indie-worker profiles.
+///
+/// This parser is intentionally dependency-free so `cargo --locked` remains
+/// valid on the laptop worker. It understands the structural pieces needed for
+/// CI classification (`jobs`, `runs-on`, `steps`, `uses`, and `run`) and fails
+/// closed on workflow features that materially change execution semantics. It
+/// does *not* execute `run:` text on the laptop host; the text only selects a
+/// fixed sandbox profile.
 pub fn plan_workflow_yaml(input: &str) -> Result<WorkflowPlan, String> {
-    let root: Value = serde_yaml::from_str(input)
-        .map_err(|error| format!("invalid GitHub workflow YAML: {error}"))?;
-    let root = root
-        .as_mapping()
-        .ok_or_else(|| "workflow root must be a mapping".to_string())?;
-    let jobs = mapping_get(root, "jobs")
-        .and_then(Value::as_mapping)
-        .ok_or_else(|| "workflow must declare jobs".to_string())?;
+    if input.contains('\t') {
+        return Err("workflow YAML uses tab indentation; unsupported by the local fail-closed parser".to_string());
+    }
 
+    let mut in_jobs = false;
+    let mut current_job: Option<String> = None;
+    let mut in_steps = false;
     let mut profiles = BTreeSet::new();
     let mut jobs_seen = Vec::new();
     let mut unsupported = Vec::new();
 
-    for (job_name, job_value) in jobs {
-        let Some(job_name) = job_name.as_str() else {
-            unsupported.push("non-string job name".to_string());
+    for (line_number, raw_line) in input.lines().enumerate() {
+        let without_comment = strip_comment(raw_line);
+        if without_comment.trim().is_empty() {
             continue;
-        };
-        jobs_seen.push(job_name.to_string());
-        let Some(job) = job_value.as_mapping() else {
-            unsupported.push(format!("job {job_name} is not a mapping"));
-            continue;
-        };
-
-        for forbidden in ["container", "strategy"] {
-            if mapping_get(job, forbidden).is_some() {
-                unsupported.push(format!("job {job_name} uses unsupported `{forbidden}`"));
-            }
         }
+        let indent = without_comment.len() - without_comment.trim_start_matches(' ').len();
+        let trimmed = without_comment.trim();
 
-        if let Some(runs_on) = mapping_get(job, "runs-on") {
-            if !runs_on_is_linux(runs_on) {
-                unsupported.push(format!("job {job_name} requires non-Linux runs-on"));
-            }
-        }
-
-        let Some(steps) = mapping_get(job, "steps").and_then(Value::as_sequence) else {
-            unsupported.push(format!("job {job_name} has no steps"));
-            continue;
-        };
-
-        for (index, step_value) in steps.iter().enumerate() {
-            let Some(step) = step_value.as_mapping() else {
-                unsupported.push(format!("job {job_name} step {index} is not a mapping"));
+        if indent == 0 {
+            if trimmed == "jobs:" {
+                in_jobs = true;
+                current_job = None;
+                in_steps = false;
                 continue;
-            };
-
-            if let Some(uses) = mapping_get(step, "uses").and_then(Value::as_str) {
-                classify_action(uses, &mut profiles, &mut unsupported, job_name, index);
             }
-            if let Some(run) = mapping_get(step, "run").and_then(Value::as_str) {
+            if in_jobs {
+                // A new top-level key after jobs ends the jobs mapping.
+                in_jobs = false;
+                current_job = None;
+                in_steps = false;
+            }
+            continue;
+        }
+
+        if !in_jobs {
+            continue;
+        }
+
+        if indent == 2 && is_mapping_key(trimmed) {
+            let job = trimmed.trim_end_matches(':').trim().trim_matches(['\'', '"']);
+            if job.is_empty() {
+                unsupported.push(format!("line {} has an empty job name", line_number + 1));
+                current_job = None;
+            } else {
+                current_job = Some(job.to_string());
+                jobs_seen.push(job.to_string());
+            }
+            in_steps = false;
+            continue;
+        }
+
+        let Some(job) = current_job.as_deref() else {
+            continue;
+        };
+
+        if indent == 4 {
+            in_steps = trimmed == "steps:";
+            if let Some(value) = yaml_scalar_value(trimmed, "runs-on:") {
+                if !runs_on_is_linux(value) {
+                    unsupported.push(format!("job {job} requires non-Linux runs-on {value:?}"));
+                }
+            }
+            if trimmed.starts_with("container:") {
+                unsupported.push(format!("job {job} uses unsupported `container`"));
+            }
+            if trimmed.starts_with("strategy:") {
+                unsupported.push(format!("job {job} uses unsupported `strategy`"));
+            }
+            if trimmed.starts_with("services:") {
+                // Service containers should be modeled in the org's
+                // *-infra/.ores-compose.yaml instead of being started a second
+                // time by the workflow interpreter.
+                unsupported.push(format!(
+                    "job {job} declares workflow services; move them to *-infra/.ores-compose.yaml"
+                ));
+            }
+            continue;
+        }
+
+        if !in_steps || indent < 6 {
+            continue;
+        }
+
+        if let Some(uses) = step_value(trimmed, "uses:") {
+            classify_action(
+                uses,
+                &mut profiles,
+                &mut unsupported,
+                job,
+                line_number + 1,
+            );
+            continue;
+        }
+
+        if let Some(run) = step_value(trimmed, "run:") {
+            if run != "|" && run != ">" && !run.is_empty() {
                 classify_run(run, &mut profiles);
             }
+            continue;
         }
+
+        // Continuation lines belonging to a block-style `run: |` are safe to
+        // inspect for toolchain intent. YAML keys such as env/name/with are
+        // ignored unless their text itself is an executable-looking command.
+        classify_run(trimmed, &mut profiles);
     }
 
+    if !in_jobs && jobs_seen.is_empty() && !input.lines().any(|line| line.trim() == "jobs:") {
+        return Err("workflow must declare jobs".to_string());
+    }
+    if jobs_seen.is_empty() {
+        return Err("workflow jobs mapping is empty or unsupported".to_string());
+    }
     if profiles.is_empty() && unsupported.is_empty() {
         unsupported.push("workflow did not map to a supported verification profile".to_string());
     }
@@ -91,23 +151,35 @@ pub fn plan_workflow_yaml(input: &str) -> Result<WorkflowPlan, String> {
     })
 }
 
-fn mapping_get<'a>(mapping: &'a Mapping, key: &str) -> Option<&'a Value> {
-    mapping.get(Value::String(key.to_string()))
+fn strip_comment(line: &str) -> &str {
+    // GitHub action refs and shell snippets can contain `#`; only treat a hash
+    // as a YAML comment delimiter when preceded by whitespace.
+    let bytes = line.as_bytes();
+    for index in 0..bytes.len() {
+        if bytes[index] == b'#' && (index == 0 || bytes[index - 1].is_ascii_whitespace()) {
+            return &line[..index];
+        }
+    }
+    line
 }
 
-fn runs_on_is_linux(value: &Value) -> bool {
-    match value {
-        Value::String(label) => {
-            let label = label.to_ascii_lowercase();
-            label.contains("ubuntu") || label.contains("linux") || label == "self-hosted"
-        }
-        Value::Sequence(labels) => labels
-            .iter()
-            .filter_map(Value::as_str)
-            .map(str::to_ascii_lowercase)
-            .any(|label| label.contains("ubuntu") || label.contains("linux")),
-        _ => false,
-    }
+fn is_mapping_key(trimmed: &str) -> bool {
+    trimmed.ends_with(':') && !trimmed.starts_with('-') && !trimmed.contains("::")
+}
+
+fn yaml_scalar_value<'a>(trimmed: &'a str, key: &str) -> Option<&'a str> {
+    let value = trimmed.strip_prefix(key)?.trim();
+    Some(value.trim_matches(['\'', '"']))
+}
+
+fn step_value<'a>(trimmed: &'a str, key: &str) -> Option<&'a str> {
+    let trimmed = trimmed.strip_prefix("- ").unwrap_or(trimmed);
+    yaml_scalar_value(trimmed, key)
+}
+
+fn runs_on_is_linux(label: &str) -> bool {
+    let lower = label.to_ascii_lowercase();
+    lower.contains("ubuntu") || lower.contains("linux") || lower.contains("self-hosted")
 }
 
 fn classify_action(
@@ -115,8 +187,9 @@ fn classify_action(
     profiles: &mut BTreeSet<String>,
     unsupported: &mut Vec<String>,
     job: &str,
-    step: usize,
+    line: usize,
 ) {
+    let uses = uses.trim_matches(['\'', '"']);
     let lower = uses.to_ascii_lowercase();
     if lower.starts_with("actions/checkout@") {
         return;
@@ -139,12 +212,18 @@ fn classify_action(
         profiles.insert("flutter-verify".to_string());
         return;
     }
-    unsupported.push(format!("job {job} step {step} uses unsupported action {uses}"));
+    if lower.starts_with("actions/cache@") || lower.starts_with("actions/upload-artifact@") {
+        // Cache/upload semantics do not determine whether the verification
+        // command itself passes, so the first external-CI version treats these
+        // as optional compatibility hints rather than executing the action.
+        return;
+    }
+    unsupported.push(format!("job {job} line {line} uses unsupported action {uses}"));
 }
 
 fn classify_run(run: &str, profiles: &mut BTreeSet<String>) {
     let lower = run.to_ascii_lowercase();
-    if lower.contains("cargo ") || lower.contains("cargo\n") || lower.starts_with("cargo") {
+    if lower.contains("cargo ") || lower.starts_with("cargo") {
         profiles.insert("rust-verify".to_string());
     }
     if lower.contains("flutter ") || lower.starts_with("flutter") {
@@ -192,6 +271,22 @@ jobs:
     }
 
     #[test]
+    fn block_run_is_classified() {
+        let yaml = r#"
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: verify
+        run: |
+          cargo fmt --all -- --check
+          cargo test --locked
+"#;
+        let plan = plan_workflow_yaml(yaml).unwrap();
+        assert_eq!(plan.profiles, vec!["rust-verify"]);
+    }
+
+    #[test]
     fn unsupported_third_party_action_fails_closed() {
         let yaml = r#"
 jobs:
@@ -218,5 +313,22 @@ jobs:
         let plan = plan_workflow_yaml(yaml).unwrap();
         assert!(!plan.is_supported());
         assert!(plan.unsupported.iter().any(|item| item.contains("non-Linux")));
+    }
+
+    #[test]
+    fn workflow_service_containers_fail_closed_in_favor_of_ores_compose() {
+        let yaml = r#"
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+    steps:
+      - run: cargo test
+"#;
+        let plan = plan_workflow_yaml(yaml).unwrap();
+        assert!(!plan.is_supported());
+        assert!(plan.unsupported.iter().any(|item| item.contains("*-infra/.ores-compose.yaml")));
     }
 }
