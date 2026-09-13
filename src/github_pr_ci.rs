@@ -1,7 +1,10 @@
-use std::{collections::BTreeSet, env, path::PathBuf, time::Duration};
+use std::{collections::BTreeSet, env, time::Duration};
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
+use reqwest::{
+    header::{ACCEPT, AUTHORIZATION, USER_AGENT},
+    Method,
+};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::time::sleep;
@@ -21,6 +24,7 @@ pub struct PullRequestContext {
     pub number: u64,
     pub head_sha: String,
     pub head_ref: String,
+    pub head_repository: String,
     pub head_clone_url: String,
 }
 
@@ -40,6 +44,7 @@ pub fn parse_pull_request(payload: &serde_json::Value) -> Result<PullRequestCont
         return Err("pull_request head SHA is invalid".to_string());
     }
     let head_ref = required_str(payload, "/pull_request/head/ref")?;
+    let head_repository = required_str(payload, "/pull_request/head/repo/full_name")?;
     let head_clone_url = required_str(payload, "/pull_request/head/repo/clone_url")?;
     Ok(PullRequestContext {
         repository,
@@ -47,6 +52,7 @@ pub fn parse_pull_request(payload: &serde_json::Value) -> Result<PullRequestCont
         number,
         head_sha,
         head_ref,
+        head_repository,
         head_clone_url,
     })
 }
@@ -160,7 +166,9 @@ async fn run(state: AppState, context: PullRequestContext) -> Result<(), String>
             .await?;
             Ok(())
         }
-        (Ok(()), Err(error)) => Err(format!("verification passed but ores-compose cleanup failed: {error}")),
+        (Ok(()), Err(error)) => Err(format!(
+            "verification passed but ores-compose cleanup failed: {error}"
+        )),
         (Err(error), _) => Err(error),
     }
 }
@@ -303,9 +311,9 @@ async fn fetch_workflows(
 
     let url = format!(
         "https://api.github.com/repos/{}/contents/.github/workflows?ref={}",
-        context.repository, context.head_sha
+        context.head_repository, context.head_sha
     );
-    let entries: Vec<Entry> = github_request(&state, &url)
+    let entries: Vec<Entry> = github_request(&state, Method::GET, &url)
         .send()
         .await
         .map_err(|error| format!("failed to list workflow files: {error}"))?
@@ -317,14 +325,16 @@ async fn fetch_workflows(
 
     let mut result = Vec::new();
     for entry in entries {
-        if entry.r#type != "file" || !(entry.name.ends_with(".yml") || entry.name.ends_with(".yaml")) {
+        if entry.r#type != "file"
+            || !(entry.name.ends_with(".yml") || entry.name.ends_with(".yaml"))
+        {
             continue;
         }
         let file_url = format!(
             "https://api.github.com/repos/{}/contents/.github/workflows/{}?ref={}",
-            context.repository, entry.name, context.head_sha
+            context.head_repository, entry.name, context.head_sha
         );
-        let file: FileResponse = github_request(&state, &file_url)
+        let file: FileResponse = github_request(&state, Method::GET, &file_url)
             .send()
             .await
             .map_err(|error| format!("failed to fetch {}: {error}", entry.name))?
@@ -334,7 +344,10 @@ async fn fetch_workflows(
             .await
             .map_err(|error| format!("failed to decode {}: {error}", entry.name))?;
         if file.encoding != "base64" {
-            return Err(format!("unsupported GitHub contents encoding {} for {}", file.encoding, entry.name));
+            return Err(format!(
+                "unsupported GitHub contents encoding {} for {}",
+                file.encoding, entry.name
+            ));
         }
         let compact = file.content.replace(['\r', '\n'], "");
         let bytes = BASE64
@@ -355,7 +368,7 @@ async fn ensure_pr_head(state: &AppState, context: &PullRequestContext) -> Resul
         "https://api.github.com/repos/{}/pulls/{}",
         context.repository, context.number
     );
-    let payload: serde_json::Value = github_request(state, &url)
+    let payload: serde_json::Value = github_request(state, Method::GET, &url)
         .send()
         .await
         .map_err(|error| format!("failed to read PR head: {error}"))?
@@ -387,7 +400,7 @@ async fn publish_status(
         "https://api.github.com/repos/{}/statuses/{}",
         context.repository, context.head_sha
     );
-    github_request(state, &url)
+    github_request(state, Method::POST, &url)
         .json(&json!({
             "state": status,
             "context": STATUS_CONTEXT,
@@ -402,10 +415,14 @@ async fn publish_status(
     Ok(())
 }
 
-fn github_request<'a>(state: &'a AppState, url: &'a str) -> reqwest::RequestBuilder {
+fn github_request<'a>(
+    state: &'a AppState,
+    method: Method,
+    url: &'a str,
+) -> reqwest::RequestBuilder {
     let mut request = state
         .http
-        .get(url)
+        .request(method, url)
         .header(USER_AGENT, "gha-indie-worker")
         .header(ACCEPT, "application/vnd.github+json");
     if let Some(header) = state.config.git_http_auth_header.as_deref() {
@@ -427,14 +444,20 @@ fn require_github_auth(state: &AppState) -> Result<(), String> {
 }
 
 fn ensure_allowed(state: &AppState, context: &PullRequestContext) -> Result<(), String> {
-    let base_url = format!("https://github.com/{}/", context.repository.trim_end_matches('/'));
+    let base_url = format!(
+        "https://github.com/{}/",
+        context.repository.trim_end_matches('/')
+    );
     if !state
         .config
         .allowed_profile_repo_prefixes
         .iter()
         .any(|prefix| base_url.starts_with(prefix))
     {
-        return Err(format!("PR repository is not profile-allowlisted: {}", context.repository));
+        return Err(format!(
+            "PR repository is not profile-allowlisted: {}",
+            context.repository
+        ));
     }
     if !state
         .config
@@ -497,6 +520,7 @@ mod tests {
                     "sha": "0123456789abcdef0123456789abcdef01234567",
                     "ref": "feature",
                     "repo": {
+                        "full_name": "gha-indie-worker/gha-indie-worker.rs",
                         "clone_url": "https://github.com/gha-indie-worker/gha-indie-worker.rs.git"
                     }
                 }
@@ -506,10 +530,14 @@ mod tests {
         assert_eq!(context.number, 55);
         assert_eq!(context.head_ref, "feature");
         assert_eq!(context.owner, "gha-indie-worker");
+        assert_eq!(
+            context.head_repository,
+            "gha-indie-worker/gha-indie-worker.rs"
+        );
     }
 
     #[test]
-    fn infra_repo_map_overrides_default_naming() {
+    fn infra_repo_name_validation_accepts_explicit_mapping_targets() {
         let repo = validate_repo_name("ORESoftware/cloudflare-infra").unwrap();
         assert_eq!(repo, "ORESoftware/cloudflare-infra");
         assert!(validate_repo_name("../bad").is_err());
