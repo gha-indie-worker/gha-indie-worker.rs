@@ -26,7 +26,8 @@ for repo in "$@"; do
       -f 'config[content_type]=json' \
       -f "config[secret]=${BUILD_SERVER_GITHUB_WEBHOOK_SECRET}" \
       -f 'config[insecure_ssl]=0' \
-      -f 'events[]=push' >/dev/null
+      -f 'events[]=push' \
+      -f 'events[]=pull_request' >/dev/null
   else
     echo "creating webhook for ${repo}"
     gh api --method POST "/repos/${repo}/hooks" \
@@ -36,9 +37,10 @@ for repo in "$@"; do
       -f 'config[content_type]=json' \
       -f "config[secret]=${BUILD_SERVER_GITHUB_WEBHOOK_SECRET}" \
       -f 'config[insecure_ssl]=0' \
-      -f 'events[]=push' >/dev/null
+      -f 'events[]=push' \
+      -f 'events[]=pull_request' >/dev/null
   fi
 
 done
 
-echo "configured GitHub push webhooks -> ${webhook_url}"
+echo "configured GitHub push + pull_request webhooks -> ${webhook_url}"
