@@ -5,6 +5,7 @@ use serde::Serialize;
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowPlan {
+    pub pull_request_trigger: bool,
     pub profiles: Vec<String>,
     pub jobs_seen: Vec<String>,
     pub unsupported: Vec<String>,
@@ -12,7 +13,7 @@ pub struct WorkflowPlan {
 
 impl WorkflowPlan {
     pub fn is_supported(&self) -> bool {
-        self.unsupported.is_empty() && !self.profiles.is_empty()
+        self.pull_request_trigger && self.unsupported.is_empty() && !self.profiles.is_empty()
     }
 }
 
@@ -21,15 +22,16 @@ impl WorkflowPlan {
 ///
 /// This parser is intentionally dependency-free so `cargo --locked` remains
 /// valid on the laptop worker. It understands the structural pieces needed for
-/// CI classification (`jobs`, `runs-on`, `steps`, `uses`, and `run`) and fails
-/// closed on workflow features that materially change execution semantics. It
-/// does *not* execute `run:` text on the laptop host; the text only selects a
-/// fixed sandbox profile.
+/// CI classification (`on`, `jobs`, `runs-on`, `steps`, `uses`, and `run`) and
+/// fails closed on workflow features that materially change PR execution
+/// semantics. It does *not* execute `run:` text on the laptop host; the text
+/// only selects a fixed sandbox profile.
 pub fn plan_workflow_yaml(input: &str) -> Result<WorkflowPlan, String> {
     if input.contains('\t') {
         return Err("workflow YAML uses tab indentation; unsupported by the local fail-closed parser".to_string());
     }
 
+    let pull_request_trigger = detects_pull_request_trigger(input)?;
     let mut in_jobs = false;
     let mut current_job: Option<String> = None;
     let mut in_steps = false;
@@ -134,21 +136,81 @@ pub fn plan_workflow_yaml(input: &str) -> Result<WorkflowPlan, String> {
         classify_run(trimmed, &mut profiles);
     }
 
-    if !in_jobs && jobs_seen.is_empty() && !input.lines().any(|line| line.trim() == "jobs:") {
-        return Err("workflow must declare jobs".to_string());
-    }
-    if jobs_seen.is_empty() {
+    if jobs_seen.is_empty() && input.lines().any(|line| line.trim() == "jobs:") {
         return Err("workflow jobs mapping is empty or unsupported".to_string());
     }
-    if profiles.is_empty() && unsupported.is_empty() {
-        unsupported.push("workflow did not map to a supported verification profile".to_string());
+    if pull_request_trigger && jobs_seen.is_empty() {
+        return Err("pull-request workflow must declare jobs".to_string());
+    }
+    if pull_request_trigger && profiles.is_empty() && unsupported.is_empty() {
+        unsupported.push("pull-request workflow did not map to a supported verification profile".to_string());
     }
 
     Ok(WorkflowPlan {
+        pull_request_trigger,
         profiles: profiles.into_iter().collect(),
         jobs_seen,
         unsupported,
     })
+}
+
+fn detects_pull_request_trigger(input: &str) -> Result<bool, String> {
+    let mut in_on_block = false;
+    for raw_line in input.lines() {
+        let line = strip_comment(raw_line);
+        if line.trim().is_empty() {
+            continue;
+        }
+        let indent = line.len() - line.trim_start_matches(' ').len();
+        let trimmed = line.trim();
+
+        if indent == 0 {
+            in_on_block = false;
+            if let Some(value) = yaml_scalar_value(trimmed, "on:") {
+                if value.is_empty() {
+                    in_on_block = true;
+                    continue;
+                }
+                let normalized = value
+                    .trim_matches(['[', ']', '\'', '"'])
+                    .split(',')
+                    .map(str::trim)
+                    .map(|item| item.trim_matches(['\'', '"']))
+                    .collect::<Vec<_>>();
+                return Ok(normalized.iter().any(|item| *item == "pull_request"));
+            }
+            // YAML 1.1 parsers historically treat `on` specially, but GitHub
+            // workflow syntax requires the literal top-level key. Quoted keys
+            // are accepted here as well.
+            if let Some(rest) = trimmed
+                .strip_prefix("'on':")
+                .or_else(|| trimmed.strip_prefix("\"on\":"))
+            {
+                let value = rest.trim();
+                if value.is_empty() {
+                    in_on_block = true;
+                    continue;
+                }
+                let normalized = value
+                    .trim_matches(['[', ']', '\'', '"'])
+                    .split(',')
+                    .map(str::trim)
+                    .map(|item| item.trim_matches(['\'', '"']))
+                    .collect::<Vec<_>>();
+                return Ok(normalized.iter().any(|item| *item == "pull_request"));
+            }
+        } else if in_on_block && indent >= 2 {
+            let event = trimmed
+                .split_once(':')
+                .map(|(key, _)| key)
+                .unwrap_or(trimmed)
+                .trim_matches(['\'', '"']);
+            if event == "pull_request" {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 fn strip_comment(line: &str) -> &str {
@@ -271,8 +333,42 @@ jobs:
     }
 
     #[test]
+    fn block_pull_request_trigger_is_detected() {
+        let yaml = r#"
+on:
+  push:
+  pull_request:
+    branches: [main]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo test
+"#;
+        let plan = plan_workflow_yaml(yaml).unwrap();
+        assert!(plan.pull_request_trigger);
+        assert!(plan.is_supported());
+    }
+
+    #[test]
+    fn release_workflow_does_not_gate_pr_even_if_actions_are_unsupported() {
+        let yaml = r#"
+on: push
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: vendor/deploy-action@v9
+"#;
+        let plan = plan_workflow_yaml(yaml).unwrap();
+        assert!(!plan.pull_request_trigger);
+        assert!(!plan.is_supported());
+    }
+
+    #[test]
     fn block_run_is_classified() {
         let yaml = r#"
+on: pull_request
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -289,6 +385,7 @@ jobs:
     #[test]
     fn unsupported_third_party_action_fails_closed() {
         let yaml = r#"
+on: pull_request
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -304,6 +401,7 @@ jobs:
     #[test]
     fn macos_job_is_not_claimed_supported() {
         let yaml = r#"
+on: pull_request
 jobs:
   test:
     runs-on: macos-latest
@@ -318,6 +416,7 @@ jobs:
     #[test]
     fn workflow_service_containers_fail_closed_in_favor_of_ores_compose() {
         let yaml = r#"
+on: pull_request
 jobs:
   test:
     runs-on: ubuntu-latest
