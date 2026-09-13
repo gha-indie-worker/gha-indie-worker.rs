@@ -62,7 +62,14 @@ impl PrComposeSession {
 pub fn workspace_root_from_env() -> PathBuf {
     env::var_os("BUILD_SERVER_ORG_WORKSPACE_ROOT")
         .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join("src")))
+        .or_else(|| {
+            env::var_os("HOME").map(|home| {
+                PathBuf::from(home)
+                    .join(".cache")
+                    .join("gha-indie-worker")
+                    .join("orgs")
+            })
+        })
         .unwrap_or_else(|| PathBuf::from("/tmp/gha-indie-worker-orgs"))
 }
 
