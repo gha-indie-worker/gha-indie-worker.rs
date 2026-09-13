@@ -158,6 +158,7 @@ fn build_request_from_rule(
         }),
         repo_url: format!("https://github.com/{repo}.git"),
         git_ref: Some(branch.clone()),
+        commit_sha: Some(sha.to_string()),
         image: rule
             .image
             .as_deref()
@@ -600,6 +601,7 @@ mod tests {
             "https://github.com/ORESoftware/example.git"
         );
         assert_eq!(request.git_ref.as_deref(), Some("dev"));
+        assert_eq!(request.commit_sha.as_deref(), Some("0123456789abcdef0123"));
         assert!(request.image.ends_with(":0123456789ab"));
 
         let profile_rules = parse_rules(

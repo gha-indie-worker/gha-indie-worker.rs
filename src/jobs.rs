@@ -116,14 +116,67 @@ pub(crate) async fn clone_repository(
         "1".to_string(),
         "--no-tags".to_string(),
     ];
-    if let Some(git_ref) = clean_optional(request.git_ref.as_deref()) {
+    let exact_sha = clean_optional(request.commit_sha.as_deref());
+    if exact_sha.is_some() {
+        // The webhook's immutable revision is fetched explicitly below. Do not
+        // let clone resolve a moving branch and accidentally execute a newer
+        // commit while the request is in the queue.
+        clone_args.push("--no-checkout".to_string());
+    } else if let Some(git_ref) = clean_optional(request.git_ref.as_deref()) {
         clone_args.push("--branch".to_string());
         clone_args.push(git_ref);
     }
     clone_args.push("--".to_string());
     clone_args.push(request.repo_url.clone());
     clone_args.push(repo_dir.to_string_lossy().to_string());
-    run_logged_command(config, log_path, job_dir, &config.git_bin, clone_args).await
+    run_logged_command(config, log_path, job_dir, &config.git_bin, clone_args).await?;
+
+    let Some(exact_sha) = exact_sha else {
+        return Ok(());
+    };
+    run_logged_command(
+        config,
+        log_path,
+        repo_dir,
+        &config.git_bin,
+        vec![
+            "-c".to_string(),
+            "protocol.ext.allow=never".to_string(),
+            "-c".to_string(),
+            "protocol.file.allow=never".to_string(),
+            "-c".to_string(),
+            "protocol.local.allow=never".to_string(),
+            "fetch".to_string(),
+            "--depth".to_string(),
+            "1".to_string(),
+            "origin".to_string(),
+            exact_sha.clone(),
+        ],
+    )
+    .await?;
+    run_logged_command(
+        config,
+        log_path,
+        repo_dir,
+        &config.git_bin,
+        vec![
+            "checkout".to_string(),
+            "--detach".to_string(),
+            "--force".to_string(),
+            exact_sha.clone(),
+        ],
+    )
+    .await?;
+    let head = fs::read_to_string(repo_dir.join(".git/HEAD"))
+        .await
+        .map_err(|error| format!("failed to verify exact checkout {exact_sha}: {error}"))?;
+    if head.trim() != exact_sha {
+        return Err(format!(
+            "exact checkout mismatch: requested {exact_sha}, checked out {}",
+            head.trim()
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) async fn execute_profile(state: &AppState, job: &BuildJobRecord) -> Result<(), String> {
@@ -799,6 +852,7 @@ mod idempotency_tests {
             job_kind: Some("run-profile".to_string()),
             repo_url: "https://github.com/ORESoftware/k8s-cluster.git".to_string(),
             git_ref: Some(revision.to_string()),
+            commit_sha: Some(revision.to_string()),
             image: String::new(),
             profile: Some("playwright".to_string()),
             context_dir: None,

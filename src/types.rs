@@ -9,6 +9,10 @@ pub(crate) struct BuildRequest {
     pub(crate) job_kind: Option<String>,
     pub(crate) repo_url: String,
     pub(crate) git_ref: Option<String>,
+    /// Immutable Git revision captured from a trusted webhook. When present,
+    /// the runner must detach to this exact commit rather than resolving the
+    /// mutable branch name at execution time.
+    pub(crate) commit_sha: Option<String>,
     #[serde(default)]
     pub(crate) image: String,
     /// Fixed operator-reviewed command pipeline for jobKind=run-profile.

@@ -52,6 +52,14 @@ pub(crate) fn validate_no_whitespace(name: &str, value: &str, max_len: usize) ->
     Ok(())
 }
 
+pub(crate) fn validate_commit_sha(value: &str) -> Result<(), String> {
+    let value = value.trim();
+    if !(40..=64).contains(&value.len()) || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("commitSha must be a 40-64 character hexadecimal Git revision".to_string());
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_repo_url(repo_url: &str) -> Result<(), String> {
     let repo_url = repo_url.trim();
     if repo_url.is_empty() {
@@ -311,6 +319,9 @@ pub(crate) fn validate_build_request(config: &Config, request: &BuildRequest) ->
     if let Some(git_ref) = clean_optional(request.git_ref.as_deref()) {
         validate_no_whitespace("gitRef", &git_ref, 180)?;
     }
+    if let Some(commit_sha) = clean_optional(request.commit_sha.as_deref()) {
+        validate_commit_sha(&commit_sha)?;
+    }
     validate_relative_path("contextDir", request.context_dir.as_deref().unwrap_or("."))?;
     if job_kind != "run-profile" {
         validate_relative_path(
@@ -413,5 +424,13 @@ mod tests {
             assert!(names.contains(expected));
         }
         assert!(profiles::find("sh -c evil").is_none());
+    }
+
+    #[test]
+    fn commit_sha_requires_a_full_hex_revision() {
+        assert!(validate_commit_sha(&"a".repeat(40)).is_ok());
+        assert!(validate_commit_sha(&"a".repeat(64)).is_ok());
+        assert!(validate_commit_sha(&"a".repeat(39)).is_err());
+        assert!(validate_commit_sha(&format!("{}z", "a".repeat(39))).is_err());
     }
 }
