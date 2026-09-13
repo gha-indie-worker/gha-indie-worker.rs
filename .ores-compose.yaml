@@ -8,6 +8,9 @@ environment:
     default: "${HOME}"
   BUILD_SERVER_WORK_ROOT:
     default: "${HOME_DIR}/.cache/gha-indie-worker/jobs"
+  GHA_INDIE_CONTAINER_RUNTIME:
+    default: "auto"
+    description: "Profile container CLI: auto, nerdctl, docker, or podman."
   BUILD_SERVER_ALLOWED_REPO_PREFIXES:
     default: "https://github.com/ORESoftware/,https://github.com/gha-indie-worker/,git@github.com:ORESoftware/,git@github.com:gha-indie-worker/"
   BUILD_SERVER_ALLOWED_PROFILE_REPO_PREFIXES:
@@ -37,7 +40,8 @@ services:
       PORT: "8100"
       BUILD_SERVER_WORK_ROOT: "${BUILD_SERVER_WORK_ROOT}"
       BUILD_SERVER_GIT_BIN: "git"
-      BUILD_SERVER_NERDCTL_BIN: "nerdctl"
+      BUILD_SERVER_NERDCTL_BIN: "${PROJECT_ROOT}/scripts/oci-cli-compat.sh"
+      GHA_INDIE_CONTAINER_RUNTIME: "${GHA_INDIE_CONTAINER_RUNTIME}"
       BUILD_SERVER_KUBECTL_BIN: "kubectl"
       BUILD_SERVER_TAR_BIN: "tar"
       BUILD_SERVER_ALLOWED_REPO_PREFIXES: "${BUILD_SERVER_ALLOWED_REPO_PREFIXES}"
