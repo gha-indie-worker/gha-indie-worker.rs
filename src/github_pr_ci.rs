@@ -11,11 +11,13 @@ use tokio::time::sleep;
 
 use crate::{
     compose_ci::{workspace_root_from_env, PrComposeSession},
+    validation::validate_relative_path,
     workflow::plan_workflow_yaml,
     AppState, BuildRequest, BuildStatus,
 };
 
-const STATUS_CONTEXT: &str = "indiebuild/gha-indie-worker";
+const STATUS_CONTEXT: &str = "indiebuild.dev/ci";
+const PROFILE_RULES_ENV: &str = "BUILD_SERVER_PR_PROFILE_RULES";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PullRequestContext {
@@ -26,6 +28,20 @@ pub struct PullRequestContext {
     pub head_ref: String,
     pub head_repository: String,
     pub head_clone_url: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PrProfileRule {
+    repo: String,
+    targets: Vec<PrProfileTarget>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PrProfileTarget {
+    profile: String,
+    context_dir: Option<String>,
 }
 
 pub fn parse_pull_request(payload: &serde_json::Value) -> Result<PullRequestContext, String> {
@@ -85,7 +101,7 @@ async fn run(state: AppState, context: PullRequestContext) -> Result<(), String>
         &state,
         &context,
         "pending",
-        "gha-indie-worker is preparing the local ores-compose session",
+        "indiebuild.dev is preparing the local ores-compose session",
     )
     .await?;
 
@@ -95,27 +111,52 @@ async fn run(state: AppState, context: PullRequestContext) -> Result<(), String>
 
     let verification = async {
         session.up().await?;
-        publish_status(
-            &state,
-            &context,
-            "pending",
-            "ores-compose is ready; interpreting GitHub workflow YAML",
-        )
-        .await?;
 
-        let workflows = fetch_workflows(&state, &context).await?;
-        let profiles = profiles_for_workflows(&workflows)?;
-        if profiles.is_empty() {
-            return Err("no supported pull-request verification profiles were inferred from workflow YAML".to_string());
-        }
+        let targets = match configured_profile_targets(&context)? {
+            Some(targets) => {
+                publish_status(
+                    &state,
+                    &context,
+                    "pending",
+                    "ores-compose is ready; using operator-reviewed IndieBuild profile rules",
+                )
+                .await?;
+                targets
+            }
+            None => {
+                publish_status(
+                    &state,
+                    &context,
+                    "pending",
+                    "ores-compose is ready; interpreting GitHub workflow YAML",
+                )
+                .await?;
+                let workflows = fetch_workflows(&state, &context).await?;
+                let profiles = profiles_for_workflows(&workflows)?;
+                if profiles.is_empty() {
+                    return Err("no supported pull-request verification profiles were inferred from workflow YAML".to_string());
+                }
+                profiles
+                    .into_iter()
+                    .map(|profile| PrProfileTarget {
+                        profile,
+                        context_dir: None,
+                    })
+                    .collect()
+            }
+        };
 
-        for profile in profiles {
+        for (target_index, target) in targets.into_iter().enumerate() {
             ensure_pr_head(&state, &context).await?;
+            let context_dir = target.context_dir.as_deref().unwrap_or(".");
             publish_status(
                 &state,
                 &context,
                 "pending",
-                &format!("running {profile} against ores-compose session {}", session.session_id),
+                &format!(
+                    "running {} in {} against ores-compose session {}",
+                    target.profile, context_dir, session.session_id
+                ),
             )
             .await?;
             let record = crate::enqueue_build(
@@ -126,16 +167,20 @@ async fn run(state: AppState, context: PullRequestContext) -> Result<(), String>
                     repo_url: context.head_clone_url.clone(),
                     git_ref: Some(context.head_ref.clone()),
                     image: String::new(),
-                    profile: Some(profile.clone()),
-                    context_dir: None,
+                    profile: Some(target.profile.clone()),
+                    context_dir: target.context_dir.clone(),
                     dockerfile: None,
                     build_args: None,
                     push: Some(false),
                     deploy: None,
                     executor: Some("local".to_string()),
                     request_id: Some(format!(
-                        "pr:{}:{}:{}:{}",
-                        context.repository, context.number, context.head_sha, profile
+                        "pr:{}:{}:{}:{}:{}",
+                        context.repository,
+                        context.number,
+                        context.head_sha,
+                        target.profile,
+                        target_index
                     )),
                 },
                 "pull_request",
@@ -147,8 +192,8 @@ async fn run(state: AppState, context: PullRequestContext) -> Result<(), String>
 
         // Fail closed if the branch advanced while we were cloning/testing.
         // This ensures we never report the old webhook SHA green after a newer
-        // commit became the PR head. Exact detached-SHA fetch remains the next
-        // hardening step in the shared clone path.
+        // commit became the PR head. Exact detached-SHA fetch remains tracked
+        // separately and must land before this status becomes a required gate.
         ensure_pr_head(&state, &context).await?;
         Ok::<(), String>(())
     }
@@ -171,6 +216,55 @@ async fn run(state: AppState, context: PullRequestContext) -> Result<(), String>
         )),
         (Err(error), _) => Err(error),
     }
+}
+
+fn configured_profile_targets(
+    context: &PullRequestContext,
+) -> Result<Option<Vec<PrProfileTarget>>, String> {
+    let Ok(raw) = env::var(PROFILE_RULES_ENV) else {
+        return Ok(None);
+    };
+    if raw.trim().is_empty() {
+        return Ok(None);
+    }
+    profile_targets_from_rules(&raw, &context.repository)
+}
+
+fn profile_targets_from_rules(
+    raw: &str,
+    repository: &str,
+) -> Result<Option<Vec<PrProfileTarget>>, String> {
+    let rules: Vec<PrProfileRule> = serde_json::from_str(raw)
+        .map_err(|error| format!("invalid {PROFILE_RULES_ENV} JSON: {error}"))?;
+    if rules.len() > 128 {
+        return Err(format!("{PROFILE_RULES_ENV} can contain at most 128 repository rules"));
+    }
+    let Some(rule) = rules.iter().find(|rule| rule.repo == repository) else {
+        return Ok(None);
+    };
+    if rule.targets.is_empty() || rule.targets.len() > 32 {
+        return Err(format!(
+            "{PROFILE_RULES_ENV} rule for {repository} must contain 1-32 targets"
+        ));
+    }
+    let mut unique = BTreeSet::new();
+    for target in &rule.targets {
+        if crate::profiles::find(&target.profile).is_none() {
+            return Err(format!(
+                "{PROFILE_RULES_ENV} rule for {repository} references unknown profile {:?}",
+                target.profile
+            ));
+        }
+        let context_dir = target.context_dir.as_deref().unwrap_or(".");
+        validate_relative_path("PR profile contextDir", context_dir)?;
+        let identity = format!("{}\u{0}{}", target.profile, context_dir);
+        if !unique.insert(identity) {
+            return Err(format!(
+                "{PROFILE_RULES_ENV} rule for {repository} contains a duplicate profile/context target"
+            ));
+        }
+    }
+    Ok(Some(rule.targets.clone()))
 }
 
 fn compose_session_for(
@@ -588,5 +682,35 @@ mod tests {
             ),
         ];
         assert_eq!(profiles_for_workflows(&workflows).unwrap(), vec!["rust-verify"]);
+    }
+
+    #[test]
+    fn operator_profile_rules_support_multiple_contexts_for_one_repository() {
+        let raw = r#"[
+          {
+            "repo": "ORESoftware/ores-sw.js",
+            "targets": [
+              {"profile": "node-source-verify", "contextDir": "."},
+              {"profile": "rust-wasm-verify", "contextDir": "wasm"},
+              {"profile": "rust-source-verify", "contextDir": "rust"}
+            ]
+          }
+        ]"#;
+        let targets = profile_targets_from_rules(raw, "ORESoftware/ores-sw.js")
+            .unwrap()
+            .expect("matching rule");
+        assert_eq!(targets.len(), 3);
+        assert_eq!(targets[1].context_dir.as_deref(), Some("wasm"));
+        assert!(profile_targets_from_rules(raw, "ORESoftware/other")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn operator_profile_rules_fail_closed_on_unknown_profile_or_path_escape() {
+        let unknown = r#"[{"repo":"ORESoftware/x","targets":[{"profile":"not-installed","contextDir":"."}]}]"#;
+        assert!(profile_targets_from_rules(unknown, "ORESoftware/x").is_err());
+        let escape = r#"[{"repo":"ORESoftware/x","targets":[{"profile":"rust-verify","contextDir":"../outside"}]}]"#;
+        assert!(profile_targets_from_rules(escape, "ORESoftware/x").is_err());
     }
 }
