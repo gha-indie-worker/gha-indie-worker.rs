@@ -9,6 +9,7 @@ use tokio::{
     sync::{RwLock, Semaphore},
 };
 
+mod compose_ci;
 mod config;
 mod db;
 mod ecr;
@@ -17,6 +18,7 @@ mod events;
 mod exec;
 mod fiducia;
 mod gh_secrets;
+mod github_pr_ci;
 mod http;
 mod jobs;
 mod lambda_exec;
@@ -27,6 +29,7 @@ mod types;
 mod util;
 mod validation;
 mod webhooks;
+mod workflow;
 
 use config::{config_from_env, env_u64, env_usize, env_value, Config};
 use exec::append_log;

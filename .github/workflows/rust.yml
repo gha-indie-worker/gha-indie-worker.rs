@@ -1,0 +1,95 @@
+name: rust
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - 'feat/**'
+      - 'fix/**'
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out worker exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Check out pinned shared definitions
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ORESoftware/k8s-libs-and-shared-defs
+          ref: 29154c2bcf12031c93e86530e7b2a0eb9c5f95ec
+          persist-credentials: false
+          fetch-depth: 1
+          path: shared-defs
+
+      - name: Stage legacy path dependencies
+        run: |
+          set -euo pipefail
+          rm -rf ../../libs
+          mkdir -p ../../libs/nats/subject-defs/generated
+          cp -R shared-defs/telemetry-rs ../../libs/telemetry-rs
+          cp -R shared-defs/runtime-config-client-rs ../../libs/runtime-config-client-rs
+          cp -R shared-defs/nats/subject-defs/generated/rust ../../libs/nats/subject-defs/generated/rust
+          test -f ../../libs/telemetry-rs/Cargo.toml
+          test -f ../../libs/runtime-config-client-rs/Cargo.toml
+          test -f ../../libs/nats/subject-defs/generated/rust/Cargo.toml
+
+      - name: Install Rust components
+        run: rustup component add rustfmt
+
+      - name: Workflow parser unit tests
+        run: |
+          rm -rf /tmp/gha-worker-workflow-tests
+          mkdir -p /tmp/gha-worker-workflow-tests/src
+          cp src/workflow.rs /tmp/gha-worker-workflow-tests/src/lib.rs
+          cat > /tmp/gha-worker-workflow-tests/Cargo.toml <<'EOF'
+          [package]
+          name = "gha-worker-workflow-tests"
+          version = "0.0.0"
+          edition = "2021"
+
+          [dependencies]
+          serde = { version = "1", features = ["derive"] }
+          EOF
+          cargo test --manifest-path /tmp/gha-worker-workflow-tests/Cargo.toml
+
+      - name: Compose session unit tests
+        run: |
+          rm -rf /tmp/gha-worker-compose-tests
+          mkdir -p /tmp/gha-worker-compose-tests/src
+          cp src/compose_ci.rs /tmp/gha-worker-compose-tests/src/lib.rs
+          cat > /tmp/gha-worker-compose-tests/Cargo.toml <<'EOF'
+          [package]
+          name = "gha-worker-compose-tests"
+          version = "0.0.0"
+          edition = "2021"
+
+          [dependencies]
+          tokio = { version = "1", features = ["process", "rt", "macros"] }
+          EOF
+          cargo test --manifest-path /tmp/gha-worker-compose-tests/Cargo.toml
+
+      - name: Verify split manifest parses
+        run: cargo metadata --locked --no-deps --format-version 1 > /dev/null
+
+      - name: Full crate unit tests
+        run: cargo test --all-targets --locked
+
+      - name: Format changed tunnel/CI Rust surfaces
+        if: always()
+        run: |
+          rustfmt --edition 2021 --check \
+            src/compose_ci.rs \
+            src/github_pr_ci.rs \
+            src/main.rs \
+            src/webhooks.rs \
+            src/workflow.rs

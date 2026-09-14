@@ -1,15 +1,15 @@
 //! Inbound webhooks.
 //!
-//! `POST /webhooks/github` — GitHub push / workflow_run events, verified with
-//! the `X-Hub-Signature-256` HMAC (BUILD_SERVER_GITHUB_WEBHOOK_SECRET,
-//! constant-time compare) and deduped on `X-GitHub-Delivery`. Matching rules
-//! (BUILD_SERVER_WEBHOOK_RULES / _PATH, JSON) map repo+branch to a
-//! build-server.v1 job, so GitHub Actions or plain repo pushes can trigger
-//! builds without holding credentials for this server.
+//! `POST /webhooks/github` — GitHub push / workflow_run / pull_request events,
+//! verified with the `X-Hub-Signature-256` HMAC
+//! (BUILD_SERVER_GITHUB_WEBHOOK_SECRET, constant-time compare) and deduped on
+//! `X-GitHub-Delivery`. Push/workflow_run events use configured rules;
+//! pull_request events enter the external CI coordinator, which launches the
+//! org's ores-compose topology and reports status to the exact PR head SHA.
 //!
 //! `POST /webhooks/registry` — container registry events (ECR EventBridge
 //! `ECR Image Action` detail or docker distribution v2 event envelopes),
-//! authenticated with a shared secret header (registries cannot HMAC-sign),
+//! authenticated with a shared-secret header (registries cannot HMAC-sign),
 //! recorded for audit and relayed to NATS `dd.remote.build_server.images`.
 
 use axum::{
@@ -25,7 +25,7 @@ use sha2::{Digest, Sha256};
 use std::sync::atomic::Ordering;
 use subtle::ConstantTimeEq;
 
-use crate::{db, events, fiducia, AppState, BuildRequest, DeployRequest};
+use crate::{db, events, fiducia, github_pr_ci, AppState, BuildRequest, DeployRequest};
 
 /// One mapping from a GitHub repo/branch to a build job. Loaded from
 /// BUILD_SERVER_WEBHOOK_RULES (inline JSON array) or
@@ -272,6 +272,27 @@ pub async fn github_webhook(
                 && run.get("conclusion").and_then(serde_json::Value::as_str) == Some("success");
             (git_ref, sha, completed_ok)
         }
+        "pull_request" => {
+            let action = payload
+                .get("action")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let actionable = matches!(
+                action,
+                "opened" | "reopened" | "synchronize" | "ready_for_review"
+            );
+            let git_ref = payload
+                .pointer("/pull_request/head/ref")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let sha = payload
+                .pointer("/pull_request/head/sha")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            (git_ref, sha, actionable)
+        }
         _ => (String::new(), String::new(), false),
     };
 
@@ -326,6 +347,40 @@ pub async fn github_webhook(
         return (
             StatusCode::OK,
             Json(json!({ "ok": true, "action": "ignored", "event": event })),
+        )
+            .into_response();
+    }
+
+    if event == "pull_request" {
+        let context = match github_pr_ci::parse_pull_request(&payload) {
+            Ok(context) => context,
+            Err(error) => {
+                fiducia::idempotency_finish(
+                    &state.http,
+                    &state.config,
+                    &idem_key,
+                    &state.holder,
+                    false,
+                )
+                .await;
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": error, "deliveryId": delivery_id })),
+                )
+                    .into_response();
+            }
+        };
+        github_pr_ci::spawn(state.clone(), context);
+        fiducia::idempotency_finish(&state.http, &state.config, &idem_key, &state.holder, true)
+            .await;
+        return (
+            StatusCode::ACCEPTED,
+            Json(json!({
+                "ok": true,
+                "action": "pr-verification-enqueued",
+                "deliveryId": delivery_id,
+                "sha": sha,
+            })),
         )
             .into_response();
     }
