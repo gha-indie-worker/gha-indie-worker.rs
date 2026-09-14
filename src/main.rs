@@ -22,9 +22,12 @@ mod github_pr_ci;
 mod http;
 mod jobs;
 mod lambda_exec;
+mod nats_contract;
 mod nats_submit;
 mod profiles;
+mod runtime_config_registration;
 mod state;
+mod telemetry;
 mod types;
 mod util;
 mod validation;
@@ -42,7 +45,7 @@ use util::now_ms;
 
 #[tokio::main]
 async fn main() {
-    let _otel = dd_telemetry::init("dd-build-server");
+    let _telemetry = telemetry::init("dd-build-server");
 
     let config = Arc::new(config_from_env());
     let host = env_value("HOST", "0.0.0.0");
@@ -124,7 +127,7 @@ async fn main() {
     // in-process via `tower::ServiceExt::oneshot`.
     let app = build_router(state);
 
-    tokio::spawn(dd_runtime_config_client::register_with_control_plane());
+    tokio::spawn(runtime_config_registration::register_with_control_plane());
 
     let address: SocketAddr = format!("{host}:{port}")
         .parse()
@@ -134,10 +137,13 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(address)
         .await
         .expect("failed to bind tcp listener");
-    axum::serve(listener, app.layer(dd_telemetry::http_trace_layer()))
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .expect("axum server crashed");
+    axum::serve(
+        listener,
+        app.layer(axum::middleware::from_fn(telemetry::trace_request)),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .expect("axum server crashed");
 }
 
 async fn shutdown_signal() {
