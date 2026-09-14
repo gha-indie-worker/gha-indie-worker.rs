@@ -12,6 +12,7 @@ pub struct WorkflowPlan {
 }
 
 impl WorkflowPlan {
+    #[cfg(test)]
     pub fn is_supported(&self) -> bool {
         self.pull_request_trigger && self.unsupported.is_empty() && !self.profiles.is_empty()
     }
@@ -28,7 +29,10 @@ impl WorkflowPlan {
 /// only selects a fixed sandbox profile.
 pub fn plan_workflow_yaml(input: &str) -> Result<WorkflowPlan, String> {
     if input.contains('\t') {
-        return Err("workflow YAML uses tab indentation; unsupported by the local fail-closed parser".to_string());
+        return Err(
+            "workflow YAML uses tab indentation; unsupported by the local fail-closed parser"
+                .to_string(),
+        );
     }
 
     let pull_request_trigger = detects_pull_request_trigger(input)?;
@@ -68,7 +72,10 @@ pub fn plan_workflow_yaml(input: &str) -> Result<WorkflowPlan, String> {
         }
 
         if indent == 2 && is_mapping_key(trimmed) {
-            let job = trimmed.trim_end_matches(':').trim().trim_matches(['\'', '"']);
+            let job = trimmed
+                .trim_end_matches(':')
+                .trim()
+                .trim_matches(['\'', '"']);
             if job.is_empty() {
                 unsupported.push(format!("line {} has an empty job name", line_number + 1));
                 current_job = None;
@@ -113,13 +120,7 @@ pub fn plan_workflow_yaml(input: &str) -> Result<WorkflowPlan, String> {
         }
 
         if let Some(uses) = step_value(trimmed, "uses:") {
-            classify_action(
-                uses,
-                &mut profiles,
-                &mut unsupported,
-                job,
-                line_number + 1,
-            );
+            classify_action(uses, &mut profiles, &mut unsupported, job, line_number + 1);
             continue;
         }
 
@@ -143,7 +144,9 @@ pub fn plan_workflow_yaml(input: &str) -> Result<WorkflowPlan, String> {
         return Err("pull-request workflow must declare jobs".to_string());
     }
     if pull_request_trigger && profiles.is_empty() && unsupported.is_empty() {
-        unsupported.push("pull-request workflow did not map to a supported verification profile".to_string());
+        unsupported.push(
+            "pull-request workflow did not map to a supported verification profile".to_string(),
+        );
     }
 
     Ok(WorkflowPlan {
@@ -177,7 +180,7 @@ fn detects_pull_request_trigger(input: &str) -> Result<bool, String> {
                     .map(str::trim)
                     .map(|item| item.trim_matches(['\'', '"']))
                     .collect::<Vec<_>>();
-                return Ok(normalized.iter().any(|item| *item == "pull_request"));
+                return Ok(normalized.contains(&"pull_request"));
             }
             // YAML 1.1 parsers historically treat `on` specially, but GitHub
             // workflow syntax requires the literal top-level key. Quoted keys
@@ -197,7 +200,7 @@ fn detects_pull_request_trigger(input: &str) -> Result<bool, String> {
                     .map(str::trim)
                     .map(|item| item.trim_matches(['\'', '"']))
                     .collect::<Vec<_>>();
-                return Ok(normalized.iter().any(|item| *item == "pull_request"));
+                return Ok(normalized.contains(&"pull_request"));
             }
         } else if in_on_block && indent >= 2 {
             let event = trimmed
@@ -256,9 +259,7 @@ fn classify_action(
     if lower.starts_with("actions/checkout@") {
         return;
     }
-    if lower.starts_with("dtolnay/rust-toolchain@")
-        || lower.starts_with("actions-rs/toolchain@")
-    {
+    if lower.starts_with("dtolnay/rust-toolchain@") || lower.starts_with("actions-rs/toolchain@") {
         profiles.insert("rust-verify".to_string());
         return;
     }
@@ -280,7 +281,9 @@ fn classify_action(
         // as optional compatibility hints rather than executing the action.
         return;
     }
-    unsupported.push(format!("job {job} line {line} uses unsupported action {uses}"));
+    unsupported.push(format!(
+        "job {job} line {line} uses unsupported action {uses}"
+    ));
 }
 
 fn classify_run(run: &str, profiles: &mut BTreeSet<String>) {
@@ -410,7 +413,10 @@ jobs:
 "#;
         let plan = plan_workflow_yaml(yaml).unwrap();
         assert!(!plan.is_supported());
-        assert!(plan.unsupported.iter().any(|item| item.contains("non-Linux")));
+        assert!(plan
+            .unsupported
+            .iter()
+            .any(|item| item.contains("non-Linux")));
     }
 
     #[test]
@@ -428,6 +434,9 @@ jobs:
 "#;
         let plan = plan_workflow_yaml(yaml).unwrap();
         assert!(!plan.is_supported());
-        assert!(plan.unsupported.iter().any(|item| item.contains("*-infra/.ores-compose.yaml")));
+        assert!(plan
+            .unsupported
+            .iter()
+            .any(|item| item.contains("*-infra/.ores-compose.yaml")));
     }
 }
