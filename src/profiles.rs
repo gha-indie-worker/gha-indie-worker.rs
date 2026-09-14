@@ -60,11 +60,22 @@ const RUST_SOURCE_VERIFY_STEPS: &[ProfileStep] = &[ProfileStep {
     image: RUST_IMAGE,
     subdirectory: ".",
     script: r#"set -euo pipefail
-test -f Cargo.toml || { echo "rust-source-verify requires Cargo.toml in the selected context" >&2; exit 2; }
 rustup component add rustfmt clippy
-cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features"#,
+manifests=()
+if [ -f Cargo.toml ]; then
+  manifests+=(Cargo.toml)
+else
+  for manifest in rust/Cargo.toml rust/*/Cargo.toml; do
+    [ -f "$manifest" ] && manifests+=("$manifest")
+  done
+fi
+[ "${#manifests[@]}" -gt 0 ] || { echo "rust-source-verify found no admitted Cargo.toml layout" >&2; exit 2; }
+[ "${#manifests[@]}" -le 16 ] || { echo "rust-source-verify refuses more than 16 manifests" >&2; exit 2; }
+for manifest in "${manifests[@]}"; do
+  cargo fmt --manifest-path "$manifest" -- --check
+  cargo clippy --manifest-path "$manifest" --all-targets --all-features -- -D warnings
+  cargo test --manifest-path "$manifest" --all-targets --all-features
+done"#,
 }];
 
 const RUST_WASM_VERIFY_STEPS: &[ProfileStep] = &[ProfileStep {
@@ -398,5 +409,14 @@ mod tests {
         assert!(script.contains("cargo test --locked --all-targets --all-features"));
         assert!(!script.contains("find "));
         assert!(!script.contains("for crate"));
+    }
+
+    #[test]
+    fn source_profile_bounds_conventional_multi_crate_discovery() {
+        let profile = find("rust-source-verify").expect("source rust profile");
+        let script = profile.steps[0].script;
+        assert!(script.contains("rust/*/Cargo.toml"));
+        assert!(script.contains("refuses more than 16 manifests"));
+        assert!(!script.contains("find "));
     }
 }
