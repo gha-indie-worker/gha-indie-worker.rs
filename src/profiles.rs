@@ -123,8 +123,13 @@ test -f package.json || { echo "node-source-verify requires package.json in the 
 npm install --ignore-scripts --no-audit --no-fund
 if node -e 'const s=require("./package.json").scripts||{}; process.exit(s.check ? 0 : 1)'; then
   npm run check
-else
+elif node -e 'const s=require("./package.json").scripts||{}; process.exit(s["contracts:check"] ? 0 : 1)'; then
+  npm run contracts:check
+elif node -e 'const s=require("./package.json").scripts||{}; process.exit(s.test ? 0 : 1)'; then
   npm test
+else
+  echo "node-source-verify requires a check, contracts:check, or test script" >&2
+  exit 2
 fi"#,
 }];
 
@@ -261,7 +266,7 @@ pub const SPECS: &[ProfileSpec] = &[
     ProfileSpec {
         name: "node-source-verify",
         platform: "linux",
-        description: "Node source-package install plus repository check/test for packages that intentionally do not commit a package-manager lockfile",
+        description: "Node source-package install plus repository check/contracts/test for packages that intentionally do not commit a package-manager lockfile",
         steps: NODE_SOURCE_VERIFY_STEPS,
         artifact_paths: &[],
     },
