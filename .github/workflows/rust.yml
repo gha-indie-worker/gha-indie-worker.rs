@@ -22,19 +22,21 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
-      - name: Check out declared source provenance
+      - name: Check out pinned shared libraries
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          repository: ORESoftware/k8s-cluster
-          ref: 5cfac43c6900898f36f588d044ca34083da1c726
-          path: provenance
+          repository: ORESoftware/k8s-libs-and-shared-defs
+          ref: 84d565eeb7e1e78ce0851a2e3c95966e5cc12e36
+          path: libs-provenance
+          token: ${{ secrets.GH_PAT }}
           persist-credentials: false
           fetch-depth: 1
 
       - name: Restore split-repo path dependencies
         run: |
           mkdir -p ../../libs
-          cp -a provenance/remote/libs/. ../../libs/
+          cp -a libs-provenance/. ../../libs/
+          rm -rf ../../libs/.git
 
       - name: Install Rust components
         run: rustup component add rustfmt clippy
