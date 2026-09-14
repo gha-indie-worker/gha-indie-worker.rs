@@ -20,11 +20,11 @@ if [ "$#" -eq 0 ]; then
 fi
 
 for repo in "$@"; do
-  existing_id="$(gh api "/repos/${repo}/hooks" --paginate --jq ".[] | select(.config.url == \"${webhook_url}\") | .id" | head -n 1 || true)"
+  hook_id="$(gh api "/repos/${repo}/hooks" --paginate --jq ".[] | select(.config.url == \"${webhook_url}\") | .id" | head -n 1 || true)"
 
-  if [ -n "$existing_id" ]; then
-    echo "updating webhook for ${repo} (id=${existing_id})"
-    gh api --method PATCH "/repos/${repo}/hooks/${existing_id}" \
+  if [ -n "$hook_id" ]; then
+    echo "updating webhook for ${repo} (id=${hook_id})"
+    gh api --method PATCH "/repos/${repo}/hooks/${hook_id}" \
       -f name=web \
       -F active=true \
       -f "config[url]=${webhook_url}" \
@@ -35,7 +35,7 @@ for repo in "$@"; do
       -f 'events[]=pull_request' >/dev/null
   else
     echo "creating webhook for ${repo}"
-    gh api --method POST "/repos/${repo}/hooks" \
+    hook_id="$(gh api --method POST "/repos/${repo}/hooks" \
       -f name=web \
       -F active=true \
       -f "config[url]=${webhook_url}" \
@@ -43,7 +43,19 @@ for repo in "$@"; do
       -f "config[secret]=${BUILD_SERVER_GITHUB_WEBHOOK_SECRET}" \
       -f 'config[insecure_ssl]=0' \
       -f 'events[]=push' \
-      -f 'events[]=pull_request' >/dev/null
+      -f 'events[]=pull_request' \
+      --jq '.id')"
+  fi
+
+  if [ "${INDIEBUILD_SKIP_WEBHOOK_PING:-0}" != "1" ]; then
+    echo "requesting GitHub ping for ${repo} (id=${hook_id})"
+    gh api --method POST "/repos/${repo}/hooks/${hook_id}/pings" >/dev/null
+    # GitHub records delivery asynchronously. A short delay makes the first
+    # delivery summary useful without turning bootstrap into a health gate.
+    sleep 1
+    gh api "/repos/${repo}/hooks/${hook_id}/deliveries?per_page=1" \
+      --jq 'if length == 0 then "  ping delivery: pending" else .[0] | "  delivery id=\(.id) event=\(.event) status=\(.status_code // 0) redelivery=\(.redelivery)" end' \
+      || true
   fi
 
 done
