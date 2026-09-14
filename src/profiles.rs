@@ -48,10 +48,37 @@ if [ ! -f "$crate_dir/Cargo.toml" ]; then
   fi
 fi
 cd "$crate_dir"
+test -f Cargo.lock || { echo "rust-verify requires committed Cargo.lock" >&2; exit 2; }
 rustup component add rustfmt clippy
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features"#,
+}];
+
+const RUST_SOURCE_VERIFY_STEPS: &[ProfileStep] = &[ProfileStep {
+    name: "Rust source-package formatting, Clippy, and tests",
+    image: RUST_IMAGE,
+    subdirectory: ".",
+    script: r#"set -euo pipefail
+test -f Cargo.toml || { echo "rust-source-verify requires Cargo.toml in the selected context" >&2; exit 2; }
+rustup component add rustfmt clippy
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --all-features"#,
+}];
+
+const RUST_WASM_VERIFY_STEPS: &[ProfileStep] = &[ProfileStep {
+    name: "Rust WebAssembly source verification",
+    image: RUST_IMAGE,
+    subdirectory: ".",
+    script: r#"set -euo pipefail
+test -f Cargo.toml || { echo "rust-wasm-verify requires Cargo.toml in the selected context" >&2; exit 2; }
+rustup component add rustfmt clippy
+rustup target add wasm32-unknown-unknown
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --all-features
+cargo check --target wasm32-unknown-unknown"#,
 }];
 
 const NODE_VERIFY_STEPS: &[ProfileStep] = &[ProfileStep {
@@ -76,6 +103,20 @@ else
 fi"#,
 }];
 
+const NODE_SOURCE_VERIFY_STEPS: &[ProfileStep] = &[ProfileStep {
+    name: "Node source-package verification",
+    image: NODE_IMAGE,
+    subdirectory: ".",
+    script: r#"set -euo pipefail
+test -f package.json || { echo "node-source-verify requires package.json in the selected context" >&2; exit 2; }
+npm install --ignore-scripts --no-audit --no-fund
+if node -e 'const s=require("./package.json").scripts||{}; process.exit(s.check ? 0 : 1)'; then
+  npm run check
+else
+  npm test
+fi"#,
+}];
+
 const PYTHON_VERIFY_STEPS: &[ProfileStep] = &[ProfileStep {
     name: "Python compile and pytest verification",
     image: PYTHON_IMAGE,
@@ -88,6 +129,22 @@ elif [ -f pyproject.toml ]; then
   python -m pip install --disable-pip-version-check --no-input .
 fi
 python -m pytest"#,
+}];
+
+const DART_VERIFY_STEPS: &[ProfileStep] = &[ProfileStep {
+    name: "Dart formatting and analysis",
+    image: FLUTTER_IMAGE,
+    subdirectory: ".",
+    script: r#"set -euo pipefail
+dart --version
+if [ -f pubspec.yaml ]; then
+  dart pub get
+fi
+dart format --output=none --set-exit-if-changed .
+dart analyze .
+if [ -f pubspec.yaml ] && [ -d test ]; then
+  dart test
+fi"#,
 }];
 
 const FLUTTER_VERIFY_STEPS: &[ProfileStep] = &[ProfileStep {
@@ -165,8 +222,22 @@ pub const SPECS: &[ProfileSpec] = &[
     ProfileSpec {
         name: "rust-verify",
         platform: "linux",
-        description: "Rust formatting, Clippy with warnings denied, and all-feature tests",
+        description: "Lockfile-strict Rust formatting, Clippy, and all-feature tests",
         steps: RUST_VERIFY_STEPS,
+        artifact_paths: &[],
+    },
+    ProfileSpec {
+        name: "rust-source-verify",
+        platform: "linux",
+        description: "Rust source-package formatting, Clippy, and all-feature tests without requiring an application lockfile",
+        steps: RUST_SOURCE_VERIFY_STEPS,
+        artifact_paths: &[],
+    },
+    ProfileSpec {
+        name: "rust-wasm-verify",
+        platform: "linux",
+        description: "Rust source-package verification plus wasm32-unknown-unknown compile-check",
+        steps: RUST_WASM_VERIFY_STEPS,
         artifact_paths: &[],
     },
     ProfileSpec {
@@ -177,10 +248,24 @@ pub const SPECS: &[ProfileSpec] = &[
         artifact_paths: &[],
     },
     ProfileSpec {
+        name: "node-source-verify",
+        platform: "linux",
+        description: "Node source-package install plus repository check/test for packages that intentionally do not commit a package-manager lockfile",
+        steps: NODE_SOURCE_VERIFY_STEPS,
+        artifact_paths: &[],
+    },
+    ProfileSpec {
         name: "python-verify",
         platform: "linux",
         description: "Python bytecode compilation, declared dependency install, and pytest",
         steps: PYTHON_VERIFY_STEPS,
+        artifact_paths: &[],
+    },
+    ProfileSpec {
+        name: "dart-verify",
+        platform: "linux",
+        description: "Dart formatting, analysis, and tests when a package test suite is present",
+        steps: DART_VERIFY_STEPS,
         artifact_paths: &[],
     },
     ProfileSpec {
@@ -290,17 +375,26 @@ mod tests {
 
     #[test]
     fn continuity_profiles_are_installed() {
-        for name in ["rust-verify", "node-verify", "python-verify"] {
+        for name in [
+            "rust-verify",
+            "rust-source-verify",
+            "rust-wasm-verify",
+            "node-verify",
+            "node-source-verify",
+            "dart-verify",
+            "python-verify",
+        ] {
             assert!(find(name).is_some(), "{name} should be installed");
         }
     }
 
     #[test]
-    fn rust_verify_has_only_the_reviewed_meta_server_monorepo_fallback() {
+    fn rust_verify_keeps_lockfile_policy_and_reviewed_monorepo_fallback() {
         let profile = find("rust-verify").expect("rust profile");
         let script = profile.steps[0].script;
         assert_eq!(profile.steps[0].subdirectory, ".");
         assert!(script.contains("remote/deployments/gha-clone-server-rs/Cargo.toml"));
+        assert!(script.contains("requires committed Cargo.lock"));
         assert!(script.contains("cargo test --locked --all-targets --all-features"));
         assert!(!script.contains("find "));
         assert!(!script.contains("for crate"));
