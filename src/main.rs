@@ -46,6 +46,11 @@ pub(crate) use nats_contract::{
     RUNTIME_CRITICAL_EVENTS_SUBJECT,
 };
 
+// Preserve the historical runtime-config client path at existing call sites,
+// but back it with this public crate's worker-owned typed receiver boundary.
+extern crate self as dd_runtime_config_client;
+pub(crate) use runtime_config_registration::router;
+
 use config::{config_from_env, env_u64, env_usize, env_value, Config};
 use exec::append_log;
 use http::build_router;
