@@ -19,6 +19,10 @@ mod exec;
 mod fiducia;
 mod gh_secrets;
 mod github_pr_ci;
+// Pure classifier lands before the durable queue observer wiring in issue #57.
+// Keep it compiled/tested now without pretending the observer integration exists.
+#[allow(dead_code)]
+mod hosted_ci;
 mod http;
 mod jobs;
 mod lambda_exec;
