@@ -27,7 +27,7 @@ pub struct ProfileSpec {
 }
 
 const FLUTTER_IMAGE: &str =
-    "710156900967.dkr.ecr.us-east-1.amazonaws.com/sonus-flutter-builder:3.44.2-c9a6c48423";
+    "ghcr.io/cirruslabs/flutter@sha256:46691e311715845de03a3ba4753a475476936805b29431b1f00f1816981033f8";
 const BROWSER_IMAGE: &str = "mcr.microsoft.com/playwright:v1.60.0-noble";
 const RUST_IMAGE: &str = "docker.io/library/rust:1.90-bookworm";
 const NODE_IMAGE: &str = "docker.io/library/node:22-bookworm";
