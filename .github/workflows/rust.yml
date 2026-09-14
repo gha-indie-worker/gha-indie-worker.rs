@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: gha-worker-rust-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
+
 jobs:
   unit-tests:
     runs-on: ubuntu-24.04
@@ -104,6 +108,18 @@ jobs:
         run: |
           set -o pipefail
           cargo fmt --all --check 2>&1 | tee cargo-fmt.log
+
+      - name: Produce rustfmt source snapshot
+        if: always()
+        run: cargo fmt --all
+
+      - name: Upload rustfmt source snapshot
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rustfmt-source-snapshot
+          path: src
+          if-no-files-found: error
 
       - name: Upload exact-head Rust diagnostics
         if: always()
