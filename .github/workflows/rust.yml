@@ -11,19 +11,35 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: gha-worker-rust-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   unit-tests:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    env:
+      EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - name: Check out worker exact revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ env.EXPECTED_SHA }}
           persist-credentials: false
           fetch-depth: 1
 
+      - name: Assert exact worker revision
+        run: |
+          actual_sha="$(git rev-parse HEAD)"
+          test "$actual_sha" = "$EXPECTED_SHA" || {
+            echo "expected exact head $EXPECTED_SHA, got $actual_sha" >&2
+            exit 1
+          }
+          printf '%s\n' "$actual_sha" > exact-head.sha
+
       - name: Install Rust components
-        run: rustup component add rustfmt
+        run: rustup component add rustfmt clippy
 
       - name: Workflow parser unit tests
         run: |
@@ -57,12 +73,62 @@ jobs:
           EOF
           cargo test --manifest-path /tmp/gha-worker-compose-tests/Cargo.toml
 
-      - name: Verify split manifest parses
-        run: cargo metadata --locked --no-deps --format-version 1 > /dev/null
+      - name: Reject escaped private path dependencies
+        run: |
+          if grep -nE 'path[[:space:]]*=[[:space:]]*"\.\./\.\./' Cargo.toml; then
+            echo 'public worker Cargo.toml must not escape into private split-repo paths' >&2
+            exit 1
+          fi
+
+      - name: Generate dependency lock evidence
+        run: |
+          cargo generate-lockfile
+          git diff -- Cargo.lock || true
+
+      - name: Upload generated lockfile
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: public-worker-cargo-lock
+          path: Cargo.lock
+          if-no-files-found: error
 
       - name: Full crate unit tests
-        run: cargo test --all-targets --locked
+        run: |
+          set -o pipefail
+          cargo test --all-targets 2>&1 | tee cargo-test.log
+
+      - name: Clippy
+        if: always()
+        run: |
+          set -o pipefail
+          cargo clippy --all-targets -- -D warnings 2>&1 | tee cargo-clippy.log
 
       - name: Format
         if: always()
-        run: cargo fmt --all --check
+        run: |
+          set -o pipefail
+          cargo fmt --all --check 2>&1 | tee cargo-fmt.log
+
+      - name: Produce rustfmt source snapshot
+        if: always()
+        run: cargo fmt --all
+
+      - name: Upload rustfmt source snapshot
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rustfmt-source-snapshot
+          path: src
+          if-no-files-found: error
+
+      - name: Upload exact-head Rust diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: exact-head-rust-diagnostics
+          path: |
+            exact-head.sha
+            cargo-test.log
+            cargo-clippy.log
+            cargo-fmt.log
+          if-no-files-found: warn
