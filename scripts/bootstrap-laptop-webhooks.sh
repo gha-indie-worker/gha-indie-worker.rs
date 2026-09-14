@@ -11,7 +11,12 @@ fi
 webhook_url="${INDIEBUILD_WEBHOOK_URL:-https://ci-laptop.indiebuild.dev/webhooks/github}"
 
 if [ "$#" -eq 0 ]; then
-  set -- ORESoftware/ores-compose gha-indie-worker/gha-indie-worker.rs
+  set -- \
+    ORESoftware/ores-compose \
+    ORESoftware/ores-sw.js \
+    ORESoftware/ores-mobile-bg-procs \
+    ORESoftware/ores-desktop-bg-procs \
+    gha-indie-worker/gha-indie-worker.rs
 fi
 
 for repo in "$@"; do
