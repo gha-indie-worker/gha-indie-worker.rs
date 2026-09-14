@@ -34,6 +34,18 @@ mod validation;
 mod webhooks;
 mod workflow;
 
+// Preserve the historical generated-crate path inside existing modules while
+// the public worker stops depending on a private split-repo checkout. The
+// compatibility constants themselves live in `nats_contract` and are covered
+// by drift tests.
+extern crate self as dd_nats_subject_defs;
+pub(crate) use nats_contract::{
+    BUILD_SERVER_EVENTS_SUBJECT, BUILD_SERVER_IMAGES_SUBJECT,
+    BUILD_SERVER_REQUESTS_QUEUE_GROUP, BUILD_SERVER_REQUESTS_SUBJECT,
+    BUILD_SERVER_RESULTS_SUBJECT, DD_REMOTE_BUILD_JOBS_STREAM_NAME,
+    RUNTIME_CRITICAL_EVENTS_SUBJECT,
+};
+
 use config::{config_from_env, env_u64, env_usize, env_value, Config};
 use exec::append_log;
 use http::build_router;
