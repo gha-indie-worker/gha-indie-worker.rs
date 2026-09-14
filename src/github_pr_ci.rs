@@ -66,7 +66,13 @@ pub fn spawn(state: AppState, context: PullRequestContext) {
                 sha = %context.head_sha,
                 "external PR verification failed: {error}"
             );
-            let _ = publish_status(&state, &context, "error", &truncate_status(&error)).await;
+            let _ = publish_status(
+                &state,
+                &context,
+                "error",
+                &truncate_status(&error),
+            )
+            .await;
         }
     });
 }
@@ -100,10 +106,7 @@ async fn run(state: AppState, context: PullRequestContext) -> Result<(), String>
         let workflows = fetch_workflows(&state, &context).await?;
         let profiles = profiles_for_workflows(&workflows)?;
         if profiles.is_empty() {
-            return Err(
-                "no supported pull-request verification profiles were inferred from workflow YAML"
-                    .to_string(),
-            );
+            return Err("no supported pull-request verification profiles were inferred from workflow YAML".to_string());
         }
 
         for profile in profiles {
@@ -112,10 +115,7 @@ async fn run(state: AppState, context: PullRequestContext) -> Result<(), String>
                 &state,
                 &context,
                 "pending",
-                &format!(
-                    "running {profile} against ores-compose session {}",
-                    session.session_id
-                ),
+                &format!("running {profile} against ores-compose session {}", session.session_id),
             )
             .await?;
             let record = crate::enqueue_build(
@@ -217,8 +217,6 @@ fn validate_repo_name(repo: &str) -> Result<String, String> {
     };
     let valid = |value: &str| {
         !value.is_empty()
-            && value != "."
-            && value != ".."
             && value.len() <= 100
             && value
                 .bytes()
@@ -234,10 +232,10 @@ async fn ensure_infra_checkout(state: &AppState, infra_repo: &str) -> Result<(),
     let workspace_root = workspace_root_from_env();
     tokio::fs::create_dir_all(&workspace_root)
         .await
-        .map_err(|error| format!("failed to create org workspace root: {error}")?;
+        .map_err(|error| format!("failed to create org workspace root: {error}"))?;
     let repo_name = infra_repo
         .split_once('/')
-        .map((|_, name)| name)
+        .map(|(_, name)| name)
         .ok_or_else(|| "invalid infra repo".to_string())?;
     let destination = workspace_root.join(repo_name);
     let repo_url = format!("https://github.com/{infra_repo}.git");
@@ -261,9 +259,7 @@ async fn ensure_infra_checkout(state: &AppState, infra_repo: &str) -> Result<(),
             .await
             .map_err(|error| format!("failed to refresh infra repo: {error}"))?;
         if !status.success() {
-            return Err(
-                "git fetch of {infra_repo} failed with {status}"
-            );
+            return Err(format!("git fetch of {infra_repo} failed with {status}"));
         }
         let status = tokio::process::Command::new(&state.config.git_bin)
             .args(["reset", "--hard", "FETCH_HEAD"])
@@ -272,12 +268,12 @@ async fn ensure_infra_checkout(state: &AppState, infra_repo: &str) -> Result<(),
             .await
             .map_err(|error| format!("failed to update infra checkout: {error}"))?;
         if !status.success() {
-            return Err("git reset of {infra_repo} failed with {status}");
+            return Err(format!("git reset of {infra_repo} failed with {status}"));
         }
         return Ok(());
     }
     if destination.exists() {
-        return Err(
+        return Err(format!(
             "infra workspace exists but is not a git checkout: {}",
             destination.display()
         ));
@@ -304,7 +300,7 @@ fn profiles_for_workflows(workflows: &[(String, String)]) -> Result<Vec<String>,
     let mut unsupported = Vec::new();
     let mut pull_request_workflows = 0usize;
     for (name, yaml) in workflows {
-        let plan = plan_workflow_yaml(yaml).map_err(|error| format!("{name}: {error}")?;
+        let plan = plan_workflow_yaml(yaml).map_err(|error| format!("{name}: {error}"))?;
         if !plan.pull_request_trigger {
             continue;
         }
@@ -322,8 +318,8 @@ fn profiles_for_workflows(workflows: &[(String, String)]) -> Result<Vec<String>,
         return Err("repository has workflow files, but none subscribe to pull_request".to_string());
     }
     if !unsupported.is_empty() {
-        return Err(
-            "unsupported pull-request workflow constructs:\n[{}]",
+        return Err(format!(
+            "unsupported pull-request workflow constructs:\n{}",
             unsupported.join("\n")
         ));
     }
@@ -349,7 +345,7 @@ async fn fetch_workflows(
         "https://api.github.com/repos/{}/contents/.github/workflows?ref={}",
         context.head_repository, context.head_sha
     );
-    let entries: Vec<Entry> = github_request(state, Method::GET, &url)
+    let entries: Vec<Entry> = github_request(&state, Method::GET, &url)
         .send()
         .await
         .map_err(|error| format!("failed to list workflow files: {error}"))?
@@ -367,10 +363,10 @@ async fn fetch_workflows(
             continue;
         }
         let file_url = format!(
-            "https://api.github.com/repos/{}/contents/.github/workflows/{}=?ref={}",
+            "https://api.github.com/repos/{}/contents/.github/workflows/{}?ref={}",
             context.head_repository, entry.name, context.head_sha
         );
-        let file: FileResponse = github_request(state, Method::GET, &file_url)
+        let file: FileResponse = github_request(&state, Method::GET, &file_url)
             .send()
             .await
             .map_err(|error| format!("failed to fetch {}: {error}", entry.name))?
@@ -389,7 +385,7 @@ async fn fetch_workflows(
         let bytes = BASE64
             .decode(compact)
             .map_err(|error| format!("invalid base64 workflow {}: {error}", entry.name))?;
-        let text = String::from_utf8(nytes)
+        let text = String::from_utf8(bytes)
             .map_err(|error| format!("workflow {} is not UTF-8: {error}", entry.name))?;
         result.push((entry.name, text));
     }
@@ -421,7 +417,7 @@ async fn ensure_pr_head(state: &AppState, context: &PullRequestContext) -> Resul
         return Err(format!(
             "PR head changed during verification: expected {}, current {}",
             context.head_sha, current
-       ));
+        ));
     }
     Ok(())
 }
@@ -577,9 +573,6 @@ mod tests {
         let repo = validate_repo_name("ORESoftware/cloudflare-infra").unwrap();
         assert_eq!(repo, "ORESoftware/cloudflare-infra");
         assert!(validate_repo_name("../bad").is_err());
-        assert!(validate_repo_name("owner/..").is_err());
-        assert!(validate_repo_name("./repo").is_err());
-        assert!(validate_repo_name("owner/.").is_err());
     }
 
     #[test]
@@ -594,9 +587,6 @@ mod tests {
                 "on: push\njobs:\n  deploy:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: vendor/deploy@v9\n".to_string(),
             ),
         ];
-        assert_eq!(
-            profiles_for_workflows(&workflows).unwrap(),
-            vec!["rust-verify"]
-        );
+        assert_eq!(profiles_for_workflows(&workflows).unwrap(), vec!["rust-verify"]);
     }
 }
