@@ -54,8 +54,15 @@ pub(crate) fn validate_no_whitespace(name: &str, value: &str, max_len: usize) ->
 
 pub(crate) fn validate_commit_sha(value: &str) -> Result<(), String> {
     let value = value.trim();
-    if !(40..=64).contains(&value.len()) || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err("commitSha must be a 40-64 character hexadecimal Git revision".to_string());
+    let valid_full_oid_length = matches!(value.len(), 40 | 64);
+    let canonical_lower_hex = value
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'));
+    if !valid_full_oid_length || !canonical_lower_hex {
+        return Err(
+            "commitSha must be a canonical lowercase 40- or 64-character hexadecimal Git object ID"
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -427,10 +434,14 @@ mod tests {
     }
 
     #[test]
-    fn commit_sha_requires_a_full_hex_revision() {
+    fn commit_sha_requires_a_canonical_full_object_id() {
         assert!(validate_commit_sha(&"a".repeat(40)).is_ok());
         assert!(validate_commit_sha(&"a".repeat(64)).is_ok());
         assert!(validate_commit_sha(&"a".repeat(39)).is_err());
+        assert!(validate_commit_sha(&"a".repeat(41)).is_err());
+        assert!(validate_commit_sha(&"a".repeat(63)).is_err());
+        assert!(validate_commit_sha(&"a".repeat(65)).is_err());
+        assert!(validate_commit_sha(&"A".repeat(40)).is_err());
         assert!(validate_commit_sha(&format!("{}z", "a".repeat(39))).is_err());
     }
 }
