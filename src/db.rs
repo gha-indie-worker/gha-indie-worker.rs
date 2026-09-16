@@ -13,11 +13,11 @@
 //! degrades to a logged warning instead of failing builds.
 
 use chrono::{DateTime, TimeZone, Utc};
+use sea_orm::sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sea_orm::{
     sea_query::OnConflict, ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection,
     EntityTrait, QueryFilter, QueryOrder, QuerySelect, SqlxPostgresConnector,
 };
-use sea_orm::sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::time::Duration;
 
 use crate::entity::{build_jobs, gh_secret_sync_runs, webhook_deliveries};
@@ -339,12 +339,12 @@ mod tests {
             DatabaseCapabilityProfile::WorkerReadOnly,
             DatabaseCapabilityProfile::Migrator,
         ] {
-            assert_eq!(
+            assert!(matches!(
                 super::connect("not-a-database-url", profile).await,
                 Err(DatabaseConnectError::Profile(
                     DatabaseProfileError::ReadOnlyOrMigrator
                 ))
-            );
+            ));
         }
     }
 }
