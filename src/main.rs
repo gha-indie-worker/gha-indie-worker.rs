@@ -28,7 +28,7 @@ mod util;
 mod validation;
 mod webhooks;
 
-use config::{config_from_env, env_u64, env_usize, env_value, Config};
+use config::{config_from_env, env_u64, env_usize, env_value, first_env, Config};
 use exec::append_log;
 use http::build_router;
 use jobs::enqueue_build;
@@ -51,26 +51,42 @@ async fn main() {
     }
 
     // Optional Postgres persistence (own database dd_build_server on RDS). A
-    // connection failure is fatal only when a URL was configured — it signals
-    // misconfiguration; with no URL the server runs in-memory as before.
+    // configured database requires an explicit normal-runtime capability; the
+    // process never infers write authority from the presence of a DSN.
     let db = match config.database_url.as_deref() {
-        Some(url) => match db::connect(url).await {
-            Ok(connection) => {
-                db::fail_interrupted_jobs(&connection).await;
-                Some(connection)
-            }
-            Err(error) => {
-                // Never interpolate the error (`{error}` / `{error:?}`):
-                // sea-orm/sqlx inline the full connection string, including the
-                // password, on a parse failure — which would land the DSN in
-                // pod logs. Discard it and emit only a fixed message. Bind to
-                // `_` so the value is explicitly dropped unprinted.
-                let _ = error;
+        Some(url) => {
+            let profile_name = first_env(&["BUILD_SERVER_DATABASE_PROFILE"]).unwrap_or_else(|| {
                 panic!(
-                    "BUILD_SERVER_DATABASE_URL was set but connect failed (message suppressed to avoid leaking the DSN)"
-                );
+                    "BUILD_SERVER_DATABASE_URL was set but BUILD_SERVER_DATABASE_PROFILE is missing; expected api_rw or worker_rw"
+                )
+            });
+            let profile = db::DatabaseCapabilityProfile::parse(&profile_name).unwrap_or_else(|_| {
+                panic!(
+                    "BUILD_SERVER_DATABASE_PROFILE is invalid; expected one of web_ro, api_rw, worker_ro, worker_rw, migrator"
+                )
+            });
+            match db::connect(url, profile).await {
+                Ok(connection) => {
+                    db::fail_interrupted_jobs(&connection).await;
+                    Some(connection)
+                }
+                Err(db::DatabaseConnectError::Profile(_)) => {
+                    panic!(
+                        "BUILD_SERVER_DATABASE_PROFILE does not permit this writable build-server database pool; use api_rw or worker_rw"
+                    );
+                }
+                Err(error) => {
+                    // Never interpolate the error (`{error}` / `{error:?}`):
+                    // parser/driver errors can inline the full connection string,
+                    // including the password, which would land the DSN in pod logs.
+                    // Discard it and emit only a fixed message.
+                    let _ = error;
+                    panic!(
+                        "BUILD_SERVER_DATABASE_URL was set but connect failed (message suppressed to avoid leaking the DSN)"
+                    );
+                }
             }
-        },
+        }
         None => {
             tracing::info!(
                 "no BUILD_SERVER_DATABASE_URL configured; running with in-memory jobs only"
