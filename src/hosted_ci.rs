@@ -207,6 +207,28 @@ mod tests {
     }
 
     #[test]
+    fn timeout_and_action_required_are_failure_like_only_with_admission_evidence() {
+        for conclusion in [
+            HostedJobConclusion::TimedOut,
+            HostedJobConclusion::ActionRequired,
+        ] {
+            assert_eq!(
+                completed(
+                    conclusion,
+                    None,
+                    Some(RunnerAdmissionHint::RunnerProvisioningFailure),
+                )
+                .classify(),
+                HostedRunClassification::ZeroStepRunnerAdmissionFailure
+            );
+            assert_eq!(
+                completed(conclusion, None, None).classify(),
+                HostedRunClassification::ZeroStepUnknown
+            );
+        }
+    }
+
+    #[test]
     fn neutral_and_skipped_zero_step_jobs_stay_unknown() {
         for conclusion in [HostedJobConclusion::Neutral, HostedJobConclusion::Skipped] {
             assert_eq!(
