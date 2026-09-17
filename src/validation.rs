@@ -53,7 +53,6 @@ pub(crate) fn validate_no_whitespace(name: &str, value: &str, max_len: usize) ->
 }
 
 pub(crate) fn validate_commit_sha(value: &str) -> Result<(), String> {
-    let value = value.trim();
     let valid_full_oid_length = matches!(value.len(), 40 | 64);
     let canonical_lower_hex = value
         .bytes()
@@ -326,8 +325,11 @@ pub(crate) fn validate_build_request(config: &Config, request: &BuildRequest) ->
     if let Some(git_ref) = clean_optional(request.git_ref.as_deref()) {
         validate_no_whitespace("gitRef", &git_ref, 180)?;
     }
-    if let Some(commit_sha) = clean_optional(request.commit_sha.as_deref()) {
-        validate_commit_sha(&commit_sha)?;
+    if let Some(commit_sha) = request.commit_sha.as_deref() {
+        if commit_sha.is_empty() {
+            return Err("commitSha must not be empty when provided".to_string());
+        }
+        validate_commit_sha(commit_sha)?;
     }
     validate_relative_path("contextDir", request.context_dir.as_deref().unwrap_or("."))?;
     if job_kind != "run-profile" {
@@ -443,5 +445,9 @@ mod tests {
         assert!(validate_commit_sha(&"a".repeat(65)).is_err());
         assert!(validate_commit_sha(&"A".repeat(40)).is_err());
         assert!(validate_commit_sha(&format!("{}z", "a".repeat(39))).is_err());
+        assert!(validate_commit_sha(&format!(" {}", "a".repeat(40))).is_err());
+        assert!(validate_commit_sha(&format!("{} ", "a".repeat(40))).is_err());
+        assert!(validate_commit_sha(&format!("\t{}", "a".repeat(40))).is_err());
+        assert!(validate_commit_sha(&format!("{}\n", "a".repeat(40))).is_err());
     }
 }
