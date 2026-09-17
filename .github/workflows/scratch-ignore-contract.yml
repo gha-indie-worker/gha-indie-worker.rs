@@ -1,0 +1,66 @@
+name: scratch ignore contract
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - .gitignore
+      - .github/workflows/scratch-ignore-contract.yml
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: rust
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify metadata-only scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          git diff --check "${{ github.event.pull_request.base.sha }}"...HEAD
+          if git diff --name-only "${{ github.event.pull_request.base.sha }}"...HEAD | grep -E '\.rs$|Cargo\.(toml|lock)$'; then
+            echo "scratch-ignore PR unexpectedly changes Rust source or Cargo metadata" >&2
+            exit 1
+          fi
+          grep -Fx 'tmp/' .gitignore
+          grep -Fx 'temp/' .gitignore
+
+  provenance:
+    name: provenance
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify focused diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}"...HEAD | sort)"
+          expected="$(printf '%s\n' '.github/workflows/scratch-ignore-contract.yml' '.gitignore' | sort)"
+          test "$changed" = "$expected"
+
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Reject credential-shaped material
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -E '(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)' .gitignore .github/workflows/scratch-ignore-contract.yml; then
+            echo "credential-shaped material is forbidden" >&2
+            exit 1
+          fi
