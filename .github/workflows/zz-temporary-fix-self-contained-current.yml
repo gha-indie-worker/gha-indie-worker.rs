@@ -1,0 +1,108 @@
+name: one-shot self-contained branch fixer
+
+on:
+  push:
+    branches:
+      - feat/laptop-self-contained-current
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.ref == 'refs/heads/feat/laptop-self-contained-current'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out exact fixer revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Apply exact source fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_exact(path: str, old: str, new: str, expected: int) -> None:
+              p = Path(path)
+              text = p.read_text()
+              actual = text.count(old)
+              if actual != expected:
+                  raise SystemExit(f"{path}: expected {expected} occurrence(s) of {old!r}, found {actual}")
+              p.write_text(text.replace(old, new))
+
+          replace_exact(
+              "src/github_pr_ci.rs",
+              "github_request(&state, Method::GET, &url)",
+              "github_request(state, Method::GET, &url)",
+              1,
+          )
+          replace_exact(
+              "src/github_pr_ci.rs",
+              "github_request(&state, Method::GET, &file_url)",
+              "github_request(state, Method::GET, &file_url)",
+              1,
+          )
+          replace_exact(
+              "src/github_pr_ci.rs",
+              "        !value.is_empty()\n            && value.len() <= 100",
+              "        !value.is_empty()\n            && value != \".\"\n            && value != \"..\"\n            && value.len() <= 100",
+              1,
+          )
+          replace_exact(
+              "src/github_pr_ci.rs",
+              "        assert!(validate_repo_name(\"../bad\").is_err());",
+              "        assert!(validate_repo_name(\"../bad\").is_err());\n        assert!(validate_repo_name(\"./bad\").is_err());\n        assert!(validate_repo_name(\"owner/..\").is_err());\n        assert!(validate_repo_name(\"owner/.\").is_err());",
+              1,
+          )
+
+          p = Path("src/workflow.rs")
+          text = p.read_text()
+          dead_impl = '''impl WorkflowPlan {\n    pub fn is_supported(&self) -> bool {\n        self.pull_request_trigger && self.unsupported.is_empty() && !self.profiles.is_empty()\n    }\n}\n\n'''
+          if text.count(dead_impl) != 1:
+              raise SystemExit("src/workflow.rs: expected exactly one unused WorkflowPlan::is_supported impl")
+          text = text.replace(dead_impl, "")
+          old = 'normalized.iter().any(|item| *item == "pull_request")'
+          if text.count(old) != 2:
+              raise SystemExit(f"src/workflow.rs: expected exactly two manual contains expressions, found {text.count(old)}")
+          text = text.replace(old, 'normalized.contains(&"pull_request")')
+          p.write_text(text)
+          PY
+
+      - name: Format exact branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup component add rustfmt
+          cargo fmt --all
+
+      - name: Verify patch shape and remove fixer
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/zz-temporary-fix-self-contained-current.yml
+          git diff --check
+          grep -F 'value != ".."' src/github_pr_ci.rs
+          grep -F 'normalized.contains(&"pull_request")' src/workflow.rs
+          if grep -F 'pub fn is_supported' src/workflow.rs; then
+            echo 'unused is_supported method survived one-shot fixer' >&2
+            exit 1
+          fi
+
+      - name: Commit exact fixes back to feature branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'ORESoftware automation'
+          git config user.email 'automation@users.noreply.github.com'
+          git add -A
+          if git diff --cached --quiet; then
+            echo 'one-shot fixer produced no changes' >&2
+            exit 1
+          fi
+          git commit -m 'fix: close self-contained exact-head Rust gates'
+          git push origin HEAD:feat/laptop-self-contained-current
