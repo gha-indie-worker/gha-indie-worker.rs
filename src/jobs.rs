@@ -97,6 +97,58 @@ pub(crate) async fn resolve_repo_path(
     Ok(resolved)
 }
 
+/// Exactly one commit object id, as GitHub reports it in
+/// `pull_request.head.sha`.
+pub(crate) fn is_commit_sha(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn protocol_hardening_args() -> Vec<String> {
+    vec![
+        "-c".to_string(),
+        "protocol.ext.allow=never".to_string(),
+        "-c".to_string(),
+        "protocol.file.allow=never".to_string(),
+        "-c".to_string(),
+        "protocol.local.allow=never".to_string(),
+    ]
+}
+
+pub(crate) fn branch_clone_args(
+    repo_url: &str,
+    git_ref: Option<&str>,
+    repo_dir: &Path,
+) -> Vec<String> {
+    let mut args = protocol_hardening_args();
+    args.extend([
+        "clone".to_string(),
+        "--depth".to_string(),
+        "1".to_string(),
+        "--no-tags".to_string(),
+    ]);
+    if let Some(git_ref) = git_ref {
+        args.push("--branch".to_string());
+        args.push(git_ref.to_string());
+    }
+    args.push("--".to_string());
+    args.push(repo_url.to_string());
+    args.push(repo_dir.to_string_lossy().to_string());
+    args
+}
+
+pub(crate) fn exact_commit_fetch_args(repo_url: &str, commit: &str) -> Vec<String> {
+    let mut args = protocol_hardening_args();
+    args.extend([
+        "fetch".to_string(),
+        "--depth".to_string(),
+        "1".to_string(),
+        "--no-tags".to_string(),
+        repo_url.to_string(),
+        commit.to_string(),
+    ]);
+    args
+}
+
 pub(crate) async fn clone_repository(
     config: &Config,
     request: &BuildRequest,
@@ -104,26 +156,60 @@ pub(crate) async fn clone_repository(
     repo_dir: &Path,
     log_path: &Path,
 ) -> Result<(), String> {
-    let mut clone_args = vec![
-        "-c".to_string(),
-        "protocol.ext.allow=never".to_string(),
-        "-c".to_string(),
-        "protocol.file.allow=never".to_string(),
-        "-c".to_string(),
-        "protocol.local.allow=never".to_string(),
-        "clone".to_string(),
-        "--depth".to_string(),
-        "1".to_string(),
-        "--no-tags".to_string(),
-    ];
-    if let Some(git_ref) = clean_optional(request.git_ref.as_deref()) {
-        clone_args.push("--branch".to_string());
-        clone_args.push(git_ref);
+    let git_ref = clean_optional(request.git_ref.as_deref());
+    if let Some(commit) = git_ref.as_deref().filter(|value| is_commit_sha(value)) {
+        return checkout_exact_commit(config, request, repo_dir, log_path, commit).await;
     }
-    clone_args.push("--".to_string());
-    clone_args.push(request.repo_url.clone());
-    clone_args.push(repo_dir.to_string_lossy().to_string());
+    let clone_args = branch_clone_args(&request.repo_url, git_ref.as_deref(), repo_dir);
     run_logged_command(config, log_path, job_dir, &config.git_bin, clone_args).await
+}
+
+/// Materialize one exact commit, bypassing `git clone --branch`.
+///
+/// `--branch` resolves branch and tag names only, so it cannot take a raw
+/// object id. A pull request head is only trustworthy as a commit id — the
+/// branch it came from can be force-pushed between the webhook and the
+/// checkout, which would verify code that was never reviewed — so requests
+/// that pin a commit are fetched by object id instead. GitHub answers
+/// want-sha1 fetches, and checking the id out literally is itself the
+/// verification: if the remote served a different commit, the object named
+/// here would not exist and the checkout fails closed.
+async fn checkout_exact_commit(
+    config: &Config,
+    request: &BuildRequest,
+    repo_dir: &Path,
+    log_path: &Path,
+    commit: &str,
+) -> Result<(), String> {
+    fs::create_dir_all(repo_dir)
+        .await
+        .map_err(|error| format!("failed to create repo dir: {error}"))?;
+
+    let mut init_args = protocol_hardening_args();
+    init_args.extend(["init".to_string(), "--quiet".to_string()]);
+    run_logged_command(config, log_path, repo_dir, &config.git_bin, init_args).await?;
+
+    let fetch_args = exact_commit_fetch_args(&request.repo_url, commit);
+    run_logged_command(config, log_path, repo_dir, &config.git_bin, fetch_args).await?;
+
+    let mut checkout_args = protocol_hardening_args();
+    checkout_args.extend([
+        "checkout".to_string(),
+        "--detach".to_string(),
+        "--quiet".to_string(),
+        commit.to_string(),
+    ]);
+    run_logged_command(config, log_path, repo_dir, &config.git_bin, checkout_args).await?;
+
+    // Leaves the resolved head in the job log, so the build evidence names the
+    // commit that was actually verified.
+    let mut rev_parse_args = protocol_hardening_args();
+    rev_parse_args.extend([
+        "rev-parse".to_string(),
+        "--verify".to_string(),
+        "HEAD".to_string(),
+    ]);
+    run_logged_command(config, log_path, repo_dir, &config.git_bin, rev_parse_args).await
 }
 
 pub(crate) async fn execute_profile(state: &AppState, job: &BuildJobRecord) -> Result<(), String> {
@@ -692,6 +778,65 @@ pub(crate) async fn submit_from_nats(
         }
         Err((StatusCode::SERVICE_UNAVAILABLE, message)) => Err(NatsSubmitError::Transient(message)),
         Err((_, message)) => Err(NatsSubmitError::Invalid(message)),
+    }
+}
+
+#[cfg(test)]
+mod checkout_tests {
+    use super::*;
+
+    #[test]
+    fn commit_shas_are_exactly_forty_hex_characters() {
+        assert!(is_commit_sha("1944fe5ddb4bb702a076ea95a311e0be6f49a9b7"));
+        assert!(is_commit_sha("1944FE5DDB4BB702A076EA95A311E0BE6F49A9B7"));
+        // Abbreviations, branch names and refs that merely look hex-ish must
+        // keep taking the branch clone path.
+        assert!(!is_commit_sha("1944fe5"));
+        assert!(!is_commit_sha("main"));
+        assert!(!is_commit_sha("cafe"));
+        assert!(!is_commit_sha(&"z".repeat(40)));
+        assert!(!is_commit_sha(&"a".repeat(41)));
+    }
+
+    #[test]
+    fn branch_clone_pins_depth_and_separates_the_remote_url() {
+        let args = branch_clone_args(
+            "https://github.com/ORESoftware/ores-middleware",
+            Some("main"),
+            Path::new("/jobs/b1/repo"),
+        );
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--branch".to_string(), "main".to_string()]));
+        let separator = args.iter().position(|arg| arg == "--").expect("-- present");
+        assert_eq!(
+            args[separator + 1],
+            "https://github.com/ORESoftware/ores-middleware"
+        );
+        assert_eq!(args[separator + 2], "/jobs/b1/repo");
+    }
+
+    #[test]
+    fn branch_clone_without_a_ref_omits_the_branch_flag() {
+        let args = branch_clone_args(
+            "https://github.com/ORESoftware/ores-middleware",
+            None,
+            Path::new("/jobs/b1/repo"),
+        );
+        assert!(!args.iter().any(|arg| arg == "--branch"));
+    }
+
+    #[test]
+    fn exact_commit_fetches_the_object_id_instead_of_a_branch() {
+        let commit = "1944fe5ddb4bb702a076ea95a311e0be6f49a9b7";
+        let args =
+            exact_commit_fetch_args("https://github.com/ORESoftware/ores-middleware", commit);
+        // `git clone --branch` cannot take an object id, so a pinned commit
+        // must be fetched by id and never resolved through a branch name.
+        assert!(!args.iter().any(|arg| arg == "--branch"));
+        assert_eq!(args.last().map(String::as_str), Some(commit));
+        assert!(args.iter().any(|arg| arg == "--depth"));
+        assert!(args.iter().any(|arg| arg == "protocol.ext.allow=never"));
     }
 }
 

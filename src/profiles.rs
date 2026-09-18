@@ -38,6 +38,12 @@ const RUST_VERIFY_STEPS: &[ProfileStep] = &[ProfileStep {
     image: RUST_IMAGE,
     subdirectory: ".",
     script: r#"set -euo pipefail
+# Steps run under `bash -lc`, and /etc/profile resets PATH, which drops the
+# toolchain the official rust image installs under CARGO_HOME. Restore it from
+# the image's own env file rather than hardcoding a path.
+if ! command -v cargo >/dev/null 2>&1 && [ -f "${CARGO_HOME:-/usr/local/cargo}/env" ]; then
+  . "${CARGO_HOME:-/usr/local/cargo}/env"
+fi
 crate_dir=.
 if [ ! -f "$crate_dir/Cargo.toml" ]; then
   if [ -f remote/deployments/gha-clone-server-rs/Cargo.toml ]; then

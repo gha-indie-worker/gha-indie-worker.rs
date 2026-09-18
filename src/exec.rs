@@ -2,6 +2,7 @@ use std::{
     env,
     path::{Path, PathBuf},
     process::Stdio,
+    sync::OnceLock,
 };
 
 use tokio::{
@@ -73,8 +74,12 @@ pub(crate) async fn append_log(path: &Path, message: &str, max_bytes: u64) {
     }
 }
 
-pub(crate) async fn pipe_reader<R>(reader: R, log_path: PathBuf, prefix: &'static str, max_bytes: u64)
-where
+pub(crate) async fn pipe_reader<R>(
+    reader: R,
+    log_path: PathBuf,
+    prefix: &'static str,
+    max_bytes: u64,
+) where
     R: AsyncRead + Unpin,
 {
     let mut reader = BufReader::new(reader);
@@ -159,7 +164,7 @@ pub(crate) async fn run_logged_command_inner(
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         )
         .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_ASKPASS", "/bin/false")
+        .env("GIT_ASKPASS", askpass_deny_bin())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -256,6 +261,25 @@ pub(crate) fn build_dependencies_ready(config: &Config) -> bool {
         && (!config.deploy_enabled || executable_available(&config.kubectl_bin))
 }
 
+/// Absolute path to a binary that always fails, used as `GIT_ASKPASS` so git can
+/// never obtain credentials interactively or from a GUI helper.
+///
+/// Linux ships `/bin/false`; macOS only has `/usr/bin/false`. Pointing
+/// `GIT_ASKPASS` at a path that does not exist is not fail-closed in the way it
+/// looks: git reports `cannot exec` and then falls back to asking on the
+/// terminal, so the value is resolved against the filesystem once at startup.
+pub(crate) fn askpass_deny_bin() -> &'static str {
+    static RESOLVED: OnceLock<&'static str> = OnceLock::new();
+    *RESOLVED.get_or_init(|| {
+        ["/bin/false", "/usr/bin/false"]
+            .into_iter()
+            .find(|candidate| Path::new(candidate).is_file())
+            // `GIT_TERMINAL_PROMPT=0` still refuses the prompt if neither
+            // exists, so keep the Linux default rather than leaving it unset.
+            .unwrap_or("/bin/false")
+    })
+}
+
 pub(crate) fn executable_available(value: &str) -> bool {
     let path = Path::new(value);
     if path.is_absolute() || path.components().count() > 1 {
@@ -271,6 +295,13 @@ pub(crate) fn executable_available(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn askpass_deny_binary_exists_on_this_platform() {
+        // A non-existent GIT_ASKPASS makes git fall back to prompting, so the
+        // resolved path must really be there on whichever host runs the worker.
+        assert!(Path::new(askpass_deny_bin()).is_file());
+    }
 
     #[test]
     fn executable_lookup_accepts_path_commands_and_rejects_missing_tools() {
