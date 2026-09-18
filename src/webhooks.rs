@@ -101,12 +101,15 @@ fn substitute_image(template: &str, sha: &str, git_ref: &str) -> String {
         .replace("{ref}", git_ref)
 }
 
-/// A commit sha must be 7–64 lowercase hex chars before it is interpolated into
-/// an image tag or lock key. Rejects non-ASCII (the old byte-slice panic) and
-/// any shell/tag metacharacter in one check.
+/// A commit SHA used for immutable execution must be a canonical full Git object
+/// ID: exactly 40 (SHA-1) or 64 (SHA-256) lowercase hexadecimal characters.
+/// Reject short IDs, uppercase aliases, whitespace, and non-ASCII before the
+/// value reaches image tags, lock keys, or exact-checkout execution.
 fn valid_commit_sha(sha: &str) -> bool {
-    let len = sha.len();
-    (7..=64).contains(&len) && sha.chars().all(|ch| ch.is_ascii_hexdigit())
+    matches!(sha.len(), 40 | 64)
+        && sha
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
 fn branch_from_ref(git_ref: &str) -> Option<&str> {
@@ -158,6 +161,7 @@ fn build_request_from_rule(
         }),
         repo_url: format!("https://github.com/{repo}.git"),
         git_ref: Some(branch.clone()),
+        commit_sha: Some(sha.to_string()),
         image: rule
             .image
             .as_deref()
@@ -616,6 +620,18 @@ mod tests {
     }
 
     #[test]
+    fn webhook_commit_sha_requires_canonical_full_object_id() {
+        assert!(valid_commit_sha(&"a".repeat(40)));
+        assert!(valid_commit_sha(&"a".repeat(64)));
+        assert!(!valid_commit_sha(&"a".repeat(7)));
+        assert!(!valid_commit_sha(&"a".repeat(39)));
+        assert!(!valid_commit_sha(&"a".repeat(41)));
+        assert!(!valid_commit_sha(&"A".repeat(40)));
+        assert!(!valid_commit_sha(&format!("{} ", "a".repeat(40))));
+        assert!(!valid_commit_sha(&format!("{}z", "a".repeat(39))));
+    }
+
+    #[test]
     fn webhook_rules_match_repo_branch_and_event() {
         let rule: WebhookRule = serde_json::from_value(json!({
             "repo": "ORESoftware/example",
@@ -644,17 +660,19 @@ mod tests {
             "dev"
         ));
 
+        let commit_sha = "0123456789abcdef0123456789abcdef01234567";
         let request = build_request_from_rule(
             &rule,
             "ORESoftware/example",
             "refs/heads/dev",
-            "0123456789abcdef0123",
+            commit_sha,
         );
         assert_eq!(
             request.repo_url,
             "https://github.com/ORESoftware/example.git"
         );
         assert_eq!(request.git_ref.as_deref(), Some("dev"));
+        assert_eq!(request.commit_sha.as_deref(), Some(commit_sha));
         assert!(request.image.ends_with(":0123456789ab"));
 
         let profile_rules = parse_rules(
@@ -665,7 +683,7 @@ mod tests {
             &profile_rules[0],
             "sonus-auris/sonus-auris-ui.dart",
             "refs/heads/main",
-            "0123456789abcdef0123",
+            commit_sha,
         );
         assert_eq!(profile_request.job_kind.as_deref(), Some("run-profile"));
         assert_eq!(

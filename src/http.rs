@@ -84,7 +84,7 @@ pub(crate) async fn descriptor(State(state): State<AppState>) -> impl IntoRespon
                 "build-image/build-and-deploy": ["image"],
                 "run-profile": ["profile"]
             },
-            "optional": ["gitRef", "contextDir", "dockerfile", "buildArgs", "push", "deploy", "executor", "requestId"]
+            "optional": ["gitRef", "commitSha", "contextDir", "dockerfile", "buildArgs", "push", "deploy", "executor", "requestId"]
         },
         "profiles": profiles::SPECS,
         "delegatedCapabilities": [

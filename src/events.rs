@@ -62,6 +62,7 @@ fn lifecycle_payload(job: &BuildJobRecord) -> serde_json::Value {
         "executor": job.executor,
         "repoUrl": job.request.repo_url,
         "gitRef": job.request.git_ref,
+        "commitSha": job.request.commit_sha,
         "image": job.request.image,
         "fencingToken": job.fencing_token,
         "error": job.error,
