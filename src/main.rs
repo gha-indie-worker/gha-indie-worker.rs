@@ -22,14 +22,34 @@ mod github_pr_ci;
 mod http;
 mod jobs;
 mod lambda_exec;
+mod nats_contract;
 mod nats_submit;
 mod profiles;
+mod runtime_config_registration;
 mod state;
+mod telemetry;
 mod types;
 mod util;
 mod validation;
 mod webhooks;
 mod workflow;
+
+// Preserve the historical generated-crate path inside existing modules while
+// the public worker stops depending on a private split-repo checkout. The
+// compatibility constants themselves live in `nats_contract` and are covered
+// by strict drift tests.
+extern crate self as dd_nats_subject_defs;
+pub(crate) use nats_contract::{
+    BUILD_SERVER_EVENTS_SUBJECT, BUILD_SERVER_IMAGES_SUBJECT,
+    BUILD_SERVER_REQUESTS_QUEUE_GROUP, BUILD_SERVER_REQUESTS_SUBJECT,
+    BUILD_SERVER_RESULTS_SUBJECT, DD_REMOTE_BUILD_JOBS_STREAM_NAME,
+    RUNTIME_CRITICAL_EVENTS_SUBJECT,
+};
+
+// Preserve the historical runtime-config client path at existing call sites,
+// but back it with this public crate's worker-owned typed receiver boundary.
+extern crate self as dd_runtime_config_client;
+pub(crate) use runtime_config_registration::router;
 
 use config::{config_from_env, env_u64, env_usize, env_value, Config};
 use exec::append_log;
@@ -42,7 +62,7 @@ use util::now_ms;
 
 #[tokio::main]
 async fn main() {
-    let _otel = dd_telemetry::init("dd-build-server");
+    let _telemetry = telemetry::init("dd-build-server");
 
     let config = Arc::new(config_from_env());
     let host = env_value("HOST", "0.0.0.0");
@@ -124,7 +144,7 @@ async fn main() {
     // in-process via `tower::ServiceExt::oneshot`.
     let app = build_router(state);
 
-    tokio::spawn(dd_runtime_config_client::register_with_control_plane());
+    tokio::spawn(runtime_config_registration::register_with_control_plane());
 
     let address: SocketAddr = format!("{host}:{port}")
         .parse()
@@ -134,10 +154,13 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(address)
         .await
         .expect("failed to bind tcp listener");
-    axum::serve(listener, app.layer(dd_telemetry::http_trace_layer()))
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .expect("axum server crashed");
+    axum::serve(
+        listener,
+        app.layer(axum::middleware::from_fn(telemetry::trace_request)),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .expect("axum server crashed");
 }
 
 async fn shutdown_signal() {
