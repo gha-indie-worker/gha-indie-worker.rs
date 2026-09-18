@@ -11,6 +11,13 @@ pub struct WorkflowPlan {
     pub unsupported: Vec<String>,
 }
 
+#[cfg(test)]
+impl WorkflowPlan {
+    fn is_supported(&self) -> bool {
+        self.pull_request_trigger && self.unsupported.is_empty() && !self.profiles.is_empty()
+    }
+}
+
 /// Translate a deliberately small, fail-closed subset of GitHub Actions YAML
 /// into existing operator-reviewed gha-indie-worker profiles.
 ///
