@@ -78,13 +78,7 @@ pub fn spawn(state: AppState, context: PullRequestContext) {
                 sha = %context.head_sha,
                 "external PR verification failed: {error}"
             );
-            let _ = publish_status(
-                &state,
-                &context,
-                "error",
-                &truncate_status(&error),
-            )
-            .await;
+            let _ = publish_status(&state, &context, "error", &truncate_status(&error)).await;
         }
     });
 }
@@ -658,10 +652,8 @@ mod tests {
 
     #[test]
     fn parses_pr_identity_from_payload() {
-        let context = parse_pull_request(&pr_payload(
-            "0123456789abcdef0123456789abcdef01234567",
-        ))
-        .unwrap();
+        let context =
+            parse_pull_request(&pr_payload("0123456789abcdef0123456789abcdef01234567")).unwrap();
         assert_eq!(context.number, 55);
         assert_eq!(context.head_ref, "feature");
         assert_eq!(context.owner, "gha-indie-worker");
@@ -678,7 +670,10 @@ mod tests {
             "0123456789ABCDEF0123456789ABCDEF01234567",
             " 0123456789abcdef0123456789abcdef01234567",
         ] {
-            assert!(parse_pull_request(&pr_payload(sha)).is_err(), "accepted {sha:?}");
+            assert!(
+                parse_pull_request(&pr_payload(sha)).is_err(),
+                "accepted {sha:?}"
+            );
         }
     }
 
@@ -701,7 +696,10 @@ mod tests {
                 "on: push\njobs:\n  deploy:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: vendor/deploy@v9\n".to_string(),
             ),
         ];
-        assert_eq!(profiles_for_workflows(&workflows).unwrap(), vec!["rust-verify"]);
+        assert_eq!(
+            profiles_for_workflows(&workflows).unwrap(),
+            vec!["rust-verify"]
+        );
     }
 
     #[test]
