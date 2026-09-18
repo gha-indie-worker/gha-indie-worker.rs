@@ -661,12 +661,8 @@ mod tests {
         ));
 
         let commit_sha = "0123456789abcdef0123456789abcdef01234567";
-        let request = build_request_from_rule(
-            &rule,
-            "ORESoftware/example",
-            "refs/heads/dev",
-            commit_sha,
-        );
+        let request =
+            build_request_from_rule(&rule, "ORESoftware/example", "refs/heads/dev", commit_sha);
         assert_eq!(
             request.repo_url,
             "https://github.com/ORESoftware/example.git"

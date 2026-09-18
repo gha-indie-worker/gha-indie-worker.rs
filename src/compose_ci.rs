@@ -1,4 +1,8 @@
-use std::{env, path::{Path, PathBuf}, process::Stdio};
+use std::{
+    env,
+    path::{Path, PathBuf},
+    process::Stdio,
+};
 
 use tokio::process::Command;
 
@@ -12,7 +16,12 @@ pub struct PrComposeSession {
 }
 
 impl PrComposeSession {
-    pub fn for_pr(workspace_root: &Path, owner: &str, pr_number: u64, head_sha: &str) -> Result<Self, String> {
+    pub fn for_pr(
+        workspace_root: &Path,
+        owner: &str,
+        pr_number: u64,
+        head_sha: &str,
+    ) -> Result<Self, String> {
         validate_owner(owner)?;
         validate_sha(head_sha)?;
         let short_sha = &head_sha[..12.min(head_sha.len())];
@@ -78,8 +87,8 @@ pub fn workspace_root_from_env() -> PathBuf {
 }
 
 async fn run_ores_compose(cwd: &Path, args: &[&str]) -> Result<(), String> {
-    let binary = env::var("BUILD_SERVER_ORES_COMPOSE_BIN")
-        .unwrap_or_else(|_| "ores-compose".to_string());
+    let binary =
+        env::var("BUILD_SERVER_ORES_COMPOSE_BIN").unwrap_or_else(|_| "ores-compose".to_string());
     let output = Command::new(&binary)
         .args(args)
         .current_dir(cwd)
@@ -141,17 +150,15 @@ mod tests {
         .unwrap();
         assert_eq!(session.infra_repo, "gha-indie-worker-infra");
         assert_eq!(session.session_id, "pr-42-0123456789ab");
-        assert!(session.config_path.ends_with("gha-indie-worker-infra/.ores-compose.yaml"));
+        assert!(session
+            .config_path
+            .ends_with("gha-indie-worker-infra/.ores-compose.yaml"));
     }
 
     #[test]
     fn rejects_owner_path_injection() {
-        assert!(PrComposeSession::for_pr(
-            Path::new("/tmp"),
-            "../evil",
-            1,
-            "0123456789ab",
-        )
-        .is_err());
+        assert!(
+            PrComposeSession::for_pr(Path::new("/tmp"), "../evil", 1, "0123456789ab",).is_err()
+        );
     }
 }
