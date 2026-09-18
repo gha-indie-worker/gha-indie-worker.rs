@@ -1,0 +1,116 @@
+name: rust
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - 'feat/**'
+      - 'fix/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gha-worker-rust-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Check out worker exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.EXPECTED_SHA }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Assert exact worker revision
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD)"
+          test "$actual_sha" = "$EXPECTED_SHA" || {
+            echo "expected exact head $EXPECTED_SHA, got $actual_sha" >&2
+            exit 1
+          }
+          printf '%s\n' "$actual_sha" > exact-head.sha
+
+      - name: Install Rust components
+        run: rustup component add rustfmt clippy
+
+      - name: Workflow parser unit tests
+        run: |
+          rm -rf /tmp/gha-worker-workflow-tests
+          mkdir -p /tmp/gha-worker-workflow-tests/src
+          cp src/workflow.rs /tmp/gha-worker-workflow-tests/src/lib.rs
+          cat > /tmp/gha-worker-workflow-tests/Cargo.toml <<'EOF'
+          [package]
+          name = "gha-worker-workflow-tests"
+          version = "0.0.0"
+          edition = "2021"
+
+          [dependencies]
+          serde = { version = "1", features = ["derive"] }
+          EOF
+          cargo test --manifest-path /tmp/gha-worker-workflow-tests/Cargo.toml
+
+      - name: Compose session unit tests
+        run: |
+          rm -rf /tmp/gha-worker-compose-tests
+          mkdir -p /tmp/gha-worker-compose-tests/src
+          cp src/compose_ci.rs /tmp/gha-worker-compose-tests/src/lib.rs
+          cat > /tmp/gha-worker-compose-tests/Cargo.toml <<'EOF'
+          [package]
+          name = "gha-worker-compose-tests"
+          version = "0.0.0"
+          edition = "2021"
+
+          [dependencies]
+          tokio = { version = "1", features = ["process", "rt", "macros"] }
+          EOF
+          cargo test --manifest-path /tmp/gha-worker-compose-tests/Cargo.toml
+
+      - name: Reject escaped private path dependencies
+        run: |
+          if grep -nE 'path[[:space:]]*=[[:space:]]*"\.\./\.\./' Cargo.toml; then
+            echo 'public worker Cargo.toml must not escape into private split-repo paths' >&2
+            exit 1
+          fi
+
+      - name: Resolve public dependency graph
+        run: |
+          cargo generate-lockfile
+          cargo metadata --locked --no-deps --format-version 1 > /dev/null
+
+      - name: Full crate unit tests
+        run: |
+          set -o pipefail
+          cargo test --all-targets --locked 2>&1 | tee cargo-test.log
+
+      - name: Clippy
+        if: always()
+        run: |
+          set -o pipefail
+          cargo clippy --all-targets --locked -- -D warnings 2>&1 | tee cargo-clippy.log
+
+      - name: Format
+        if: always()
+        run: |
+          set -o pipefail
+          cargo fmt --all --check 2>&1 | tee cargo-fmt.log
+
+      - name: Upload exact-head Rust diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: exact-head-rust-diagnostics
+          path: |
+            exact-head.sha
+            cargo-test.log
+            cargo-clippy.log
+            cargo-fmt.log
+          if-no-files-found: warn

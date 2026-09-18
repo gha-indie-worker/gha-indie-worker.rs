@@ -1,0 +1,12 @@
+[
+  {
+    "repo": "ORESoftware/ores-compose",
+    "events": ["push"],
+    "profile": "rust-verify"
+  },
+  {
+    "repo": "gha-indie-worker/gha-indie-worker.rs",
+    "events": ["push"],
+    "profile": "rust-verify"
+  }
+]
