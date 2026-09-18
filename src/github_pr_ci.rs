@@ -306,6 +306,8 @@ fn validate_repo_name(repo: &str) -> Result<String, String> {
     };
     let valid = |value: &str| {
         !value.is_empty()
+            && value != "."
+            && value != ".."
             && value.len() <= 100
             && value
                 .bytes()
@@ -436,7 +438,7 @@ async fn fetch_workflows(
         "https://api.github.com/repos/{}/contents/.github/workflows?ref={}",
         context.head_repository, context.head_sha
     );
-    let entries: Vec<Entry> = github_request(&state, Method::GET, &url)
+    let entries: Vec<Entry> = github_request(state, Method::GET, &url)
         .send()
         .await
         .map_err(|error| format!("failed to list workflow files: {error}"))?
@@ -457,7 +459,7 @@ async fn fetch_workflows(
             "https://api.github.com/repos/{}/contents/.github/workflows/{}?ref={}",
             context.head_repository, entry.name, context.head_sha
         );
-        let file: FileResponse = github_request(&state, Method::GET, &file_url)
+        let file: FileResponse = github_request(state, Method::GET, &file_url)
             .send()
             .await
             .map_err(|error| format!("failed to fetch {}: {error}", entry.name))?
@@ -682,6 +684,9 @@ mod tests {
         let repo = validate_repo_name("ORESoftware/cloudflare-infra").unwrap();
         assert_eq!(repo, "ORESoftware/cloudflare-infra");
         assert!(validate_repo_name("../bad").is_err());
+        assert!(validate_repo_name("./bad").is_err());
+        assert!(validate_repo_name("owner/..").is_err());
+        assert!(validate_repo_name("owner/.").is_err());
     }
 
     #[test]
