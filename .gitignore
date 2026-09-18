@@ -1,0 +1,5 @@
+# Local temporary directories and repository-owned worktrees.
+# Directory-only rules (legacy bare rules converted, DEN-3956); these also
+# cover the authorized worktree roots tmp/worktrees and temp/worktrees.
+tmp/
+temp/
