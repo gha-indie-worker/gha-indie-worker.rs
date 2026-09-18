@@ -11,40 +11,36 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: gha-worker-rust-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   unit-tests:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    env:
+      EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - name: Check out worker exact revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ env.EXPECTED_SHA }}
           persist-credentials: false
           fetch-depth: 1
 
-      - name: Check out pinned shared definitions
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          repository: ORESoftware/k8s-libs-and-shared-defs
-          ref: 29154c2bcf12031c93e86530e7b2a0eb9c5f95ec
-          persist-credentials: false
-          fetch-depth: 1
-          path: shared-defs
-
-      - name: Stage legacy path dependencies
+      - name: Assert exact worker revision
         run: |
           set -euo pipefail
-          rm -rf ../../libs
-          mkdir -p ../../libs/nats/subject-defs/generated
-          cp -R shared-defs/telemetry-rs ../../libs/telemetry-rs
-          cp -R shared-defs/runtime-config-client-rs ../../libs/runtime-config-client-rs
-          cp -R shared-defs/nats/subject-defs/generated/rust ../../libs/nats/subject-defs/generated/rust
-          test -f ../../libs/telemetry-rs/Cargo.toml
-          test -f ../../libs/runtime-config-client-rs/Cargo.toml
-          test -f ../../libs/nats/subject-defs/generated/rust/Cargo.toml
+          actual_sha="$(git rev-parse HEAD)"
+          test "$actual_sha" = "$EXPECTED_SHA" || {
+            echo "expected exact head $EXPECTED_SHA, got $actual_sha" >&2
+            exit 1
+          }
+          printf '%s\n' "$actual_sha" > exact-head.sha
 
       - name: Install Rust components
-        run: rustup component add rustfmt
+        run: rustup component add rustfmt clippy
 
       - name: Workflow parser unit tests
         run: |
@@ -78,18 +74,43 @@ jobs:
           EOF
           cargo test --manifest-path /tmp/gha-worker-compose-tests/Cargo.toml
 
-      - name: Verify split manifest parses
-        run: cargo metadata --locked --no-deps --format-version 1 > /dev/null
+      - name: Reject escaped private path dependencies
+        run: |
+          if grep -nE 'path[[:space:]]*=[[:space:]]*"\.\./\.\./' Cargo.toml; then
+            echo 'public worker Cargo.toml must not escape into private split-repo paths' >&2
+            exit 1
+          fi
+
+      - name: Resolve public dependency graph
+        run: |
+          cargo generate-lockfile
+          cargo metadata --locked --no-deps --format-version 1 > /dev/null
 
       - name: Full crate unit tests
-        run: cargo test --all-targets --locked
+        run: |
+          set -o pipefail
+          cargo test --all-targets --locked 2>&1 | tee cargo-test.log
 
-      - name: Format changed tunnel/CI Rust surfaces
+      - name: Clippy
         if: always()
         run: |
-          rustfmt --edition 2021 --check \
-            src/compose_ci.rs \
-            src/github_pr_ci.rs \
-            src/main.rs \
-            src/webhooks.rs \
-            src/workflow.rs
+          set -o pipefail
+          cargo clippy --all-targets --locked -- -D warnings 2>&1 | tee cargo-clippy.log
+
+      - name: Format
+        if: always()
+        run: |
+          set -o pipefail
+          cargo fmt --all --check 2>&1 | tee cargo-fmt.log
+
+      - name: Upload exact-head Rust diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: exact-head-rust-diagnostics
+          path: |
+            exact-head.sha
+            cargo-test.log
+            cargo-clippy.log
+            cargo-fmt.log
+          if-no-files-found: warn
