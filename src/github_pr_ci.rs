@@ -11,7 +11,7 @@ use tokio::time::sleep;
 
 use crate::{
     compose_ci::{workspace_root_from_env, PrComposeSession},
-    validation::validate_relative_path,
+    validation::{validate_commit_sha, validate_relative_path},
     workflow::plan_workflow_yaml,
     AppState, BuildRequest, BuildStatus,
 };
@@ -53,12 +53,8 @@ pub fn parse_pull_request(payload: &serde_json::Value) -> Result<PullRequestCont
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| "pull_request payload missing PR number".to_string())?;
     let head_sha = required_str(payload, "/pull_request/head/sha")?;
-    if head_sha.len() < 12
-        || head_sha.len() > 64
-        || !head_sha.bytes().all(|byte| byte.is_ascii_hexdigit())
-    {
-        return Err("pull_request head SHA is invalid".to_string());
-    }
+    validate_commit_sha(&head_sha)
+        .map_err(|_| "pull_request head SHA is not a canonical full Git object ID".to_string())?;
     let head_ref = required_str(payload, "/pull_request/head/ref")?;
     let head_repository = required_str(payload, "/pull_request/head/repo/full_name")?;
     let head_clone_url = required_str(payload, "/pull_request/head/repo/clone_url")?;
@@ -134,7 +130,10 @@ async fn run(state: AppState, context: PullRequestContext) -> Result<(), String>
                 let workflows = fetch_workflows(&state, &context).await?;
                 let profiles = profiles_for_workflows(&workflows)?;
                 if profiles.is_empty() {
-                    return Err("no supported pull-request verification profiles were inferred from workflow YAML".to_string());
+                    return Err(
+                        "no supported pull-request verification profiles were inferred from workflow YAML"
+                            .to_string(),
+                    );
                 }
                 profiles
                     .into_iter()
@@ -166,6 +165,7 @@ async fn run(state: AppState, context: PullRequestContext) -> Result<(), String>
                     job_kind: Some("run-profile".to_string()),
                     repo_url: context.head_clone_url.clone(),
                     git_ref: Some(context.head_ref.clone()),
+                    commit_sha: Some(context.head_sha.clone()),
                     image: String::new(),
                     profile: Some(target.profile.clone()),
                     context_dir: target.context_dir.clone(),
@@ -190,10 +190,9 @@ async fn run(state: AppState, context: PullRequestContext) -> Result<(), String>
             wait_for_job(&state, &record.id).await?;
         }
 
-        // Fail closed if the branch advanced while we were cloning/testing.
-        // This ensures we never report the old webhook SHA green after a newer
-        // commit became the PR head. Exact detached-SHA fetch remains tracked
-        // separately and must land before this status becomes a required gate.
+        // The executor is pinned to the admitted commit itself; this final head
+        // check is a supersession guard so an older revision can never publish
+        // success after the PR has advanced.
         ensure_pr_head(&state, &context).await?;
         Ok::<(), String>(())
     }
@@ -237,7 +236,9 @@ fn profile_targets_from_rules(
     let rules: Vec<PrProfileRule> = serde_json::from_str(raw)
         .map_err(|error| format!("invalid {PROFILE_RULES_ENV} JSON: {error}"))?;
     if rules.len() > 128 {
-        return Err(format!("{PROFILE_RULES_ENV} can contain at most 128 repository rules"));
+        return Err(format!(
+            "{PROFILE_RULES_ENV} can contain at most 128 repository rules"
+        ));
     }
     let Some(rule) = rules.iter().find(|rule| rule.repo == repository) else {
         return Ok(None);
@@ -409,7 +410,9 @@ fn profiles_for_workflows(workflows: &[(String, String)]) -> Result<Vec<String>,
         profiles.extend(plan.profiles);
     }
     if pull_request_workflows == 0 {
-        return Err("repository has workflow files, but none subscribe to pull_request".to_string());
+        return Err(
+            "repository has workflow files, but none subscribe to pull_request".to_string(),
+        );
     }
     if !unsupported.is_empty() {
         return Err(format!(
@@ -632,9 +635,8 @@ fn truncate_status(input: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn parses_pr_identity_from_payload() {
-        let payload = json!({
+    fn pr_payload(sha: &str) -> serde_json::Value {
+        json!({
             "repository": {
                 "full_name": "gha-indie-worker/gha-indie-worker.rs",
                 "owner": { "login": "gha-indie-worker" }
@@ -643,7 +645,7 @@ mod tests {
             "pull_request": {
                 "number": 55,
                 "head": {
-                    "sha": "0123456789abcdef0123456789abcdef01234567",
+                    "sha": sha,
                     "ref": "feature",
                     "repo": {
                         "full_name": "gha-indie-worker/gha-indie-worker.rs",
@@ -651,8 +653,15 @@ mod tests {
                     }
                 }
             }
-        });
-        let context = parse_pull_request(&payload).unwrap();
+        })
+    }
+
+    #[test]
+    fn parses_pr_identity_from_payload() {
+        let context = parse_pull_request(&pr_payload(
+            "0123456789abcdef0123456789abcdef01234567",
+        ))
+        .unwrap();
         assert_eq!(context.number, 55);
         assert_eq!(context.head_ref, "feature");
         assert_eq!(context.owner, "gha-indie-worker");
@@ -660,6 +669,17 @@ mod tests {
             context.head_repository,
             "gha-indie-worker/gha-indie-worker.rs"
         );
+    }
+
+    #[test]
+    fn rejects_noncanonical_pr_commit_ids() {
+        for sha in [
+            "0123456789abcdef",
+            "0123456789ABCDEF0123456789ABCDEF01234567",
+            " 0123456789abcdef0123456789abcdef01234567",
+        ] {
+            assert!(parse_pull_request(&pr_payload(sha)).is_err(), "accepted {sha:?}");
+        }
     }
 
     #[test]
