@@ -17,6 +17,14 @@ Git does **not** persist the write bit (only the executable bit). A fresh clone 
 writable until you re-freeze:
 
 ```sh
+scripts/freeze-generated.sh
+```
+
+That wrapper runs the repository's checker (`python3 scripts/check-generated-contract.py
+--freeze --require-readonly`), which is also what the `generated-contract` workflow runs.
+Without the checker available, the portable equivalent is:
+
+```sh
 find generated -type f ! -name 'README.md' ! -name 'readme.md' -exec chmod a-w {} +
 ```
 
@@ -37,7 +45,7 @@ generated/**
 
 ## Runtime contract (not just compile-time)
 
-JSON Schema is a **cross-check**, not always the primary generator input. Unit tests
-should validate fixtures/examples against Draft 2020-12 at runtime (valid must pass,
-invalid must fail) and compare schema keys to `.cli-flags.toml` env names or
+JSON Schema is a **cross-check**, not always the primary generator input. The checker
+validates fixtures/examples against Draft 2020-12 at runtime (valid must pass,
+invalid must fail) and compares schema keys to `.cli-flags.toml` env names or
 route-map keys when those exist.
