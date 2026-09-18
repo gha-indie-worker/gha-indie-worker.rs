@@ -8,7 +8,13 @@ pub(crate) struct BuildRequest {
     pub(crate) schema_version: Option<String>,
     pub(crate) job_kind: Option<String>,
     pub(crate) repo_url: String,
+    /// Human-readable branch/tag/ref provenance. This is never the execution
+    /// authority when `source_revision` is present.
     pub(crate) git_ref: Option<String>,
+    /// Immutable execution authority. Webhook/PR-derived jobs must carry the
+    /// exact admitted commit here so branch movement cannot change what runs.
+    #[serde(default)]
+    pub(crate) source_revision: Option<String>,
     #[serde(default)]
     pub(crate) image: String,
     /// Fixed operator-reviewed command pipeline for jobKind=run-profile.
