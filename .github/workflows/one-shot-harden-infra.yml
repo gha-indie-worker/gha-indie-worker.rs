@@ -1,0 +1,301 @@
+name: one-shot harden infra checkout
+
+on:
+  push:
+    branches:
+      - tmp/harden-infra-checkout
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out hardening branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: tmp/harden-infra-checkout
+          fetch-depth: 1
+
+      - name: Apply immutable infra checkout hardening
+        run: |
+          set -euo pipefail
+          cat >/tmp/patch.rs <<'RS'
+          use std::{fs, process};
+
+          fn replace_once(input: String, old: &str, new: &str, label: &str) -> String {
+              let count = input.matches(old).count();
+              if count != 1 {
+                  eprintln!("{label}: expected one match, found {count}");
+                  process::exit(2);
+              }
+              input.replacen(old, new, 1)
+          }
+
+          fn replace_between(input: String, start: &str, end: &str, replacement: &str, label: &str) -> String {
+              let Some(start_index) = input.find(start) else {
+                  eprintln!("{label}: start marker not found");
+                  process::exit(2);
+              };
+              let Some(relative_end) = input[start_index..].find(end) else {
+                  eprintln!("{label}: end marker not found");
+                  process::exit(2);
+              };
+              let end_index = start_index + relative_end;
+              format!("{}{}{}", &input[..start_index], replacement, &input[end_index..])
+          }
+
+          fn main() {
+              let path = "src/github_pr_ci.rs";
+              let mut text = fs::read_to_string(path).expect("read github_pr_ci.rs");
+
+              text = replace_once(
+                  text,
+                  r#"    let infra_repo = resolve_infra_repo(&context.owner)?;
+    ensure_infra_checkout(&state, &infra_repo).await?;
+    let session = compose_session_for(&context, &infra_repo)?;
+"#,
+                  r#"    let infra_repo = resolve_infra_repo(&context.owner)?;
+    let infra_revision = resolve_infra_revision(&infra_repo)?;
+    let infra_root = ensure_infra_checkout(&state, &infra_repo, &infra_revision, &context).await?;
+    let session = compose_session_for(&context, &infra_repo, &infra_root)?;
+"#,
+                  "run infra authority",
+              );
+
+              text = replace_between(
+                  text,
+                  "fn compose_session_for(",
+                  "\nfn resolve_infra_repo",
+                  r#"fn compose_session_for(
+    context: &PullRequestContext,
+    infra_repo: &str,
+    infra_root: &std::path::Path,
+) -> Result<PrComposeSession, String> {
+    let workspace_root = workspace_root_from_env();
+    let repo_name = infra_repo
+        .split_once('/')
+        .map(|(_, name)| name)
+        .ok_or_else(|| "invalid infra repo name".to_string())?;
+    let mut session = PrComposeSession::for_pr(
+        &workspace_root,
+        &context.owner,
+        context.number,
+        &context.head_sha,
+    )?;
+    session.infra_repo = repo_name.to_string();
+    session.infra_root = infra_root.to_path_buf();
+    session.config_path = infra_root.join(".ores-compose.yaml");
+    Ok(session)
+}
+"#,
+                  "compose session",
+              );
+
+              text = replace_once(
+                  text,
+                  "\nfn validate_repo_name(repo: &str) -> Result<String, String> {",
+                  r#"
+fn resolve_infra_revision(infra_repo: &str) -> Result<String, String> {
+    if let Ok(raw) = env::var("BUILD_SERVER_INFRA_REVISION_MAP") {
+        let map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&raw)
+            .map_err(|error| format!("invalid BUILD_SERVER_INFRA_REVISION_MAP JSON: {error}"))?;
+        if let Some(value) = map.get(infra_repo) {
+            let revision = value.as_str().ok_or_else(|| {
+                format!("BUILD_SERVER_INFRA_REVISION_MAP entry for {infra_repo} must be a string")
+            })?;
+            validate_commit_sha(revision).map_err(|_| {
+                format!("BUILD_SERVER_INFRA_REVISION_MAP entry for {infra_repo} must be a canonical full Git object ID")
+            })?;
+            return Ok(revision.to_string());
+        }
+    }
+
+    let revision = env::var("BUILD_SERVER_INFRA_REVISION").map_err(|_| {
+        "external PR CI requires BUILD_SERVER_INFRA_REVISION or a matching BUILD_SERVER_INFRA_REVISION_MAP entry"
+            .to_string()
+    })?;
+    validate_commit_sha(&revision).map_err(|_| {
+        "BUILD_SERVER_INFRA_REVISION must be a canonical full Git object ID".to_string()
+    })?;
+    Ok(revision)
+}
+
+fn validate_repo_name(repo: &str) -> Result<String, String> {"#,
+                  "infra revision resolver",
+              );
+
+              text = replace_between(
+                  text,
+                  "async fn ensure_infra_checkout",
+                  "\nfn profiles_for_workflows",
+                  r#"fn infra_git_command(state: &AppState) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(&state.config.git_bin);
+    command
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "/bin/false");
+    if let Some(header) = state.config.git_http_auth_header.as_deref() {
+        command
+            .env("GIT_CONFIG_COUNT", "1")
+            .env("GIT_CONFIG_KEY_0", "http.https://github.com/.extraheader")
+            .env("GIT_CONFIG_VALUE_0", header);
+    }
+    command
+}
+
+async fn run_infra_git(
+    state: &AppState,
+    cwd: &std::path::Path,
+    args: &[&str],
+    description: &str,
+) -> Result<(), String> {
+    let status = infra_git_command(state)
+        .args(args)
+        .current_dir(cwd)
+        .status()
+        .await
+        .map_err(|error| format!("failed to {description}: {error}"))?;
+    if !status.success() {
+        return Err(format!("{description} failed with {status}"));
+    }
+    Ok(())
+}
+
+async fn infra_git_stdout(
+    state: &AppState,
+    cwd: &std::path::Path,
+    args: &[&str],
+    description: &str,
+) -> Result<String, String> {
+    let output = infra_git_command(state)
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .await
+        .map_err(|error| format!("failed to {description}: {error}"))?;
+    if !output.status.success() {
+        return Err(format!("{description} failed with {}", output.status));
+    }
+    String::from_utf8(output.stdout)
+        .map(|value| value.trim().to_string())
+        .map_err(|_| format!("{description} returned non-UTF-8 output"))
+}
+
+async fn verify_infra_checkout(
+    state: &AppState,
+    destination: &std::path::Path,
+    repo_url: &str,
+    revision: &str,
+) -> Result<(), String> {
+    let origin = infra_git_stdout(
+        state,
+        destination,
+        &["remote", "get-url", "origin"],
+        "read infra checkout origin",
+    )
+    .await?;
+    if origin != repo_url {
+        return Err(format!(
+            "infra checkout origin mismatch: expected {repo_url}, found {origin}"
+        ));
+    }
+
+    let head = infra_git_stdout(
+        state,
+        destination,
+        &["rev-parse", "HEAD"],
+        "read infra checkout HEAD",
+    )
+    .await?;
+    if head != revision {
+        return Err(format!(
+            "infra checkout revision mismatch: expected {revision}, found {head}"
+        ));
+    }
+    Ok(())
+}
+
+async fn ensure_infra_checkout(
+    state: &AppState,
+    infra_repo: &str,
+    revision: &str,
+    context: &PullRequestContext,
+) -> Result<std::path::PathBuf, String> {
+    validate_commit_sha(revision)
+        .map_err(|_| "infra revision must be a canonical full Git object ID".to_string())?;
+    let workspace_root = workspace_root_from_env();
+    let repo_name = infra_repo
+        .split_once('/')
+        .map(|(_, name)| name)
+        .ok_or_else(|| "invalid infra repo".to_string())?;
+    let destination = workspace_root
+        .join(".infra")
+        .join(repo_name)
+        .join(revision)
+        .join(format!("pr-{}-{}", context.number, context.head_sha));
+    let repo_url = format!("https://github.com/{infra_repo}.git");
+
+    if destination.exists() {
+        if !destination.join(".git").is_dir() {
+            return Err(format!(
+                "infra checkout path exists but is not a git repository: {}",
+                destination.display()
+            ));
+        }
+        verify_infra_checkout(state, &destination, &repo_url, revision).await?;
+        return Ok(destination);
+    }
+
+    let parent = destination
+        .parent()
+        .ok_or_else(|| "infra checkout has no parent directory".to_string())?;
+    tokio::fs::create_dir_all(parent)
+        .await
+        .map_err(|error| format!("failed to create infra checkout parent: {error}"))?;
+    tokio::fs::create_dir(&destination)
+        .await
+        .map_err(|error| format!("failed to create isolated infra checkout: {error}"))?;
+
+    run_infra_git(state, &destination, &["init"], "initialize infra checkout").await?;
+    run_infra_git(
+        state,
+        &destination,
+        &["remote", "add", "origin", &repo_url],
+        "configure infra checkout origin",
+    )
+    .await?;
+    run_infra_git(
+        state,
+        &destination,
+        &["fetch", "--depth", "1", "--no-tags", "origin", revision],
+        "fetch exact infra revision",
+    )
+    .await?;
+    run_infra_git(
+        state,
+        &destination,
+        &["checkout", "--detach", revision],
+        "checkout exact infra revision",
+    )
+    .await?;
+    verify_infra_checkout(state, &destination, &repo_url, revision).await?;
+    Ok(destination)
+}
+"#,
+                  "immutable infra checkout",
+              );
+
+              fs::write(path, text).expect("write github_pr_ci.rs");
+          }
+          RS
+          rustc --edition 2021 /tmp/patch.rs -o /tmp/patch
+          /tmp/patch
+          cargo fmt --all
+          rm .github/workflows/one-shot-harden-infra.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add --all
+          git commit -m 'fix(ci): pin infra checkout to exact immutable revision'
+          git push origin HEAD:tmp/harden-infra-checkout
