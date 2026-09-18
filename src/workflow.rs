@@ -11,12 +11,6 @@ pub struct WorkflowPlan {
     pub unsupported: Vec<String>,
 }
 
-impl WorkflowPlan {
-    pub fn is_supported(&self) -> bool {
-        self.pull_request_trigger && self.unsupported.is_empty() && !self.profiles.is_empty()
-    }
-}
-
 /// Translate a deliberately small, fail-closed subset of GitHub Actions YAML
 /// into existing operator-reviewed gha-indie-worker profiles.
 ///
@@ -179,7 +173,7 @@ fn detects_pull_request_trigger(input: &str) -> Result<bool, String> {
                     .map(str::trim)
                     .map(|item| item.trim_matches(['\'', '"']))
                     .collect::<Vec<_>>();
-                return Ok(normalized.iter().any(|item| *item == "pull_request"));
+                return Ok(normalized.contains(&"pull_request"));
             }
             // YAML 1.1 parsers historically treat `on` specially, but GitHub
             // workflow syntax requires the literal top-level key. Quoted keys
@@ -199,7 +193,7 @@ fn detects_pull_request_trigger(input: &str) -> Result<bool, String> {
                     .map(str::trim)
                     .map(|item| item.trim_matches(['\'', '"']))
                     .collect::<Vec<_>>();
-                return Ok(normalized.iter().any(|item| *item == "pull_request"));
+                return Ok(normalized.contains(&"pull_request"));
             }
         } else if in_on_block && indent >= 2 {
             let event = trimmed

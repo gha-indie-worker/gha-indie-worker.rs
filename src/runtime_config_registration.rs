@@ -178,7 +178,8 @@ impl RegistrationConfig {
         let service_name = nonempty(lookup("RUNTIME_CONFIG_SERVICE_NAME"))?;
         let register_url = nonempty(lookup("RUNTIME_CONFIG_REGISTER_URL"))?;
         let apply_url = nonempty(lookup("RUNTIME_CONFIG_APPLY_URL"))?;
-        let scope = nonempty(lookup("RUNTIME_CONFIG_SCOPE")).unwrap_or_else(|| service_name.clone());
+        let scope =
+            nonempty(lookup("RUNTIME_CONFIG_SCOPE")).unwrap_or_else(|| service_name.clone());
         let environment = normalize_environment(nonempty(lookup("RUNTIME_CONFIG_ENV")).as_deref());
         let server_auth = nonempty(lookup("RUNTIME_CONFIG_SERVER_SECRET"));
         Some(Self {
@@ -366,7 +367,10 @@ pub fn router() -> Router {
     router_with_store(global_store().clone())
 }
 
-async fn register_once(client: &Client, config: &RegistrationConfig) -> Result<bool, reqwest::Error> {
+async fn register_once(
+    client: &Client,
+    config: &RegistrationConfig,
+) -> Result<bool, reqwest::Error> {
     let mut request = client.post(&config.register_url).json(&config.request());
     if let Some(server_auth) = config.server_auth.as_deref() {
         request = request.header("x-server-auth", server_auth);
@@ -481,9 +485,15 @@ mod tests {
 
     #[test]
     fn production_alias_normalizes_to_prod() {
-        assert_eq!(normalize_environment(Some("production")), RuntimeConfigEnv::Prod);
+        assert_eq!(
+            normalize_environment(Some("production")),
+            RuntimeConfigEnv::Prod
+        );
         assert_eq!(normalize_environment(Some("PROD")), RuntimeConfigEnv::Prod);
-        assert_eq!(normalize_environment(Some("staging")), RuntimeConfigEnv::Stage);
+        assert_eq!(
+            normalize_environment(Some("staging")),
+            RuntimeConfigEnv::Stage
+        );
     }
 
     #[test]

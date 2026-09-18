@@ -28,14 +28,19 @@ mod tests {
             BUILD_SERVER_REQUESTS_SUBJECT,
             BUILD_SERVER_RESULTS_SUBJECT,
         ];
-        assert!(subjects.iter().all(|subject| subject.starts_with("dd.remote.build_server.")));
+        assert!(subjects
+            .iter()
+            .all(|subject| subject.starts_with("dd.remote.build_server.")));
         let unique: BTreeSet<_> = subjects.into_iter().collect();
         assert_eq!(unique.len(), 4);
     }
 
     #[test]
     fn durable_request_contract_matches_the_request_subject() {
-        assert_eq!(BUILD_SERVER_REQUESTS_SUBJECT, "dd.remote.build_server.requests");
+        assert_eq!(
+            BUILD_SERVER_REQUESTS_SUBJECT,
+            "dd.remote.build_server.requests"
+        );
         assert_eq!(BUILD_SERVER_REQUESTS_QUEUE_GROUP, "dd-build-server");
         assert_eq!(DD_REMOTE_BUILD_JOBS_STREAM_NAME, "DD_REMOTE_BUILD_JOBS");
     }

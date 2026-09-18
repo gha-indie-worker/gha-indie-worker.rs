@@ -6,11 +6,7 @@
 
 use std::time::Instant;
 
-use axum::{
-    extract::Request,
-    middleware::Next,
-    response::Response,
-};
+use axum::{extract::Request, middleware::Next, response::Response};
 
 #[derive(Debug)]
 pub struct TelemetryGuard {
@@ -59,7 +55,10 @@ mod tests {
     #[tokio::test]
     async fn request_layer_preserves_response_status() {
         let app = Router::new()
-            .route("/health", get(|| async { axum::http::StatusCode::NO_CONTENT }))
+            .route(
+                "/health",
+                get(|| async { axum::http::StatusCode::NO_CONTENT }),
+            )
             .layer(middleware::from_fn(trace_request));
         let response = app
             .oneshot(
