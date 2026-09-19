@@ -533,7 +533,7 @@ mod e2e {
             github_app_id: None,
             github_app_private_key: None,
             github_app_installation_id: None,
-            check_run_name: "indiebuild / local-ci".to_string(),
+            check_run_name: "indiebuild.dev/ci".to_string(),
             nerdctl_bin: "nerdctl".to_string(),
             kubectl_bin: "kubectl".to_string(),
             tar_bin: "tar".to_string(),

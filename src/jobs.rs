@@ -254,12 +254,11 @@ pub(crate) async fn execute_profile(state: &AppState, job: &BuildJobRecord) -> R
         .await;
     }
 
-    let context_path = resolve_repo_path(
-        &repo_dir,
-        "contextDir",
-        request.context_dir.as_deref().unwrap_or("."),
-    )
-    .await?;
+    // A declared target names the directory its profile runs in, which is how
+    // a monorepo points the worker at one crate.
+    let context_dir = crate::indiebuild::context_override(repo_config.as_ref())
+        .unwrap_or_else(|| request.context_dir.as_deref().unwrap_or(".").to_string());
+    let context_path = resolve_repo_path(&repo_dir, "contextDir", &context_dir).await?;
     for step in profile.steps {
         let step_cwd = validate_relative_path("profile step subdirectory", step.subdirectory)?;
         let container_cwd = if step_cwd == Path::new(".") {
@@ -937,7 +936,7 @@ mod idempotency_tests {
             github_app_id: None,
             github_app_private_key: None,
             github_app_installation_id: None,
-            check_run_name: "indiebuild / local-ci".to_string(),
+            check_run_name: "indiebuild.dev/ci".to_string(),
             nerdctl_bin: "nerdctl".to_string(),
             kubectl_bin: "kubectl".to_string(),
             tar_bin: "tar".to_string(),

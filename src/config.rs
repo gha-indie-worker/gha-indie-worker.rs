@@ -241,7 +241,7 @@ pub(crate) fn config_from_env() -> Config {
         github_app_id: first_env(&["BUILD_SERVER_GITHUB_APP_ID"]),
         github_app_private_key,
         github_app_installation_id: first_env(&["BUILD_SERVER_GITHUB_APP_INSTALLATION_ID"]),
-        check_run_name: env_value("BUILD_SERVER_CHECK_RUN_NAME", "indiebuild / local-ci"),
+        check_run_name: env_value("BUILD_SERVER_CHECK_RUN_NAME", "indiebuild.dev/ci"),
         nerdctl_bin: env_value("BUILD_SERVER_NERDCTL_BIN", "/usr/local/bin/nerdctl"),
         kubectl_bin: env_value("BUILD_SERVER_KUBECTL_BIN", "/usr/bin/kubectl"),
         tar_bin: env_value("BUILD_SERVER_TAR_BIN", "/bin/tar"),
