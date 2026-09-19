@@ -165,9 +165,10 @@ pub(crate) fn select_profile(
 /// may load routing policy from a trusted base revision or signed control-plane
 /// config; it must not make the PR head choose which subtree gets verified.
 pub(crate) fn context_override(repo_config: Option<&RepoConfig>) -> Option<String> {
-    // Resolve the target so malformed configs still fail in `select_profile`;
-    // the path itself is intentionally non-authoritative here.
-    let _ = repo_config?.default_target().ok()?;
+    // Resolve/read the target so malformed configs still fail in
+    // `select_profile`, while the authored path itself remains descriptive.
+    let target = repo_config?.default_target().ok()?;
+    let _authored_path = target.path.trim();
     None
 }
 
