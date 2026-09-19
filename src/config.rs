@@ -11,6 +11,16 @@ pub(crate) struct Config {
     /// Precomputed Basic authorization header for trusted private GitHub clones.
     /// Never serialized or written to command logs.
     pub(crate) git_http_auth_header: Option<String>,
+    /// Raw token, used for the commit Status API. Cloning uses the header
+    /// above; this is the same credential in the form the REST API wants.
+    pub(crate) github_token: Option<String>,
+    pub(crate) github_app_id: Option<String>,
+    /// PEM contents, read once at startup. Never logged, and never passed to a
+    /// job container.
+    pub(crate) github_app_private_key: Option<String>,
+    pub(crate) github_app_installation_id: Option<String>,
+    /// Status context / check run name shown on the pull request.
+    pub(crate) check_run_name: String,
     pub(crate) nerdctl_bin: String,
     pub(crate) kubectl_bin: String,
     pub(crate) tar_bin: String,
@@ -187,6 +197,17 @@ pub(crate) fn config_from_env() -> Config {
 
     let coordination_enabled = env_bool("BUILD_SERVER_COORDINATION_ENABLED", false);
     let github_token = first_env(&["BUILD_SERVER_GIT_TOKEN", "GH_PAT"]);
+    // Read once, so the key lives in this process and nowhere else. A
+    // configured-but-unreadable key disables check runs rather than failing
+    // startup: builds must keep running even when reporting cannot.
+    let github_app_private_key = first_env(&["BUILD_SERVER_GITHUB_APP_PRIVATE_KEY_PATH"])
+        .and_then(|path| match std::fs::read_to_string(&path) {
+            Ok(contents) => Some(contents),
+            Err(error) => {
+                tracing::error!("cannot read GitHub App private key at {path}: {error}");
+                None
+            }
+        });
     let git_http_auth_header = github_token.as_deref().map(|token| {
         format!(
             "AUTHORIZATION: basic {}",
@@ -216,6 +237,11 @@ pub(crate) fn config_from_env() -> Config {
         )),
         git_bin: env_value("BUILD_SERVER_GIT_BIN", "git"),
         git_http_auth_header,
+        github_token,
+        github_app_id: first_env(&["BUILD_SERVER_GITHUB_APP_ID"]),
+        github_app_private_key,
+        github_app_installation_id: first_env(&["BUILD_SERVER_GITHUB_APP_INSTALLATION_ID"]),
+        check_run_name: env_value("BUILD_SERVER_CHECK_RUN_NAME", "indiebuild / local-ci"),
         nerdctl_bin: env_value("BUILD_SERVER_NERDCTL_BIN", "/usr/local/bin/nerdctl"),
         kubectl_bin: env_value("BUILD_SERVER_KUBECTL_BIN", "/usr/bin/kubectl"),
         tar_bin: env_value("BUILD_SERVER_TAR_BIN", "/bin/tar"),
