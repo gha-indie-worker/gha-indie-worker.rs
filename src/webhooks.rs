@@ -124,11 +124,19 @@ pub(crate) struct EventInterpretation {
 
 impl EventInterpretation {
     fn build(git_ref: String, sha: String) -> Self {
-        Self { git_ref, sha, declined: None }
+        Self {
+            git_ref,
+            sha,
+            declined: None,
+        }
     }
 
     fn decline(reason: &'static str) -> Self {
-        Self { git_ref: String::new(), sha: String::new(), declined: Some(reason) }
+        Self {
+            git_ref: String::new(),
+            sha: String::new(),
+            declined: Some(reason),
+        }
     }
 }
 
@@ -234,6 +242,19 @@ pub(crate) fn interpret_event(
     }
 }
 
+/// Stable job identity for one GitHub delivery.
+///
+/// The delivery id was already bounded to 128 bytes at the boundary; the
+/// prefix keeps it from colliding with a caller-chosen request id.
+pub(crate) fn delivery_request_id(delivery_id: &str) -> String {
+    let id: String = delivery_id
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-')
+        .take(100)
+        .collect();
+    format!("github-delivery-{id}")
+}
+
 fn branch_from_ref(git_ref: &str) -> Option<&str> {
     git_ref.strip_prefix("refs/heads/")
 }
@@ -288,6 +309,7 @@ fn build_request_from_rule(
         // verified code; a full object id cannot drift. The branch above is
         // kept for rule matching and image tags, never for the checkout.
         commit_sha: Some(sha.to_string()),
+        github_installation_id: None,
         image: rule
             .image
             .as_deref()
@@ -445,7 +467,20 @@ pub async fn github_webhook(
             .into_response();
     };
 
-    let request = build_request_from_rule(rule, &repo, &git_ref, &sha);
+    let mut request = build_request_from_rule(rule, &repo, &git_ref, &sha);
+    // Taken from the body whose signature was just verified, so the result is
+    // reported through the installation that actually covers this repository.
+    // One App installed on several orgs has a different id for each, and a
+    // single configured id would be wrong for all but one of them.
+    request.github_installation_id = payload
+        .pointer("/installation/id")
+        .and_then(serde_json::Value::as_u64);
+    // GitHub redelivers: on timeout, on manual redelivery, and whenever it is
+    // unsure a delivery landed. The delivery id becomes the request id, so a
+    // repeat reattaches to the job the first one created instead of building
+    // and reporting the same commit twice. This holds with no database and no
+    // lock service, which is how a laptop worker runs.
+    request.request_id = Some(delivery_request_id(&delivery_id));
     let outcome = crate::enqueue_build(&state, request, "webhook").await;
     fiducia::idempotency_finish(
         &state.http,
@@ -726,7 +761,11 @@ mod tests {
     #[test]
     fn drafts_are_skipped_until_they_are_marked_ready() {
         let repo = "gha-indie-worker/gha-indie-worker-api-server.rs";
-        let draft = interpret_event("pull_request", &pull_request_payload("opened", repo, true), repo);
+        let draft = interpret_event(
+            "pull_request",
+            &pull_request_payload("opened", repo, true),
+            repo,
+        );
         assert_eq!(draft.declined, Some("draft pull request"));
 
         // The ready_for_review payload can still carry draft=true, and that
@@ -743,8 +782,11 @@ mod tests {
     fn pull_request_actions_that_change_no_code_are_ignored() {
         let repo = "gha-indie-worker/gha-indie-worker-api-server.rs";
         for action in ["labeled", "closed", "edited", "assigned"] {
-            let interpreted =
-                interpret_event("pull_request", &pull_request_payload(action, repo, false), repo);
+            let interpreted = interpret_event(
+                "pull_request",
+                &pull_request_payload(action, repo, false),
+                repo,
+            );
             assert_eq!(
                 interpreted.declined,
                 Some("pull request action is not a code change"),
@@ -774,6 +816,21 @@ mod tests {
             interpret_event("push", &deleted, "o/r").declined,
             Some("branch deletion")
         );
+    }
+
+    #[test]
+    fn a_redelivery_maps_to_the_same_job_identity() {
+        let id = "7f3c1a2e-9b4d-4e6f-8a1b-2c3d4e5f6a7b";
+        assert_eq!(delivery_request_id(id), delivery_request_id(id));
+        assert_ne!(
+            delivery_request_id(id),
+            delivery_request_id("00000000-0000-0000-0000-000000000000")
+        );
+        // Must satisfy the requestId rules it will be validated against.
+        let derived = delivery_request_id("has spaces\tand/../slashes");
+        assert!(!derived.chars().any(char::is_whitespace));
+        assert!(!derived.contains('/'));
+        assert!(delivery_request_id(&"x".repeat(500)).len() <= 128);
     }
 
     #[test]

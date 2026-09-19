@@ -542,6 +542,7 @@ pub(crate) async fn run_job(state: AppState, id: String) {
                 crate::checks::target_from_request(
                     &job.request.repo_url,
                     job.request.commit_sha.as_deref(),
+                    job.request.github_installation_id,
                 ),
                 PathBuf::from(&job.log_path),
             ),
@@ -679,7 +680,7 @@ pub(crate) async fn run_job(state: AppState, id: String) {
             Err(error) => (false, format!("Failed on the local worker: {error}")),
         };
         let log_tail = tail_of_log(&log_path_for_report).await;
-        crate::checks::report_finished(
+        let delivery = crate::checks::report_finished(
             &state,
             target,
             check_run_id,
@@ -688,6 +689,16 @@ pub(crate) async fn run_job(state: AppState, id: String) {
             &log_tail,
         )
         .await;
+        // The build log is what an operator reads when a required check never
+        // resolved, so an undelivered verdict is written there too.
+        if delivery == crate::checks::Delivery::Undelivered {
+            append_log(
+                &log_path_for_report,
+                "\nverdict was NOT delivered to GitHub: no configured reporting mechanism succeeded\n",
+                state.config.max_log_bytes,
+            )
+            .await;
+        }
     }
 
     match result {
@@ -876,6 +887,7 @@ mod checkout_tests {
             repo_url: repo_url.to_string(),
             git_ref: git_ref.map(str::to_string),
             commit_sha: commit_sha.map(str::to_string),
+            github_installation_id: None,
             image: String::new(),
             profile: Some("rust-verify".to_string()),
             context_dir: None,
@@ -1078,6 +1090,7 @@ mod idempotency_tests {
             repo_url: "https://github.com/ORESoftware/k8s-cluster.git".to_string(),
             git_ref: Some(revision.to_string()),
             commit_sha: Some(revision.to_string()),
+            github_installation_id: None,
             image: String::new(),
             profile: Some("playwright".to_string()),
             context_dir: None,
