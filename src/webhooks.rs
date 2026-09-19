@@ -111,6 +111,150 @@ fn valid_commit_sha(sha: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
+/// What one webhook delivery means for this worker.
+pub(crate) struct EventInterpretation {
+    /// Ref used for rule matching: the pushed ref, or a pull request's base
+    /// branch, so a rule can say "CI for pull requests targeting main".
+    pub git_ref: String,
+    /// The commit that will actually be verified.
+    pub sha: String,
+    /// `None` when the delivery should build; otherwise why it must not.
+    pub declined: Option<&'static str>,
+}
+
+impl EventInterpretation {
+    fn build(git_ref: String, sha: String) -> Self {
+        Self {
+            git_ref,
+            sha,
+            declined: None,
+        }
+    }
+
+    fn decline(reason: &'static str) -> Self {
+        Self {
+            git_ref: String::new(),
+            sha: String::new(),
+            declined: Some(reason),
+        }
+    }
+}
+
+/// Read a delivery without performing any side effect, so every accept/refuse
+/// decision is unit testable against real payload shapes.
+pub(crate) fn interpret_event(
+    event: &str,
+    payload: &serde_json::Value,
+    repo: &str,
+) -> EventInterpretation {
+    match event {
+        "push" => {
+            let git_ref = payload
+                .get("ref")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let sha = payload
+                .get("after")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if payload.get("deleted").and_then(serde_json::Value::as_bool) == Some(true) {
+                return EventInterpretation::decline("branch deletion");
+            }
+            EventInterpretation::build(git_ref, sha)
+        }
+        "workflow_run" => {
+            let run = payload.get("workflow_run").cloned().unwrap_or_default();
+            let git_ref = run
+                .get("head_branch")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let sha = run
+                .get("head_sha")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let completed_ok = payload.get("action").and_then(serde_json::Value::as_str)
+                == Some("completed")
+                && run.get("conclusion").and_then(serde_json::Value::as_str) == Some("success");
+            if !completed_ok {
+                return EventInterpretation::decline("workflow run did not complete successfully");
+            }
+            EventInterpretation::build(git_ref, sha)
+        }
+        "pull_request" => {
+            let action = payload
+                .get("action")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            if !matches!(
+                action,
+                "opened" | "synchronize" | "reopened" | "ready_for_review"
+            ) {
+                return EventInterpretation::decline("pull request action is not a code change");
+            }
+
+            // A fork's head is attacker-controlled code, and this worker runs
+            // that code on a machine holding real credentials. Refuse before
+            // anything is cloned; forks are a later, sandboxed phase.
+            let head_repo = payload
+                .pointer("/pull_request/head/repo/full_name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            if head_repo.is_empty() || !head_repo.eq_ignore_ascii_case(repo) {
+                return EventInterpretation::decline("pull request head is a fork");
+            }
+
+            // `ready_for_review` is precisely the transition out of draft, and
+            // the payload can still carry the pre-transition flag.
+            if action != "ready_for_review"
+                && payload
+                    .pointer("/pull_request/draft")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+            {
+                return EventInterpretation::decline("draft pull request");
+            }
+
+            // The head SHA is the authority. The branch it sits on can be
+            // force-pushed between this delivery and the checkout, which would
+            // verify code nobody reviewed and report the result against the
+            // reviewed commit.
+            let sha = payload
+                .pointer("/pull_request/head/sha")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let base = payload
+                .pointer("/pull_request/base/ref")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let git_ref = if base.is_empty() {
+                String::new()
+            } else {
+                format!("refs/heads/{base}")
+            };
+            EventInterpretation::build(git_ref, sha)
+        }
+        _ => EventInterpretation::decline("unsupported event"),
+    }
+}
+
+/// Stable job identity for one GitHub delivery.
+///
+/// The delivery id was already bounded to 128 bytes at the boundary; the
+/// prefix keeps it from colliding with a caller-chosen request id.
+pub(crate) fn delivery_request_id(delivery_id: &str) -> String {
+    let id: String = delivery_id
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-')
+        .take(100)
+        .collect();
+    format!("github-delivery-{id}")
+}
+
 fn branch_from_ref(git_ref: &str) -> Option<&str> {
     git_ref.strip_prefix("refs/heads/")
 }
@@ -160,7 +304,12 @@ fn build_request_from_rule(
         }),
         repo_url: format!("https://github.com/{repo}.git"),
         git_ref: Some(branch.clone()),
+        // Pin the commit the delivery announced. A branch name is re-resolved
+        // at clone time, so a push landing in between would silently swap the
+        // verified code; a full object id cannot drift. The branch above is
+        // kept for rule matching and image tags, never for the checkout.
         commit_sha: Some(sha.to_string()),
+        github_installation_id: None,
         image: rule
             .image
             .as_deref()
@@ -243,40 +392,9 @@ pub async fn github_webhook(
         .unwrap_or_default()
         .to_string();
 
-    let (git_ref, sha, actionable) = match event.as_str() {
-        "push" => {
-            let git_ref = payload
-                .get("ref")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let sha = payload
-                .get("after")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let deleted = payload.get("deleted").and_then(serde_json::Value::as_bool) == Some(true);
-            (git_ref, sha, !deleted)
-        }
-        "workflow_run" => {
-            let run = payload.get("workflow_run").cloned().unwrap_or_default();
-            let git_ref = run
-                .get("head_branch")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let sha = run
-                .get("head_sha")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let completed_ok = payload.get("action").and_then(serde_json::Value::as_str)
-                == Some("completed")
-                && run.get("conclusion").and_then(serde_json::Value::as_str) == Some("success");
-            (git_ref, sha, completed_ok)
-        }
-        _ => (String::new(), String::new(), false),
-    };
+    let interpreted = interpret_event(&event, &payload, &repo);
+    let git_ref = interpreted.git_ref.clone();
+    let sha = interpreted.sha.clone();
 
     state
         .counters
@@ -323,12 +441,13 @@ pub async fn github_webhook(
     // non-ASCII sha before it reaches `substitute_image`/lock keys. An invalid
     // sha is ignored (not built), and the idempotency lease is finished so no
     // zombie holder is left behind.
-    if !actionable || repo.is_empty() || !valid_commit_sha(&sha) {
+    if interpreted.declined.is_some() || repo.is_empty() || !valid_commit_sha(&sha) {
         fiducia::idempotency_finish(&state.http, &state.config, &idem_key, &state.holder, true)
             .await;
+        let reason = interpreted.declined.unwrap_or("no commit sha in payload");
         return (
             StatusCode::OK,
-            Json(json!({ "ok": true, "action": "ignored", "event": event })),
+            Json(json!({ "ok": true, "action": "ignored", "event": event, "reason": reason })),
         )
             .into_response();
     }
@@ -348,7 +467,20 @@ pub async fn github_webhook(
             .into_response();
     };
 
-    let request = build_request_from_rule(rule, &repo, &git_ref, &sha);
+    let mut request = build_request_from_rule(rule, &repo, &git_ref, &sha);
+    // Taken from the body whose signature was just verified, so the result is
+    // reported through the installation that actually covers this repository.
+    // One App installed on several orgs has a different id for each, and a
+    // single configured id would be wrong for all but one of them.
+    request.github_installation_id = payload
+        .pointer("/installation/id")
+        .and_then(serde_json::Value::as_u64);
+    // GitHub redelivers: on timeout, on manual redelivery, and whenever it is
+    // unsure a delivery landed. The delivery id becomes the request id, so a
+    // repeat reattaches to the job the first one created instead of building
+    // and reporting the same commit twice. This holds with no database and no
+    // lock service, which is how a laptop worker runs.
+    request.request_id = Some(delivery_request_id(&delivery_id));
     let outcome = crate::enqueue_build(&state, request, "webhook").await;
     fiducia::idempotency_finish(
         &state.http,
@@ -561,6 +693,167 @@ mod tests {
         assert!(!verify_github_signature("wrong", b"hello", signature));
         assert!(!verify_github_signature("secret", b"hello", "sha256=zz"));
         assert!(!verify_github_signature("secret", b"hello", ""));
+    }
+
+    fn pull_request_payload(action: &str, head_repo: &str, draft: bool) -> serde_json::Value {
+        json!({
+            "action": action,
+            "repository": { "full_name": "gha-indie-worker/gha-indie-worker-api-server.rs" },
+            "pull_request": {
+                "draft": draft,
+                "head": {
+                    "sha": "52f0e858d5d6cc952d0bb24d1eb5b4631bb92de0",
+                    "repo": { "full_name": head_repo }
+                },
+                "base": { "ref": "main" }
+            }
+        })
+    }
+
+    #[test]
+    fn pull_request_builds_the_head_commit_and_matches_on_the_base_branch() {
+        let payload = pull_request_payload(
+            "synchronize",
+            "gha-indie-worker/gha-indie-worker-api-server.rs",
+            false,
+        );
+        let interpreted = interpret_event(
+            "pull_request",
+            &payload,
+            "gha-indie-worker/gha-indie-worker-api-server.rs",
+        );
+        assert!(interpreted.declined.is_none());
+        // The commit, never the branch it currently sits on.
+        assert_eq!(interpreted.sha, "52f0e858d5d6cc952d0bb24d1eb5b4631bb92de0");
+        assert_eq!(interpreted.git_ref, "refs/heads/main");
+    }
+
+    #[test]
+    fn fork_pull_requests_are_refused_before_anything_is_cloned() {
+        let payload = pull_request_payload("opened", "someone-else/fork-of-it", false);
+        let interpreted = interpret_event(
+            "pull_request",
+            &payload,
+            "gha-indie-worker/gha-indie-worker-api-server.rs",
+        );
+        assert_eq!(interpreted.declined, Some("pull request head is a fork"));
+        assert!(interpreted.sha.is_empty());
+    }
+
+    #[test]
+    fn a_missing_head_repo_counts_as_a_fork() {
+        let mut payload = pull_request_payload(
+            "opened",
+            "gha-indie-worker/gha-indie-worker-api-server.rs",
+            false,
+        );
+        // Deleted forks arrive with a null head repo; that must not read as
+        // "same repository".
+        payload["pull_request"]["head"]["repo"] = serde_json::Value::Null;
+        let interpreted = interpret_event(
+            "pull_request",
+            &payload,
+            "gha-indie-worker/gha-indie-worker-api-server.rs",
+        );
+        assert_eq!(interpreted.declined, Some("pull request head is a fork"));
+    }
+
+    #[test]
+    fn drafts_are_skipped_until_they_are_marked_ready() {
+        let repo = "gha-indie-worker/gha-indie-worker-api-server.rs";
+        let draft = interpret_event(
+            "pull_request",
+            &pull_request_payload("opened", repo, true),
+            repo,
+        );
+        assert_eq!(draft.declined, Some("draft pull request"));
+
+        // The ready_for_review payload can still carry draft=true, and that
+        // transition is exactly when CI should start.
+        let ready = interpret_event(
+            "pull_request",
+            &pull_request_payload("ready_for_review", repo, true),
+            repo,
+        );
+        assert!(ready.declined.is_none());
+    }
+
+    #[test]
+    fn pull_request_actions_that_change_no_code_are_ignored() {
+        let repo = "gha-indie-worker/gha-indie-worker-api-server.rs";
+        for action in ["labeled", "closed", "edited", "assigned"] {
+            let interpreted = interpret_event(
+                "pull_request",
+                &pull_request_payload(action, repo, false),
+                repo,
+            );
+            assert_eq!(
+                interpreted.declined,
+                Some("pull request action is not a code change"),
+                "{action} should not start a build"
+            );
+        }
+    }
+
+    #[test]
+    fn push_deliveries_keep_building_and_deletions_do_not() {
+        let payload = json!({
+            "ref": "refs/heads/main",
+            "after": "52f0e858d5d6cc952d0bb24d1eb5b4631bb92de0",
+            "repository": { "full_name": "o/r" }
+        });
+        let interpreted = interpret_event("push", &payload, "o/r");
+        assert!(interpreted.declined.is_none());
+        assert_eq!(interpreted.git_ref, "refs/heads/main");
+
+        let deleted = json!({
+            "ref": "refs/heads/gone",
+            "after": "0000000000000000000000000000000000000000",
+            "deleted": true,
+            "repository": { "full_name": "o/r" }
+        });
+        assert_eq!(
+            interpret_event("push", &deleted, "o/r").declined,
+            Some("branch deletion")
+        );
+    }
+
+    #[test]
+    fn a_redelivery_maps_to_the_same_job_identity() {
+        let id = "7f3c1a2e-9b4d-4e6f-8a1b-2c3d4e5f6a7b";
+        assert_eq!(delivery_request_id(id), delivery_request_id(id));
+        assert_ne!(
+            delivery_request_id(id),
+            delivery_request_id("00000000-0000-0000-0000-000000000000")
+        );
+        // Must satisfy the requestId rules it will be validated against.
+        let derived = delivery_request_id("has spaces\tand/../slashes");
+        assert!(!derived.chars().any(char::is_whitespace));
+        assert!(!derived.contains('/'));
+        assert!(delivery_request_id(&"x".repeat(500)).len() <= 128);
+    }
+
+    #[test]
+    fn webhook_builds_pin_the_commit_rather_than_the_branch() {
+        let rule = WebhookRule {
+            repo: "o/r".to_string(),
+            branch: None,
+            tags: false,
+            events: Some(vec!["pull_request".to_string()]),
+            image: None,
+            profile: Some("rust-verify".to_string()),
+            context_dir: None,
+            dockerfile: None,
+            push: false,
+            executor: None,
+            deploy: None,
+        };
+        let sha = "52f0e858d5d6cc952d0bb24d1eb5b4631bb92de0";
+        let request = build_request_from_rule(&rule, "o/r", "refs/heads/main", sha);
+        assert_eq!(request.commit_sha.as_deref(), Some(sha));
+        // The branch is informational; it must never be what gets checked out.
+        assert_eq!(request.git_ref.as_deref(), Some("main"));
+        assert_eq!(request.job_kind.as_deref(), Some("run-profile"));
     }
 
     #[test]

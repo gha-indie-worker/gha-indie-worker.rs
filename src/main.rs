@@ -9,6 +9,7 @@ use tokio::{
     sync::{RwLock, Semaphore},
 };
 
+mod checks;
 mod config;
 mod db;
 mod ecr;
@@ -18,6 +19,7 @@ mod exec;
 mod fiducia;
 mod gh_secrets;
 mod http;
+mod indiebuild;
 mod jobs;
 mod lambda_exec;
 mod nats_submit;
