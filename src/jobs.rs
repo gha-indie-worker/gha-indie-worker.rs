@@ -97,6 +97,81 @@ pub(crate) async fn resolve_repo_path(
     Ok(resolved)
 }
 
+/// Policy applied to every worker-owned git invocation that touches a remote
+/// or materializes a tree.
+///
+/// The protocol allowlist stops a repository URL or submodule from reaching
+/// `ext::`, `file://` or local transports. `credential.helper=` empties the
+/// helper list: `GIT_ASKPASS` and `GIT_TERMINAL_PROMPT=0` stop *prompting*,
+/// but a configured helper answers without prompting, and would hand an
+/// ostensibly uncredentialed checkout this workstation's identity.
+fn hardened_git_args() -> Vec<String> {
+    [
+        "-c",
+        "protocol.ext.allow=never",
+        "-c",
+        "protocol.file.allow=never",
+        "-c",
+        "protocol.local.allow=never",
+        "-c",
+        "credential.helper=",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+pub(crate) fn clone_args(request: &BuildRequest, repo_dir: &Path) -> Vec<String> {
+    let mut args = hardened_git_args();
+    args.extend(
+        ["clone", "--depth", "1", "--no-tags"]
+            .into_iter()
+            .map(str::to_string),
+    );
+    if clean_optional(request.commit_sha.as_deref()).is_some() {
+        // The webhook's immutable revision is fetched explicitly below. Do not
+        // let clone resolve a moving branch and accidentally execute a newer
+        // commit while the request is in the queue.
+        args.push("--no-checkout".to_string());
+    } else if let Some(git_ref) = clean_optional(request.git_ref.as_deref()) {
+        args.push("--branch".to_string());
+        args.push(git_ref);
+    }
+    args.push("--".to_string());
+    args.push(request.repo_url.clone());
+    args.push(repo_dir.to_string_lossy().to_string());
+    args
+}
+
+/// The remote is named, never spelled: the repository URL appears only in the
+/// clone, after `--`, so nothing caller-supplied but a validated object id
+/// reaches this command line.
+pub(crate) fn exact_fetch_args(exact_sha: &str) -> Vec<String> {
+    let mut args = hardened_git_args();
+    args.extend(
+        ["fetch", "--depth", "1", "--no-tags", "origin", exact_sha]
+            .into_iter()
+            .map(str::to_string),
+    );
+    args
+}
+
+/// What `.git/HEAD` must contain after a detached checkout of `exact_sha`.
+///
+/// A symbolic ref (`ref: refs/heads/…`) means HEAD is on a branch, and any
+/// other id means a different commit was materialized. Either way the tree is
+/// not the one that was asked for, so the job must not run against it.
+pub(crate) fn verify_detached_head(head: &str, exact_sha: &str) -> Result<(), String> {
+    if head.trim() == exact_sha {
+        Ok(())
+    } else {
+        Err(format!(
+            "exact checkout mismatch: requested {exact_sha}, checked out {}",
+            head.trim()
+        ))
+    }
+}
+
 pub(crate) async fn clone_repository(
     config: &Config,
     request: &BuildRequest,
@@ -104,26 +179,52 @@ pub(crate) async fn clone_repository(
     repo_dir: &Path,
     log_path: &Path,
 ) -> Result<(), String> {
-    let mut clone_args = vec![
-        "-c".to_string(),
-        "protocol.ext.allow=never".to_string(),
-        "-c".to_string(),
-        "protocol.file.allow=never".to_string(),
-        "-c".to_string(),
-        "protocol.local.allow=never".to_string(),
-        "clone".to_string(),
-        "--depth".to_string(),
-        "1".to_string(),
-        "--no-tags".to_string(),
-    ];
-    if let Some(git_ref) = clean_optional(request.git_ref.as_deref()) {
-        clone_args.push("--branch".to_string());
-        clone_args.push(git_ref);
-    }
-    clone_args.push("--".to_string());
-    clone_args.push(request.repo_url.clone());
-    clone_args.push(repo_dir.to_string_lossy().to_string());
-    run_logged_command(config, log_path, job_dir, &config.git_bin, clone_args).await
+    run_logged_command(
+        config,
+        log_path,
+        job_dir,
+        &config.git_bin,
+        clone_args(request, repo_dir),
+    )
+    .await?;
+
+    let Some(exact_sha) = clean_optional(request.commit_sha.as_deref()) else {
+        return Ok(());
+    };
+    // Validated at admission, and again here: this value is about to be a git
+    // argument, and the executor must not depend on every caller having gone
+    // through the HTTP boundary.
+    crate::validation::validate_commit_sha(&exact_sha)?;
+
+    run_logged_command(
+        config,
+        log_path,
+        repo_dir,
+        &config.git_bin,
+        exact_fetch_args(&exact_sha),
+    )
+    .await?;
+    let mut checkout = hardened_git_args();
+    checkout.extend(
+        ["checkout", "--detach", "--force", exact_sha.as_str()]
+            .into_iter()
+            .map(str::to_string),
+    );
+    run_logged_command(config, log_path, repo_dir, &config.git_bin, checkout).await?;
+
+    // Enforced, not merely logged: branch-protection-grade evidence needs the
+    // materialized commit to *be* the requested one, mechanically.
+    let head = fs::read_to_string(repo_dir.join(".git/HEAD"))
+        .await
+        .map_err(|error| format!("failed to verify exact checkout {exact_sha}: {error}"))?;
+    verify_detached_head(&head, &exact_sha)?;
+    append_log(
+        log_path,
+        &format!("verified exact checkout {exact_sha}\n"),
+        config.max_log_bytes,
+    )
+    .await;
+    Ok(())
 }
 
 pub(crate) async fn execute_profile(state: &AppState, job: &BuildJobRecord) -> Result<(), String> {
@@ -696,6 +797,111 @@ pub(crate) async fn submit_from_nats(
 }
 
 #[cfg(test)]
+mod checkout_tests {
+    use super::*;
+
+    const SHA: &str = "1944fe5ddb4bb702a076ea95a311e0be6f49a9b7";
+
+    fn request(git_ref: Option<&str>, commit_sha: Option<&str>, repo_url: &str) -> BuildRequest {
+        BuildRequest {
+            schema_version: None,
+            job_kind: Some("run-profile".to_string()),
+            repo_url: repo_url.to_string(),
+            git_ref: git_ref.map(str::to_string),
+            commit_sha: commit_sha.map(str::to_string),
+            image: String::new(),
+            profile: Some("rust-verify".to_string()),
+            context_dir: None,
+            dockerfile: None,
+            build_args: None,
+            push: None,
+            deploy: None,
+            executor: None,
+            request_id: None,
+        }
+    }
+
+    #[test]
+    fn a_pinned_commit_never_lets_clone_resolve_a_branch() {
+        let args = clone_args(
+            &request(Some("main"), Some(SHA), "https://github.com/o/r"),
+            Path::new("/jobs/b1/repo"),
+        );
+        // The branch can move while the job is queued; the pin must win.
+        assert!(args.iter().any(|arg| arg == "--no-checkout"));
+        assert!(!args.iter().any(|arg| arg == "--branch"));
+    }
+
+    #[test]
+    fn an_unpinned_request_clones_its_branch() {
+        let args = clone_args(
+            &request(Some("main"), None, "https://github.com/o/r"),
+            Path::new("/jobs/b1/repo"),
+        );
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--branch".to_string(), "main".to_string()]));
+        assert!(!args.iter().any(|arg| arg == "--no-checkout"));
+    }
+
+    #[test]
+    fn a_hostile_repository_url_cannot_become_a_git_option() {
+        // Option termination in the clone, and absence from the fetch.
+        let hostile = "--upload-pack=touch /tmp/pwned";
+        let clone = clone_args(
+            &request(None, Some(SHA), hostile),
+            Path::new("/jobs/b1/repo"),
+        );
+        let separator = clone
+            .iter()
+            .position(|arg| arg == "--")
+            .expect("-- present");
+        assert_eq!(
+            clone[separator + 1],
+            hostile,
+            "the URL is an operand, after --"
+        );
+        assert!(
+            !clone[..separator].iter().any(|arg| arg == hostile),
+            "nothing before -- is caller-supplied"
+        );
+
+        let fetch = exact_fetch_args(SHA);
+        assert!(!fetch.iter().any(|arg| arg == hostile));
+        // The only caller-derived operand is the validated object id.
+        assert_eq!(
+            fetch[fetch.len() - 2..],
+            ["origin".to_string(), SHA.to_string()]
+        );
+    }
+
+    #[test]
+    fn every_remote_touching_command_clears_credential_helpers() {
+        for args in [
+            clone_args(
+                &request(None, Some(SHA), "https://github.com/o/r"),
+                Path::new("/r"),
+            ),
+            exact_fetch_args(SHA),
+        ] {
+            assert!(args.iter().any(|arg| arg == "credential.helper="));
+            assert!(args.iter().any(|arg| arg == "protocol.ext.allow=never"));
+        }
+    }
+
+    #[test]
+    fn the_materialized_commit_must_be_the_requested_one() {
+        assert!(verify_detached_head(&format!("{SHA}\n"), SHA).is_ok());
+        // On a branch, or at any other commit, the job must not run.
+        let on_branch = verify_detached_head("ref: refs/heads/main\n", SHA).unwrap_err();
+        assert!(on_branch.contains("exact checkout mismatch"), "{on_branch}");
+        let other = verify_detached_head(&"b".repeat(40), SHA).unwrap_err();
+        assert!(other.contains(&"b".repeat(40)), "{other}");
+        assert!(verify_detached_head("", SHA).is_err());
+    }
+}
+
+#[cfg(test)]
 mod idempotency_tests {
     use super::*;
     use std::{
@@ -799,6 +1005,7 @@ mod idempotency_tests {
             job_kind: Some("run-profile".to_string()),
             repo_url: "https://github.com/ORESoftware/k8s-cluster.git".to_string(),
             git_ref: Some(revision.to_string()),
+            commit_sha: Some(revision.to_string()),
             image: String::new(),
             profile: Some("playwright".to_string()),
             context_dir: None,
