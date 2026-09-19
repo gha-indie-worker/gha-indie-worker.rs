@@ -168,12 +168,34 @@ pub(crate) async fn run_logged_command_inner(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+
     if program == config.git_bin {
+        // The checkout is a trust boundary: repository attributes can name a
+        // filter, and Git can otherwise resolve that filter or hooks from the
+        // laptop's system config. HOME already points at the isolated job cwd,
+        // but that does not disable /etc/gitconfig. Make host Git policy
+        // irrelevant and allow only the network transports admitted by our
+        // repo URL validator.
+        command
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_ATTR_NOSYSTEM", "1")
+            .env("GIT_ALLOW_PROTOCOL", "https:ssh")
+            .env("GIT_PROTOCOL_FROM_USER", "0")
+            .env(
+                "GIT_CONFIG_COUNT",
+                if config.git_http_auth_header.is_some() {
+                    "2"
+                } else {
+                    "1"
+                },
+            )
+            .env("GIT_CONFIG_KEY_0", "core.hooksPath")
+            .env("GIT_CONFIG_VALUE_0", "/dev/null");
+
         if let Some(auth_header) = config.git_http_auth_header.as_deref() {
             command
-                .env("GIT_CONFIG_COUNT", "1")
-                .env("GIT_CONFIG_KEY_0", "http.https://github.com/.extraheader")
-                .env("GIT_CONFIG_VALUE_0", auth_header);
+                .env("GIT_CONFIG_KEY_1", "http.https://github.com/.extraheader")
+                .env("GIT_CONFIG_VALUE_1", auth_header);
         }
     }
     if stdin.is_some() {
