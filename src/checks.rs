@@ -50,8 +50,13 @@ struct AppClaims {
 /// reporting against whatever the branch points at *now* would attach the
 /// verdict to code that was never verified. Jobs that are not pinned to an
 /// object id therefore report nothing.
-pub(crate) fn target_from_request(repo_url: &str, git_ref: Option<&str>) -> Option<CheckTarget> {
-    let head_sha = git_ref.filter(|value| crate::jobs::is_commit_sha(value))?;
+pub(crate) fn target_from_request(
+    repo_url: &str,
+    commit_sha: Option<&str>,
+) -> Option<CheckTarget> {
+    // The same grammar admission and checkout use, so a job is reported on
+    // exactly when the executor could pin it.
+    let head_sha = commit_sha.filter(|value| crate::validation::validate_commit_sha(value).is_ok())?;
     let rest = repo_url
         .strip_prefix("https://github.com/")
         .or_else(|| repo_url.strip_prefix("git@github.com:"))?;

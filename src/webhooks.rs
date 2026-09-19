@@ -105,8 +105,10 @@ fn substitute_image(template: &str, sha: &str, git_ref: &str) -> String {
 /// an image tag or lock key. Rejects non-ASCII (the old byte-slice panic) and
 /// any shell/tag metacharacter in one check.
 fn valid_commit_sha(sha: &str) -> bool {
-    let len = sha.len();
-    (7..=64).contains(&len) && sha.chars().all(|ch| ch.is_ascii_hexdigit())
+    matches!(sha.len(), 40 | 64)
+        && sha
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
 /// What one webhook delivery means for this worker.
@@ -280,14 +282,12 @@ fn build_request_from_rule(
             "build-image".to_string()
         }),
         repo_url: format!("https://github.com/{repo}.git"),
+        git_ref: Some(branch.clone()),
         // Pin the commit the delivery announced. A branch name is re-resolved
         // at clone time, so a push landing in between would silently swap the
-        // verified code; a full object id cannot drift.
-        git_ref: Some(if crate::jobs::is_commit_sha(sha) {
-            sha.to_string()
-        } else {
-            branch.clone()
-        }),
+        // verified code; a full object id cannot drift. The branch above is
+        // kept for rule matching and image tags, never for the checkout.
+        commit_sha: Some(sha.to_string()),
         image: rule
             .image
             .as_deref()
@@ -793,7 +793,9 @@ mod tests {
         };
         let sha = "52f0e858d5d6cc952d0bb24d1eb5b4631bb92de0";
         let request = build_request_from_rule(&rule, "o/r", "refs/heads/main", sha);
-        assert_eq!(request.git_ref.as_deref(), Some(sha));
+        assert_eq!(request.commit_sha.as_deref(), Some(sha));
+        // The branch is informational; it must never be what gets checked out.
+        assert_eq!(request.git_ref.as_deref(), Some("main"));
         assert_eq!(request.job_kind.as_deref(), Some("run-profile"));
     }
 
