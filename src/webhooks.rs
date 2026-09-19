@@ -105,8 +105,10 @@ fn substitute_image(template: &str, sha: &str, git_ref: &str) -> String {
 /// an image tag or lock key. Rejects non-ASCII (the old byte-slice panic) and
 /// any shell/tag metacharacter in one check.
 fn valid_commit_sha(sha: &str) -> bool {
-    let len = sha.len();
-    (7..=64).contains(&len) && sha.chars().all(|ch| ch.is_ascii_hexdigit())
+    matches!(sha.len(), 40 | 64)
+        && sha
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
 fn branch_from_ref(git_ref: &str) -> Option<&str> {
@@ -158,6 +160,7 @@ fn build_request_from_rule(
         }),
         repo_url: format!("https://github.com/{repo}.git"),
         git_ref: Some(branch.clone()),
+        commit_sha: Some(sha.to_string()),
         image: rule
             .image
             .as_deref()
