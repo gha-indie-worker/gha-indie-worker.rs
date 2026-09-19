@@ -325,9 +325,29 @@ mod tests {
         dir
     }
 
+    /// A real git binary rather than whatever `git` resolves to.
+    ///
+    /// On macOS `/usr/bin/git` is the `xcrun` shim, not git. Launched
+    /// concurrently with a cleared environment it is intermittently SIGKILLed
+    /// by the OS — measured at 3 failures in 40 runs of this suite against 0
+    /// in 40 with the binary it forwards to. Operators should point
+    /// `BUILD_SERVER_GIT_BIN` at the real binary for the same reason.
+    fn real_git() -> String {
+        [
+            "/Library/Developer/CommandLineTools/usr/bin/git",
+            "/Applications/Xcode.app/Contents/Developer/usr/bin/git",
+            "/opt/homebrew/bin/git",
+            "/usr/local/bin/git",
+        ]
+        .into_iter()
+        .find(|candidate| Path::new(candidate).is_file())
+        .unwrap_or("git")
+        .to_string()
+    }
+
     fn test_config() -> Config {
         let mut config = crate::config::config_from_env();
-        config.git_bin = "git".to_string();
+        config.git_bin = real_git();
         config.git_http_auth_header = None;
         config
     }
@@ -361,11 +381,12 @@ mod tests {
         // `git credential fill` exists to consult helpers, so it is the most
         // direct way to ask "would one run?". It is expected to fail here: no
         // helper, no prompt, nothing to fill with.
+        let config = test_config();
         let _ = run_logged_command_with_input(
-            &test_config(),
+            &config,
             &log,
             &home,
-            "git",
+            &config.git_bin,
             vec!["credential".to_string(), "fill".to_string()],
             vec!["credential".to_string(), "fill".to_string()],
             b"protocol=https\nhost=example.invalid\n\n".to_vec(),
@@ -401,7 +422,10 @@ mod tests {
         let git = |args: &[&str]| {
             let args: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
             let (config, log, repo) = (config.clone(), log.clone(), repo.clone());
-            async move { run_logged_command(&config, &log, &repo, "git", args).await }
+            async move {
+                let git_bin = config.git_bin.clone();
+                run_logged_command(&config, &log, &repo, &git_bin, args).await
+            }
         };
 
         git(&["init", "--quiet"]).await.expect("init");
