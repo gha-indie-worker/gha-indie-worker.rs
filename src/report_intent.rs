@@ -10,6 +10,7 @@ use std::sync::atomic::Ordering;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::fs;
+use tokio::io::AsyncWriteExt;
 
 use crate::checks::{CheckTarget, Delivery, ObservedCheckState};
 use crate::config::ReportingMode;
@@ -58,6 +59,7 @@ pub(crate) struct ReportIntent {
     pub(crate) report_attempt_count: u32,
     pub(crate) last_report_error_class: Option<String>,
     pub(crate) last_report_attempt_at_ms: Option<u64>,
+    pub(crate) last_observed_check_state: Option<String>,
 }
 
 fn now_ms() -> u64 {
@@ -95,6 +97,14 @@ fn safe_attempt_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':' | b'@'))
 }
 
+fn safe_repo_component(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 100
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
 fn validate(intent: &ReportIntent) -> Result<(), String> {
     if intent.schema != SCHEMA {
         return Err("unknown report-intent schema".to_string());
@@ -105,18 +115,14 @@ fn validate(intent: &ReportIntent) -> Result<(), String> {
     if crate::validation::validate_commit_sha(&intent.head_sha).is_err() {
         return Err("invalid report-intent head SHA".to_string());
     }
-    if intent.owner.is_empty()
-        || intent.repo.is_empty()
-        || intent.owner.len() > 100
-        || intent.repo.len() > 100
-        || intent.owner.contains('/')
-        || intent.repo.contains('/')
-    {
+    if !safe_repo_component(&intent.owner) || !safe_repo_component(&intent.repo) {
         return Err("invalid report-intent repository".to_string());
     }
     if intent.check_context.is_empty()
         || intent.check_context.len() > 256
+        || intent.check_context.chars().any(char::is_control)
         || intent.reporter_app_id.parse::<u64>().ok().filter(|id| *id > 0).is_none()
+        || intent.installation_candidate == Some(0)
     {
         return Err("invalid report-intent authority".to_string());
     }
@@ -125,15 +131,58 @@ fn validate(intent: &ReportIntent) -> Result<(), String> {
             return Err("invalid report-intent conclusion".to_string());
         }
     }
+    if intent.execution_state == ExecutionState::Active
+        && (intent.execution_finished_at_ms.is_some() || intent.desired_conclusion.is_some())
+    {
+        return Err("active report intent cannot contain terminal execution evidence".to_string());
+    }
+    if intent.execution_state != ExecutionState::Active
+        && (intent.execution_finished_at_ms.is_none() || intent.desired_conclusion.is_none())
+    {
+        return Err("terminal report intent is missing execution evidence".to_string());
+    }
+    Ok(())
+}
+
+async fn ensure_report_root(state: &AppState) -> Result<PathBuf, String> {
+    let root = report_root(state);
+    match fs::symlink_metadata(&root).await {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err("report-intent root must be an unaliased directory".to_string());
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(&root)
+                .await
+                .map_err(|error| format!("could not create report-intent directory: {error}"))?;
+            let metadata = fs::symlink_metadata(&root)
+                .await
+                .map_err(|error| format!("could not inspect report-intent directory: {error}"))?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err("report-intent root must be an unaliased directory".to_string());
+            }
+        }
+        Err(error) => return Err(format!("could not inspect report-intent directory: {error}")),
+    }
+    Ok(root)
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(path: &Path) -> Result<(), String> {
+    std::fs::File::open(path)
+        .and_then(|file| file.sync_all())
+        .map_err(|error| format!("could not fsync report-intent directory: {error}"))
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
 async fn persist(state: &AppState, intent: &ReportIntent) -> Result<(), String> {
     validate(intent)?;
-    let root = report_root(state);
-    fs::create_dir_all(&root)
-        .await
-        .map_err(|error| format!("could not create report-intent directory: {error}"))?;
+    let root = ensure_report_root(state).await?;
     let path = intent_path(&root, intent);
     let temp = root.join(format!(
         ".{}.{}.tmp",
@@ -145,19 +194,44 @@ async fn persist(state: &AppState, intent: &ReportIntent) -> Result<(), String> 
     if bytes.len() as u64 > MAX_INTENT_BYTES {
         return Err("report intent exceeds size bound".to_string());
     }
-    fs::write(&temp, &bytes)
+
+    let mut file = fs::File::create(&temp)
+        .await
+        .map_err(|error| format!("could not create report intent: {error}"))?;
+    file.write_all(&bytes)
         .await
         .map_err(|error| format!("could not write report intent: {error}"))?;
-    if let Err(error) = fs::rename(&temp, &path).await {
-        // Windows cannot atomically replace an existing destination. The
-        // authoritative laptop path is Unix, but keep a bounded fallback for
-        // development without ever accepting a partially written JSON file.
+    file.sync_all()
+        .await
+        .map_err(|error| format!("could not fsync report intent: {error}"))?;
+    drop(file);
+
+    if let Err(first_error) = fs::rename(&temp, &path).await {
+        // Windows cannot atomically replace an existing destination. Keep the
+        // compatibility fallback bounded and never leave a partial temp file.
         if fs::remove_file(&path).await.is_err() || fs::rename(&temp, &path).await.is_err() {
             let _ = fs::remove_file(&temp).await;
-            return Err(format!("could not publish report intent: {error}"));
+            return Err(format!("could not publish report intent: {first_error}"));
         }
     }
+    sync_parent_directory(&root)?;
     Ok(())
+}
+
+async fn read_intent_path(path: &Path) -> Result<ReportIntent, String> {
+    let metadata = fs::symlink_metadata(path)
+        .await
+        .map_err(|error| format!("could not inspect report intent: {error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > MAX_INTENT_BYTES {
+        return Err("unsafe report-intent file".to_string());
+    }
+    let bytes = fs::read(path)
+        .await
+        .map_err(|error| format!("could not read report intent: {error}"))?;
+    let intent: ReportIntent = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("invalid report-intent JSON: {error}"))?;
+    validate(&intent)?;
+    Ok(intent)
 }
 
 async fn logical_attempt_for_job(state: &AppState, job_id: &str) -> String {
@@ -176,8 +250,9 @@ pub(crate) fn external_id(intent: &ReportIntent) -> String {
     )
 }
 
-/// Create the durable intent before GitHub Check Run creation. The returned
-/// intent carries the stable logical attempt used for Check Run external_id.
+/// Create the durable intent before GitHub Check Run creation. A repeated
+/// logical attempt returns its existing journal entry instead of resetting any
+/// already-persisted execution or delivery evidence.
 pub(crate) async fn begin(
     state: &AppState,
     target: &CheckTarget,
@@ -210,7 +285,22 @@ pub(crate) async fn begin(
         report_attempt_count: 0,
         last_report_error_class: None,
         last_report_attempt_at_ms: None,
+        last_observed_check_state: None,
     };
+    validate(&intent)?;
+    let root = ensure_report_root(state).await?;
+    let path = intent_path(&root, &intent);
+    match fs::symlink_metadata(&path).await {
+        Ok(_) => {
+            let existing = read_intent_path(&path).await?;
+            if intent_identity(&existing) != intent_identity(&intent) {
+                return Err("report-intent path collision".to_string());
+            }
+            return Ok(Some(existing));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("could not inspect existing report intent: {error}")),
+    }
     persist(state, &intent).await?;
     Ok(Some(intent))
 }
@@ -220,8 +310,29 @@ pub(crate) async fn record_check_id(
     intent: &mut ReportIntent,
     check_run_id: u64,
 ) -> Result<(), String> {
+    if check_run_id == 0 {
+        return Err("invalid zero Check Run id".to_string());
+    }
+    if let Some(existing) = intent.check_run_id {
+        if existing != check_run_id {
+            return Err("logical attempt is already bound to another Check Run id".to_string());
+        }
+        return Ok(());
+    }
     intent.check_run_id = Some(check_run_id);
     persist(state, intent).await
+}
+
+fn intent_matches_target(intent: &ReportIntent, target: &CheckTarget) -> bool {
+    intent.owner.eq_ignore_ascii_case(&target.owner)
+        && intent.repo.eq_ignore_ascii_case(&target.repo)
+        && intent.head_sha == target.head_sha
+        && intent.report_delivery_state == ReportDeliveryState::Pending
+}
+
+fn check_binding_matches(intent: &ReportIntent, check_run_id: Option<u64>) -> bool {
+    intent.check_run_id == check_run_id
+        || (check_run_id.is_some() && intent.check_run_id.is_none())
 }
 
 pub(crate) async fn record_terminal_execution(
@@ -236,13 +347,7 @@ pub(crate) async fn record_terminal_execution(
     let mut intents = load_all(state).await?;
     let matches = intents
         .iter_mut()
-        .filter(|intent| {
-            intent.owner.eq_ignore_ascii_case(&target.owner)
-                && intent.repo.eq_ignore_ascii_case(&target.repo)
-                && intent.head_sha == target.head_sha
-                && intent.check_run_id == check_run_id
-                && intent.report_delivery_state == ReportDeliveryState::Pending
-        })
+        .filter(|intent| intent_matches_target(intent, target) && check_binding_matches(intent, check_run_id))
         .collect::<Vec<_>>();
     if matches.len() != 1 {
         return Err(format!(
@@ -251,6 +356,11 @@ pub(crate) async fn record_terminal_execution(
         ));
     }
     let intent = matches.into_iter().next().expect("one match");
+    if let Some(check_run_id) = check_run_id {
+        if intent.check_run_id.is_none() {
+            intent.check_run_id = Some(check_run_id);
+        }
+    }
     intent.execution_state = if succeeded {
         ExecutionState::Succeeded
     } else {
@@ -279,38 +389,56 @@ pub(crate) async fn record_delivery(
             .fetch_add(1, Ordering::Relaxed);
         return;
     };
-    for intent in intents.iter_mut().filter(|intent| {
-        intent.owner.eq_ignore_ascii_case(&target.owner)
-            && intent.repo.eq_ignore_ascii_case(&target.repo)
-            && intent.head_sha == target.head_sha
-            && intent.check_run_id == check_run_id
-            && intent.report_delivery_state == ReportDeliveryState::Pending
-    }) {
-        match delivery {
-            Delivery::CheckRun => {
-                intent.report_delivery_state = ReportDeliveryState::Delivered;
-                intent.last_report_error_class = None;
-            }
-            Delivery::Undelivered | Delivery::NotConfigured => {
-                intent.last_report_error_class = Some("undelivered".to_string());
-            }
-            Delivery::CommitStatus => {
-                // Commit Status can never be authoritative in app-required mode.
-                intent.last_report_error_class = Some("wrong_evidence_family".to_string());
-            }
-        }
-        let _ = persist(state, intent).await;
+    let matches = intents
+        .iter_mut()
+        .filter(|intent| intent_matches_target(intent, target) && check_binding_matches(intent, check_run_id))
+        .collect::<Vec<_>>();
+    if matches.len() != 1 {
+        state
+            .counters
+            .unresolved_report_intents
+            .fetch_add(1, Ordering::Relaxed);
+        return;
     }
+    let intent = matches.into_iter().next().expect("one match");
+    if let Some(check_run_id) = check_run_id {
+        if intent.check_run_id.is_none() {
+            intent.check_run_id = Some(check_run_id);
+        }
+    }
+    match delivery {
+        Delivery::CheckRun => {
+            intent.report_delivery_state = ReportDeliveryState::Delivered;
+            intent.last_report_error_class = None;
+            intent.last_observed_check_state = Some(
+                format!("completed:{}", intent.desired_conclusion.as_deref().unwrap_or("unknown")),
+            );
+        }
+        Delivery::Undelivered | Delivery::NotConfigured => {
+            intent.last_report_error_class = Some("undelivered".to_string());
+        }
+        Delivery::CommitStatus => {
+            intent.last_report_error_class = Some("wrong_evidence_family".to_string());
+        }
+    }
+    let _ = persist(state, intent).await;
     refresh_unresolved_count(state).await;
 }
 
 async fn load_all(state: &AppState) -> Result<Vec<ReportIntent>, String> {
-    let root = report_root(state);
-    let mut entries = match fs::read_dir(&root).await {
-        Ok(entries) => entries,
+    let root = match fs::symlink_metadata(report_root(state)).await {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err("report-intent root must be an unaliased directory".to_string());
+            }
+            report_root(state)
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(format!("could not read report-intent directory: {error}")),
+        Err(error) => return Err(format!("could not inspect report-intent directory: {error}")),
     };
+    let mut entries = fs::read_dir(&root)
+        .await
+        .map_err(|error| format!("could not read report-intent directory: {error}"))?;
     let mut paths = Vec::new();
     while let Some(entry) = entries
         .next_entry()
@@ -327,37 +455,21 @@ async fn load_all(state: &AppState) -> Result<Vec<ReportIntent>, String> {
     }
     let mut intents = Vec::with_capacity(paths.len());
     for path in paths {
-        let metadata = fs::symlink_metadata(&path)
-            .await
-            .map_err(|error| format!("could not inspect report intent: {error}"))?;
-        if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > MAX_INTENT_BYTES {
-            return Err("unsafe report-intent file".to_string());
-        }
-        let bytes = fs::read(&path)
-            .await
-            .map_err(|error| format!("could not read report intent: {error}"))?;
-        let intent: ReportIntent = serde_json::from_slice(&bytes)
-            .map_err(|error| format!("invalid report-intent JSON: {error}"))?;
-        validate(&intent)?;
-        intents.push(intent);
+        intents.push(read_intent_path(&path).await?);
     }
     Ok(intents)
+}
+
+fn counts_as_unresolved(intent: &ReportIntent) -> bool {
+    intent.report_delivery_state == ReportDeliveryState::PermanentFailure
+        || (intent.report_delivery_state == ReportDeliveryState::Pending
+            && intent.execution_state != ExecutionState::Active)
 }
 
 async fn refresh_unresolved_count(state: &AppState) {
     let unresolved = load_all(state)
         .await
-        .map(|intents| {
-            intents
-                .iter()
-                .filter(|intent| {
-                    !matches!(
-                        intent.report_delivery_state,
-                        ReportDeliveryState::Delivered | ReportDeliveryState::Reconciled
-                    )
-                })
-                .count()
-        })
+        .map(|intents| intents.iter().filter(|intent| counts_as_unresolved(intent)).count())
         .unwrap_or(1);
     state
         .counters
@@ -374,6 +486,11 @@ fn target_for_intent(intent: &ReportIntent) -> CheckTarget {
     }
 }
 
+fn authority_still_matches(state: &AppState, intent: &ReportIntent) -> bool {
+    intent.check_context == state.config.check_run_name
+        && state.config.github_app_id.as_deref() == Some(intent.reporter_app_id.as_str())
+}
+
 async fn reconcile_one(state: &AppState, intent: &mut ReportIntent) {
     if matches!(
         intent.report_delivery_state,
@@ -381,11 +498,14 @@ async fn reconcile_one(state: &AppState, intent: &mut ReportIntent) {
     ) {
         return;
     }
+    if !authority_still_matches(state, intent) {
+        intent.report_delivery_state = ReportDeliveryState::PermanentFailure;
+        intent.last_report_error_class = Some("reporting_authority_changed".to_string());
+        let _ = persist(state, intent).await;
+        return;
+    }
     let target = target_for_intent(intent);
 
-    // Current-process queued/running jobs are not orphans. Periodic
-    // reconciliation leaves them alone; after restart the in-memory job map is
-    // empty, so an old active intent becomes safely non-successful.
     if intent.execution_state == ExecutionState::Active {
         let current = state.jobs.read().await.get(&intent.job_id).cloned();
         if let Some(job) = current {
@@ -407,8 +527,8 @@ async fn reconcile_one(state: &AppState, intent: &mut ReportIntent) {
                 }
             }
         } else {
-            // We cannot prove what the crashed process executed. Never infer
-            // success: close any orphaned check as failure.
+            // A restarted process cannot prove whether an active execution
+            // reached success before the crash. Never infer success.
             intent.execution_state = ExecutionState::Failed;
             intent.desired_conclusion = Some("failure".to_string());
             intent.execution_finished_at_ms = Some(now_ms());
@@ -427,16 +547,19 @@ async fn reconcile_one(state: &AppState, intent: &mut ReportIntent) {
         {
             Ok(Some(id)) => {
                 intent.check_run_id = Some(id);
+                intent.last_observed_check_state = Some("discovered".to_string());
                 let _ = persist(state, intent).await;
             }
             Ok(None) => {
                 intent.report_delivery_state = ReportDeliveryState::PermanentFailure;
                 intent.last_report_error_class = Some("check_missing".to_string());
+                intent.last_observed_check_state = Some("missing".to_string());
                 let _ = persist(state, intent).await;
                 return;
             }
-            Err(_) => {
-                intent.last_report_error_class = Some("github_transient".to_string());
+            Err(error) => {
+                intent.last_report_error_class = Some(error);
+                intent.last_observed_check_state = Some("lookup_error".to_string());
                 let _ = persist(state, intent).await;
                 return;
             }
@@ -446,15 +569,23 @@ async fn reconcile_one(state: &AppState, intent: &mut ReportIntent) {
         return;
     };
 
-    let observed = match crate::checks::observe_check_run(state, &target, check_run_id, &external_id(intent)).await {
+    let observed = match crate::checks::observe_check_run(
+        state,
+        &target,
+        check_run_id,
+        &external_id(intent),
+    )
+    .await
+    {
         Ok(observed) => observed,
         Err(error) => {
-            if error == "check_not_found" || error == "check_identity_mismatch" {
+            if matches!(error.as_str(), "check_not_found" | "check_identity_mismatch") {
                 intent.report_delivery_state = ReportDeliveryState::PermanentFailure;
                 intent.last_report_error_class = Some(error);
             } else {
-                intent.last_report_error_class = Some("github_transient".to_string());
+                intent.last_report_error_class = Some(error);
             }
+            intent.last_observed_check_state = Some("lookup_error".to_string());
             intent.report_attempt_count = intent.report_attempt_count.saturating_add(1);
             intent.last_report_attempt_at_ms = Some(now_ms());
             let _ = persist(state, intent).await;
@@ -465,6 +596,7 @@ async fn reconcile_one(state: &AppState, intent: &mut ReportIntent) {
     let desired_success = intent.desired_conclusion.as_deref() == Some("success");
     match observed {
         ObservedCheckState::Completed { conclusion } => {
+            intent.last_observed_check_state = Some(format!("completed:{conclusion}"));
             let expected = if desired_success { "success" } else { "failure" };
             if conclusion == expected {
                 intent.report_delivery_state = ReportDeliveryState::Reconciled;
@@ -475,6 +607,7 @@ async fn reconcile_one(state: &AppState, intent: &mut ReportIntent) {
             }
         }
         ObservedCheckState::InProgress => {
+            intent.last_observed_check_state = Some("in_progress".to_string());
             intent.report_attempt_count = intent.report_attempt_count.saturating_add(1);
             intent.last_report_attempt_at_ms = Some(now_ms());
             let summary = if desired_success {
@@ -495,6 +628,10 @@ async fn reconcile_one(state: &AppState, intent: &mut ReportIntent) {
             .await
             {
                 intent.report_delivery_state = ReportDeliveryState::Reconciled;
+                intent.last_observed_check_state = Some(format!(
+                    "completed:{}",
+                    if desired_success { "success" } else { "failure" }
+                ));
                 intent.last_report_error_class = None;
             } else {
                 intent.last_report_error_class = Some("github_transient".to_string());
@@ -540,9 +677,8 @@ pub(crate) async fn run_periodic_reconciler(state: AppState) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn logical_identity_is_stable_and_bounded() {
-        let intent = ReportIntent {
+    fn test_intent() -> ReportIntent {
+        ReportIntent {
             schema: SCHEMA.to_string(),
             logical_attempt_id: "delivery-123".to_string(),
             job_id: "build-1".to_string(),
@@ -560,36 +696,53 @@ mod tests {
             report_attempt_count: 0,
             last_report_error_class: None,
             last_report_attempt_at_ms: None,
-        };
+            last_observed_check_state: None,
+        }
+    }
+
+    #[test]
+    fn logical_identity_is_stable_and_bounded() {
+        let intent = test_intent();
         assert!(validate(&intent).is_ok());
-        assert_eq!(external_id(&intent), format!("indiebuild:delivery-123@{}", "a".repeat(40)));
-        assert_eq!(intent_path(Path::new("/tmp"), &intent), intent_path(Path::new("/tmp"), &intent));
+        assert_eq!(
+            external_id(&intent),
+            format!("indiebuild:delivery-123@{}", "a".repeat(40))
+        );
+        assert_eq!(
+            intent_path(Path::new("/tmp"), &intent),
+            intent_path(Path::new("/tmp"), &intent)
+        );
     }
 
     #[test]
     fn unknown_execution_can_never_encode_desired_success() {
-        let mut intent = ReportIntent {
-            schema: SCHEMA.to_string(),
-            logical_attempt_id: "x".to_string(),
-            job_id: "y".to_string(),
-            owner: "o".to_string(),
-            repo: "r".to_string(),
-            head_sha: "a".repeat(40),
-            check_context: "indiebuild.dev/ci".to_string(),
-            reporter_app_id: "1".to_string(),
-            installation_candidate: None,
-            check_run_id: Some(1),
-            execution_state: ExecutionState::Active,
-            execution_finished_at_ms: None,
-            desired_conclusion: None,
-            report_delivery_state: ReportDeliveryState::Pending,
-            report_attempt_count: 0,
-            last_report_error_class: None,
-            last_report_attempt_at_ms: None,
-        };
+        let mut intent = test_intent();
         assert_ne!(intent.desired_conclusion.as_deref(), Some("success"));
         intent.execution_state = ExecutionState::Failed;
+        intent.execution_finished_at_ms = Some(1);
         intent.desired_conclusion = Some("failure".to_string());
         assert!(validate(&intent).is_ok());
+    }
+
+    #[test]
+    fn active_jobs_do_not_degrade_readiness_but_terminal_undelivered_jobs_do() {
+        let mut intent = test_intent();
+        assert!(!counts_as_unresolved(&intent));
+        intent.execution_state = ExecutionState::Succeeded;
+        intent.execution_finished_at_ms = Some(1);
+        intent.desired_conclusion = Some("success".to_string());
+        assert!(counts_as_unresolved(&intent));
+        intent.report_delivery_state = ReportDeliveryState::Delivered;
+        assert!(!counts_as_unresolved(&intent));
+    }
+
+    #[test]
+    fn journal_rejects_repository_and_authority_path_tricks() {
+        let mut intent = test_intent();
+        intent.owner = "../org".to_string();
+        assert!(validate(&intent).is_err());
+        let mut intent = test_intent();
+        intent.installation_candidate = Some(0);
+        assert!(validate(&intent).is_err());
     }
 }
