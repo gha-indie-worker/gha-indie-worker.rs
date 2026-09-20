@@ -10,7 +10,10 @@
 //! The App private key and minted installation tokens never leave this process.
 //! The only cached metadata is a bounded-TTL repository -> installation-id map.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    collections::HashSet,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use serde::Serialize;
 use serde_json::json;
@@ -22,6 +25,8 @@ const GITHUB_API: &str = "https://api.github.com";
 const API_VERSION: &str = "2022-11-28";
 const USER_AGENT: &str = "gha-indie-worker";
 const MAX_OUTPUT_TEXT: usize = 60_000;
+const CHECK_RUN_PAGE_SIZE: usize = 100;
+const MAX_CHECK_RUNS_FOR_RECOVERY: u64 = 10_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CheckTarget {
@@ -45,6 +50,13 @@ struct AppClaims {
     iat: i64,
     exp: i64,
     iss: String,
+}
+
+#[derive(Default)]
+struct CheckRunRecoveryScan {
+    expected_total: Option<u64>,
+    seen_ids: HashSet<u64>,
+    matched_id: Option<u64>,
 }
 
 pub(crate) fn target_from_request(
@@ -318,6 +330,78 @@ async fn create_check_run(
     }
 }
 
+fn scan_check_run_page(
+    scan: &mut CheckRunRecoveryScan,
+    body: &serde_json::Value,
+    target: &CheckTarget,
+    check_name: &str,
+    external_id: &str,
+    expected_app: u64,
+) -> Result<bool, String> {
+    let total = body
+        .get("total_count")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| "check_run_listing_invalid".to_string())?;
+    if total > MAX_CHECK_RUNS_FOR_RECOVERY {
+        return Err("check_run_listing_too_large".to_string());
+    }
+    match scan.expected_total {
+        Some(expected) if expected != total => {
+            return Err("check_run_listing_changed".to_string());
+        }
+        None => scan.expected_total = Some(total),
+        _ => {}
+    }
+
+    let runs = body
+        .get("check_runs")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "check_run_listing_invalid".to_string())?;
+    if runs.len() > CHECK_RUN_PAGE_SIZE {
+        return Err("check_run_listing_invalid".to_string());
+    }
+
+    for check in runs {
+        let id = check
+            .get("id")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| "check_run_listing_invalid".to_string())?;
+        if !scan.seen_ids.insert(id) {
+            // Page-number pagination is not snapshot-isolated. Seeing the same
+            // run twice means the listing moved under us; absence is no longer
+            // provable, so recovery must fail closed instead of creating a run.
+            return Err("check_run_listing_changed".to_string());
+        }
+        let identity_matches = check.get("name").and_then(serde_json::Value::as_str)
+            == Some(check_name)
+            && check.get("head_sha").and_then(serde_json::Value::as_str)
+                == Some(target.head_sha.as_str())
+            && check.get("external_id").and_then(serde_json::Value::as_str) == Some(external_id)
+            && check
+                .pointer("/app/id")
+                .and_then(serde_json::Value::as_u64)
+                == Some(expected_app);
+        if identity_matches {
+            if scan.matched_id.replace(id).is_some() {
+                return Err("duplicate_authoritative_check_runs".to_string());
+            }
+        }
+    }
+
+    let seen = u64::try_from(scan.seen_ids.len())
+        .map_err(|_| "check_run_listing_invalid".to_string())?;
+    if seen > total {
+        return Err("check_run_listing_invalid".to_string());
+    }
+    if seen == total {
+        return Ok(true);
+    }
+    if runs.is_empty() || runs.len() < CHECK_RUN_PAGE_SIZE {
+        return Err("check_run_listing_incomplete".to_string());
+    }
+    Ok(false)
+}
+
 /// Recover an already-created Check Run using the deterministic logical-attempt
 /// external id. This closes the crash window where GitHub accepted creation but
 /// the worker died before persisting the numeric Check Run id.
@@ -328,65 +412,51 @@ pub(crate) async fn find_check_run_by_external_id(
 ) -> Result<Option<u64>, String> {
     let token = installation_token(state, target).await?;
     let expected_app = expected_app_id(state.config.as_ref())?;
-    let response = state
-        .http
-        .get(format!(
-            "{GITHUB_API}/repos/{}/{}/commits/{}/check-runs",
-            target.owner, target.repo, target.head_sha
-        ))
-        .query(&[
-            ("check_name", state.config.check_run_name.as_str()),
-            ("filter", "latest"),
-            ("per_page", "100"),
-        ])
-        .header("authorization", format!("Bearer {token}"))
-        .header("accept", "application/vnd.github+json")
-        .header("x-github-api-version", API_VERSION)
-        .header("user-agent", USER_AGENT)
-        .send()
-        .await
-        .map_err(|_| "check_run_listing_transient".to_string())?;
-    if !response.status().is_success() {
-        return Err("check_run_listing_transient".to_string());
+    let mut scan = CheckRunRecoveryScan::default();
+    let mut page = 1_u32;
+
+    loop {
+        let page_string = page.to_string();
+        let response = state
+            .http
+            .get(format!(
+                "{GITHUB_API}/repos/{}/{}/commits/{}/check-runs",
+                target.owner, target.repo, target.head_sha
+            ))
+            .query(&[
+                ("check_name", state.config.check_run_name.as_str()),
+                ("filter", "all"),
+                ("per_page", "100"),
+                ("page", page_string.as_str()),
+            ])
+            .header("authorization", format!("Bearer {token}"))
+            .header("accept", "application/vnd.github+json")
+            .header("x-github-api-version", API_VERSION)
+            .header("user-agent", USER_AGENT)
+            .send()
+            .await
+            .map_err(|_| "check_run_listing_transient".to_string())?;
+        if !response.status().is_success() {
+            return Err("check_run_listing_transient".to_string());
+        }
+        let body: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|_| "check_run_listing_invalid".to_string())?;
+        if scan_check_run_page(
+            &mut scan,
+            &body,
+            target,
+            state.config.check_run_name.as_str(),
+            external_id,
+            expected_app,
+        )? {
+            return Ok(scan.matched_id);
+        }
+        page = page
+            .checked_add(1)
+            .ok_or_else(|| "check_run_listing_incomplete".to_string())?;
     }
-    let body: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|_| "check_run_listing_invalid".to_string())?;
-    let runs = body
-        .get("check_runs")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| "check_run_listing_invalid".to_string())?;
-    let total = body
-        .get("total_count")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(runs.len() as u64);
-    if total > runs.len() as u64 {
-        return Err("check_run_listing_incomplete".to_string());
-    }
-    let mut matches = runs.iter().filter(|check| {
-        check.get("name").and_then(serde_json::Value::as_str)
-            == Some(state.config.check_run_name.as_str())
-            && check.get("head_sha").and_then(serde_json::Value::as_str)
-                == Some(target.head_sha.as_str())
-            && check.get("external_id").and_then(serde_json::Value::as_str) == Some(external_id)
-            && check
-                .pointer("/app/id")
-                .and_then(serde_json::Value::as_u64)
-                == Some(expected_app)
-    });
-    let first = matches.next();
-    if matches.next().is_some() {
-        return Err("duplicate_authoritative_check_runs".to_string());
-    }
-    first
-        .map(|check| {
-            check
-                .get("id")
-                .and_then(serde_json::Value::as_u64)
-                .ok_or_else(|| "check_run_listing_invalid".to_string())
-        })
-        .transpose()
 }
 
 /// Read one persisted Check Run id and prove it still names the exact
@@ -732,6 +802,22 @@ mod tests {
         .expect("target")
     }
 
+    fn check_run(
+        id: u64,
+        name: &str,
+        head_sha: &str,
+        external_id: &str,
+        app_id: u64,
+    ) -> serde_json::Value {
+        json!({
+            "id": id,
+            "name": name,
+            "head_sha": head_sha,
+            "external_id": external_id,
+            "app": { "id": app_id },
+        })
+    }
+
     #[test]
     fn targets_require_a_pinned_commit() {
         let target = target(None);
@@ -776,6 +862,178 @@ mod tests {
             installation_id: None,
         };
         assert_ne!(cache_key(&a), cache_key(&b));
+    }
+
+    #[test]
+    fn recovery_finds_an_older_exact_run_on_a_later_page() {
+        let target = target(None);
+        let mut scan = CheckRunRecoveryScan::default();
+        let first_page_runs = (1_u64..=100)
+            .map(|id| check_run(id, "indiebuild.dev/ci", &target.head_sha, "other-attempt", 42))
+            .collect::<Vec<_>>();
+        let first = json!({ "total_count": 101, "check_runs": first_page_runs });
+        assert!(!scan_check_run_page(
+            &mut scan,
+            &first,
+            &target,
+            "indiebuild.dev/ci",
+            "wanted-attempt",
+            42,
+        )
+        .expect("first page"));
+        assert_eq!(scan.matched_id, None);
+
+        let second = json!({
+            "total_count": 101,
+            "check_runs": [check_run(101, "indiebuild.dev/ci", &target.head_sha, "wanted-attempt", 42)]
+        });
+        assert!(scan_check_run_page(
+            &mut scan,
+            &second,
+            &target,
+            "indiebuild.dev/ci",
+            "wanted-attempt",
+            42,
+        )
+        .expect("second page"));
+        assert_eq!(scan.matched_id, Some(101));
+    }
+
+    #[test]
+    fn recovery_rejects_duplicate_authoritative_runs() {
+        let target = target(None);
+        let mut scan = CheckRunRecoveryScan::default();
+        let body = json!({
+            "total_count": 2,
+            "check_runs": [
+                check_run(1, "indiebuild.dev/ci", &target.head_sha, "wanted", 42),
+                check_run(2, "indiebuild.dev/ci", &target.head_sha, "wanted", 42),
+            ]
+        });
+        assert_eq!(
+            scan_check_run_page(
+                &mut scan,
+                &body,
+                &target,
+                "indiebuild.dev/ci",
+                "wanted",
+                42,
+            ),
+            Err("duplicate_authoritative_check_runs".to_string())
+        );
+    }
+
+    #[test]
+    fn recovery_ignores_wrong_app_head_and_external_id() {
+        let target = target(None);
+        let mut scan = CheckRunRecoveryScan::default();
+        let body = json!({
+            "total_count": 3,
+            "check_runs": [
+                check_run(1, "indiebuild.dev/ci", &target.head_sha, "wanted", 99),
+                check_run(2, "indiebuild.dev/ci", &"f".repeat(40), "wanted", 42),
+                check_run(3, "indiebuild.dev/ci", &target.head_sha, "other", 42),
+            ]
+        });
+        assert!(scan_check_run_page(
+            &mut scan,
+            &body,
+            &target,
+            "indiebuild.dev/ci",
+            "wanted",
+            42,
+        )
+        .expect("complete listing"));
+        assert_eq!(scan.matched_id, None);
+    }
+
+    #[test]
+    fn recovery_fails_closed_on_an_incomplete_listing() {
+        let target = target(None);
+        let mut scan = CheckRunRecoveryScan::default();
+        let body = json!({
+            "total_count": 2,
+            "check_runs": [check_run(1, "indiebuild.dev/ci", &target.head_sha, "other", 42)]
+        });
+        assert_eq!(
+            scan_check_run_page(
+                &mut scan,
+                &body,
+                &target,
+                "indiebuild.dev/ci",
+                "wanted",
+                42,
+            ),
+            Err("check_run_listing_incomplete".to_string())
+        );
+    }
+
+    #[test]
+    fn recovery_fails_closed_when_pagination_moves_under_it() {
+        let target = target(None);
+        let mut scan = CheckRunRecoveryScan::default();
+        let first_page_runs = (1_u64..=100)
+            .map(|id| check_run(id, "indiebuild.dev/ci", &target.head_sha, "other", 42))
+            .collect::<Vec<_>>();
+        let first = json!({ "total_count": 101, "check_runs": first_page_runs });
+        assert!(!scan_check_run_page(
+            &mut scan,
+            &first,
+            &target,
+            "indiebuild.dev/ci",
+            "wanted",
+            42,
+        )
+        .expect("first page"));
+        let changed = json!({
+            "total_count": 102,
+            "check_runs": [check_run(101, "indiebuild.dev/ci", &target.head_sha, "wanted", 42)]
+        });
+        assert_eq!(
+            scan_check_run_page(
+                &mut scan,
+                &changed,
+                &target,
+                "indiebuild.dev/ci",
+                "wanted",
+                42,
+            ),
+            Err("check_run_listing_changed".to_string())
+        );
+    }
+
+    #[test]
+    fn recovery_rejects_duplicate_page_ids_as_listing_churn() {
+        let target = target(None);
+        let mut scan = CheckRunRecoveryScan::default();
+        let first_page_runs = (1_u64..=100)
+            .map(|id| check_run(id, "indiebuild.dev/ci", &target.head_sha, "other", 42))
+            .collect::<Vec<_>>();
+        let first = json!({ "total_count": 101, "check_runs": first_page_runs });
+        assert!(!scan_check_run_page(
+            &mut scan,
+            &first,
+            &target,
+            "indiebuild.dev/ci",
+            "wanted",
+            42,
+        )
+        .expect("first page"));
+        let repeated = json!({
+            "total_count": 101,
+            "check_runs": [check_run(100, "indiebuild.dev/ci", &target.head_sha, "wanted", 42)]
+        });
+        assert_eq!(
+            scan_check_run_page(
+                &mut scan,
+                &repeated,
+                &target,
+                "indiebuild.dev/ci",
+                "wanted",
+                42,
+            ),
+            Err("check_run_listing_changed".to_string())
+        );
     }
 
     #[test]
