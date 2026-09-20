@@ -1,6 +1,9 @@
 name: provenance-workspace-ci
 
 on:
+  push:
+    branches:
+      - feat/pull-request-events-and-fork-denial
   pull_request:
     branches: ['**']
   workflow_dispatch:
@@ -33,7 +36,7 @@ jobs:
         shell: bash
         run: rm -rf "$WORKER_PATH"
 
-      - name: Overlay exact worker PR head
+      - name: Overlay exact worker branch commit
         uses: actions/checkout@v4
         with:
           path: ${{ env.WORKER_PATH }}
