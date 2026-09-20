@@ -422,13 +422,17 @@ pub(crate) async fn record_terminal_execution(
         ));
     }
     let intent = matches.into_iter().next().expect("one match");
-    if let Some(check_run_id) = check_run_id {
-        let _ = bind_check_id(intent, check_run_id)?;
-    }
-    let changed = apply_terminal_execution(intent, succeeded, now_ms())?;
-    if changed {
+    let binding_changed = if let Some(check_run_id) = check_run_id {
+        bind_check_id(intent, check_run_id)?
+    } else {
+        false
+    };
+    let execution_changed = apply_terminal_execution(intent, succeeded, now_ms())?;
+    if execution_changed {
         intent.report_attempt_count = intent.report_attempt_count.saturating_add(1);
         intent.last_report_attempt_at_ms = Some(now_ms());
+    }
+    if binding_changed || execution_changed {
         persist(state, intent).await?;
     }
     Ok(())
@@ -465,10 +469,11 @@ pub(crate) async fn record_delivery(
     let intent = matches.into_iter().next().expect("one match");
     if let Some(check_run_id) = check_run_id {
         if bind_check_id(intent, check_run_id).is_err() {
-            state
-                .counters
-                .unresolved_report_intents
-                .fetch_add(1, Ordering::Relaxed);
+            intent.report_delivery_state = ReportDeliveryState::PermanentFailure;
+            intent.last_report_error_class = Some("check_binding_conflict".to_string());
+            intent.last_observed_check_state = Some("binding_conflict".to_string());
+            let _ = persist(state, intent).await;
+            refresh_unresolved_count(state).await;
             return;
         }
     }
@@ -856,6 +861,19 @@ mod tests {
         assert!(apply_terminal_execution(&mut intent, false, 30).is_err());
         assert_eq!(intent.execution_state, ExecutionState::Succeeded);
         assert_eq!(intent.desired_conclusion.as_deref(), Some("success"));
+    }
+
+    #[test]
+    fn late_check_binding_still_requires_a_durable_write() {
+        let mut intent = test_intent();
+        assert_eq!(apply_terminal_execution(&mut intent, true, 10), Ok(true));
+        let binding_changed = bind_check_id(&mut intent, 7).expect("late binding");
+        let execution_changed = apply_terminal_execution(&mut intent, true, 20).expect("same outcome");
+        assert!(binding_changed);
+        assert!(!execution_changed);
+        assert!(binding_changed || execution_changed);
+        assert_eq!(intent.check_run_id, Some(7));
+        assert_eq!(intent.execution_finished_at_ms, Some(10));
     }
 
     #[test]
