@@ -22,6 +22,12 @@ const MAX_INTENT_BYTES: u64 = 64 * 1024;
 const MAX_INTENTS: usize = 10_000;
 const RECONCILE_INTERVAL_SECONDS: u64 = 60;
 
+// The laptop authority is currently one worker process. Serialize every journal
+// read/modify/write transaction in that process so webhook redelivery, live job
+// completion and the reconciler cannot last-writer-win durable evidence. A
+// future multi-replica worker still needs a cross-process lease/database CAS.
+static REPORT_JOURNAL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ExecutionState {
@@ -144,6 +150,45 @@ fn validate(intent: &ReportIntent) -> Result<(), String> {
     Ok(())
 }
 
+fn bind_check_id(intent: &mut ReportIntent, check_run_id: u64) -> Result<bool, String> {
+    if check_run_id == 0 {
+        return Err("invalid zero Check Run id".to_string());
+    }
+    match intent.check_run_id {
+        Some(existing) if existing != check_run_id => {
+            Err("logical attempt is already bound to another Check Run id".to_string())
+        }
+        Some(_) => Ok(false),
+        None => {
+            intent.check_run_id = Some(check_run_id);
+            Ok(true)
+        }
+    }
+}
+
+fn apply_terminal_execution(
+    intent: &mut ReportIntent,
+    succeeded: bool,
+    finished_at_ms: u64,
+) -> Result<bool, String> {
+    match (&intent.execution_state, succeeded) {
+        (ExecutionState::Active, _) => {
+            intent.execution_state = if succeeded {
+                ExecutionState::Succeeded
+            } else {
+                ExecutionState::Failed
+            };
+            intent.execution_finished_at_ms = Some(finished_at_ms);
+            intent.desired_conclusion = Some(if succeeded { "success" } else { "failure" }.to_string());
+            Ok(true)
+        }
+        (ExecutionState::Succeeded, true) | (ExecutionState::Failed, false) => Ok(false),
+        (ExecutionState::Succeeded, false) | (ExecutionState::Failed, true) => {
+            Err("terminal execution evidence cannot change outcome".to_string())
+        }
+    }
+}
+
 async fn ensure_report_root(state: &AppState) -> Result<PathBuf, String> {
     let root = report_root(state);
     match fs::symlink_metadata(&root).await {
@@ -153,9 +198,15 @@ async fn ensure_report_root(state: &AppState) -> Result<PathBuf, String> {
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            fs::create_dir(&root)
-                .await
-                .map_err(|error| format!("could not create report-intent directory: {error}"))?;
+            match fs::create_dir(&root).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => {
+                    return Err(format!("could not create report-intent directory: {error}"));
+                }
+            }
+            // Even an AlreadyExists race is accepted only after re-lstat proves
+            // the winner created the exact object type we permit.
             let metadata = fs::symlink_metadata(&root)
                 .await
                 .map_err(|error| format!("could not inspect report-intent directory: {error}"))?;
@@ -180,6 +231,9 @@ fn sync_parent_directory(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+// Callers that mutate evidence must hold REPORT_JOURNAL_LOCK across their full
+// read/modify/write transaction. This function deliberately does not lock on
+// its own so a transaction can include selection/validation plus publication.
 async fn persist(state: &AppState, intent: &ReportIntent) -> Result<(), String> {
     validate(intent)?;
     let root = ensure_report_root(state).await?;
@@ -232,6 +286,16 @@ async fn read_intent_path(path: &Path) -> Result<ReportIntent, String> {
         .map_err(|error| format!("invalid report-intent JSON: {error}"))?;
     validate(&intent)?;
     Ok(intent)
+}
+
+async fn load_durable_intent(state: &AppState, expected: &ReportIntent) -> Result<ReportIntent, String> {
+    let root = ensure_report_root(state).await?;
+    let path = intent_path(&root, expected);
+    let current = read_intent_path(&path).await?;
+    if intent_identity(&current) != intent_identity(expected) {
+        return Err("report-intent path collision".to_string());
+    }
+    Ok(current)
 }
 
 async fn logical_attempt_for_job(state: &AppState, job_id: &str) -> String {
@@ -288,6 +352,8 @@ pub(crate) async fn begin(
         last_observed_check_state: None,
     };
     validate(&intent)?;
+
+    let _guard = REPORT_JOURNAL_LOCK.lock().await;
     let root = ensure_report_root(state).await?;
     let path = intent_path(&root, &intent);
     match fs::symlink_metadata(&path).await {
@@ -310,17 +376,16 @@ pub(crate) async fn record_check_id(
     intent: &mut ReportIntent,
     check_run_id: u64,
 ) -> Result<(), String> {
-    if check_run_id == 0 {
-        return Err("invalid zero Check Run id".to_string());
+    let _guard = REPORT_JOURNAL_LOCK.lock().await;
+    // Never publish the caller's potentially stale snapshot. Reload the durable
+    // version inside the transaction, apply the immutable binding, then copy the
+    // committed state back to the caller.
+    let mut current = load_durable_intent(state, intent).await?;
+    if bind_check_id(&mut current, check_run_id)? {
+        persist(state, &current).await?;
     }
-    if let Some(existing) = intent.check_run_id {
-        if existing != check_run_id {
-            return Err("logical attempt is already bound to another Check Run id".to_string());
-        }
-        return Ok(());
-    }
-    intent.check_run_id = Some(check_run_id);
-    persist(state, intent).await
+    *intent = current;
+    Ok(())
 }
 
 fn intent_matches_target(intent: &ReportIntent, target: &CheckTarget) -> bool {
@@ -344,6 +409,7 @@ pub(crate) async fn record_terminal_execution(
     if state.config.reporting_mode != ReportingMode::AppRequired {
         return Ok(());
     }
+    let _guard = REPORT_JOURNAL_LOCK.lock().await;
     let mut intents = load_all(state).await?;
     let matches = intents
         .iter_mut()
@@ -357,20 +423,15 @@ pub(crate) async fn record_terminal_execution(
     }
     let intent = matches.into_iter().next().expect("one match");
     if let Some(check_run_id) = check_run_id {
-        if intent.check_run_id.is_none() {
-            intent.check_run_id = Some(check_run_id);
-        }
+        let _ = bind_check_id(intent, check_run_id)?;
     }
-    intent.execution_state = if succeeded {
-        ExecutionState::Succeeded
-    } else {
-        ExecutionState::Failed
-    };
-    intent.execution_finished_at_ms = Some(now_ms());
-    intent.desired_conclusion = Some(if succeeded { "success" } else { "failure" }.to_string());
-    intent.report_attempt_count = intent.report_attempt_count.saturating_add(1);
-    intent.last_report_attempt_at_ms = Some(now_ms());
-    persist(state, intent).await
+    let changed = apply_terminal_execution(intent, succeeded, now_ms())?;
+    if changed {
+        intent.report_attempt_count = intent.report_attempt_count.saturating_add(1);
+        intent.last_report_attempt_at_ms = Some(now_ms());
+        persist(state, intent).await?;
+    }
+    Ok(())
 }
 
 pub(crate) async fn record_delivery(
@@ -382,6 +443,7 @@ pub(crate) async fn record_delivery(
     if state.config.reporting_mode != ReportingMode::AppRequired {
         return;
     }
+    let _guard = REPORT_JOURNAL_LOCK.lock().await;
     let Ok(mut intents) = load_all(state).await else {
         state
             .counters
@@ -402,8 +464,12 @@ pub(crate) async fn record_delivery(
     }
     let intent = matches.into_iter().next().expect("one match");
     if let Some(check_run_id) = check_run_id {
-        if intent.check_run_id.is_none() {
-            intent.check_run_id = Some(check_run_id);
+        if bind_check_id(intent, check_run_id).is_err() {
+            state
+                .counters
+                .unresolved_report_intents
+                .fetch_add(1, Ordering::Relaxed);
+            return;
         }
     }
     match delivery {
@@ -492,10 +558,9 @@ fn authority_still_matches(state: &AppState, intent: &ReportIntent) -> bool {
 }
 
 async fn reconcile_one(state: &AppState, intent: &mut ReportIntent) {
-    if matches!(
-        intent.report_delivery_state,
-        ReportDeliveryState::Delivered | ReportDeliveryState::Reconciled
-    ) {
+    // Every non-Pending state is terminal. In particular PermanentFailure must
+    // never later become Reconciled merely because a subsequent API call works.
+    if intent.report_delivery_state != ReportDeliveryState::Pending {
         return;
     }
     if !authority_still_matches(state, intent) {
@@ -512,29 +577,44 @@ async fn reconcile_one(state: &AppState, intent: &mut ReportIntent) {
             match job.status {
                 BuildStatus::Queued | BuildStatus::Running => return,
                 BuildStatus::Succeeded => {
-                    intent.execution_state = ExecutionState::Succeeded;
-                    intent.desired_conclusion = Some("success".to_string());
-                    intent.execution_finished_at_ms = job
-                        .finished_at_ms
-                        .and_then(|value| u64::try_from(value).ok());
+                    if apply_terminal_execution(
+                        intent,
+                        true,
+                        job.finished_at_ms
+                            .and_then(|value| u64::try_from(value).ok())
+                            .unwrap_or_else(now_ms),
+                    )
+                    .is_err()
+                    {
+                        intent.report_delivery_state = ReportDeliveryState::PermanentFailure;
+                        intent.last_report_error_class = Some("execution_outcome_conflict".to_string());
+                    }
                 }
                 BuildStatus::Failed => {
-                    intent.execution_state = ExecutionState::Failed;
-                    intent.desired_conclusion = Some("failure".to_string());
-                    intent.execution_finished_at_ms = job
-                        .finished_at_ms
-                        .and_then(|value| u64::try_from(value).ok());
+                    if apply_terminal_execution(
+                        intent,
+                        false,
+                        job.finished_at_ms
+                            .and_then(|value| u64::try_from(value).ok())
+                            .unwrap_or_else(now_ms),
+                    )
+                    .is_err()
+                    {
+                        intent.report_delivery_state = ReportDeliveryState::PermanentFailure;
+                        intent.last_report_error_class = Some("execution_outcome_conflict".to_string());
+                    }
                 }
             }
         } else {
             // A restarted process cannot prove whether an active execution
             // reached success before the crash. Never infer success.
-            intent.execution_state = ExecutionState::Failed;
-            intent.desired_conclusion = Some("failure".to_string());
-            intent.execution_finished_at_ms = Some(now_ms());
+            let _ = apply_terminal_execution(intent, false, now_ms());
             intent.last_report_error_class = Some("orphaned_execution_unknown".to_string());
         }
         let _ = persist(state, intent).await;
+        if intent.report_delivery_state != ReportDeliveryState::Pending {
+            return;
+        }
     }
 
     if intent.check_run_id.is_none() {
@@ -546,7 +626,12 @@ async fn reconcile_one(state: &AppState, intent: &mut ReportIntent) {
         .await
         {
             Ok(Some(id)) => {
-                intent.check_run_id = Some(id);
+                if bind_check_id(intent, id).is_err() {
+                    intent.report_delivery_state = ReportDeliveryState::PermanentFailure;
+                    intent.last_report_error_class = Some("check_binding_conflict".to_string());
+                    let _ = persist(state, intent).await;
+                    return;
+                }
                 intent.last_observed_check_state = Some("discovered".to_string());
                 let _ = persist(state, intent).await;
             }
@@ -649,6 +734,11 @@ pub(crate) async fn reconcile_all(state: &AppState) {
             .store(0, Ordering::Relaxed);
         return;
     }
+    // Correctness first for the single-laptop authority: hold one async
+    // transaction lock across selection, any reconciliation I/O and durable
+    // publication so live completion/redelivery cannot overwrite the snapshot.
+    // #80 documents that a multi-replica future needs a cross-process CAS.
+    let _guard = REPORT_JOURNAL_LOCK.lock().await;
     let mut intents = match load_all(state).await {
         Ok(intents) => intents,
         Err(error) => {
@@ -744,5 +834,38 @@ mod tests {
         let mut intent = test_intent();
         intent.installation_candidate = Some(0);
         assert!(validate(&intent).is_err());
+    }
+
+    #[test]
+    fn check_run_binding_is_immutable_and_idempotent() {
+        let mut intent = test_intent();
+        assert_eq!(bind_check_id(&mut intent, 7), Ok(true));
+        assert_eq!(bind_check_id(&mut intent, 7), Ok(false));
+        assert!(bind_check_id(&mut intent, 8).is_err());
+        assert_eq!(intent.check_run_id, Some(7));
+    }
+
+    #[test]
+    fn terminal_execution_cannot_regress_or_flip() {
+        let mut intent = test_intent();
+        assert_eq!(apply_terminal_execution(&mut intent, true, 10), Ok(true));
+        assert_eq!(intent.execution_state, ExecutionState::Succeeded);
+        assert_eq!(intent.desired_conclusion.as_deref(), Some("success"));
+        assert_eq!(apply_terminal_execution(&mut intent, true, 20), Ok(false));
+        assert_eq!(intent.execution_finished_at_ms, Some(10));
+        assert!(apply_terminal_execution(&mut intent, false, 30).is_err());
+        assert_eq!(intent.execution_state, ExecutionState::Succeeded);
+        assert_eq!(intent.desired_conclusion.as_deref(), Some("success"));
+    }
+
+    #[test]
+    fn permanent_failure_is_a_terminal_delivery_state() {
+        let mut intent = test_intent();
+        intent.execution_state = ExecutionState::Failed;
+        intent.execution_finished_at_ms = Some(1);
+        intent.desired_conclusion = Some("failure".to_string());
+        intent.report_delivery_state = ReportDeliveryState::PermanentFailure;
+        assert!(counts_as_unresolved(&intent));
+        assert_ne!(intent.report_delivery_state, ReportDeliveryState::Pending);
     }
 }
