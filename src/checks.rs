@@ -34,6 +34,12 @@ pub(crate) struct CheckTarget {
     pub installation_id: Option<u64>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ObservedCheckState {
+    InProgress,
+    Completed { conclusion: String },
+}
+
 #[derive(Serialize)]
 struct AppClaims {
     iat: i64,
@@ -132,6 +138,15 @@ fn verify_installation_candidate(candidate: Option<u64>, resolved: u64) -> Resul
         }
     }
     Ok(resolved)
+}
+
+fn expected_app_id(config: &Config) -> Result<u64, String> {
+    config
+        .github_app_id
+        .as_deref()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|id| *id > 0)
+        .ok_or_else(|| "configured GitHub App id is invalid".to_string())
 }
 
 pub(crate) fn checks_configured(config: &Config) -> bool {
@@ -245,10 +260,11 @@ fn iso_now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
-pub(crate) async fn start_check_run(
+async fn create_check_run(
     state: &AppState,
     target: &CheckTarget,
     job_id: &str,
+    external_id: &str,
 ) -> Option<u64> {
     if !checks_configured(state.config.as_ref()) {
         return None;
@@ -266,7 +282,7 @@ pub(crate) async fn start_check_run(
         "head_sha": target.head_sha,
         "status": "in_progress",
         "started_at": iso_now(),
-        "external_id": format!("indiebuild:{job_id}@{}", target.head_sha),
+        "external_id": external_id,
         "output": {
             "title": "Running on the local worker",
             "summary": format!("Job `{job_id}` is verifying `{}`.", target.head_sha),
@@ -299,6 +315,136 @@ pub(crate) async fn start_check_run(
             tracing::error!("authoritative check run creation failed");
             None
         }
+    }
+}
+
+/// Recover an already-created Check Run using the deterministic logical-attempt
+/// external id. This closes the crash window where GitHub accepted creation but
+/// the worker died before persisting the numeric Check Run id.
+pub(crate) async fn find_check_run_by_external_id(
+    state: &AppState,
+    target: &CheckTarget,
+    external_id: &str,
+) -> Result<Option<u64>, String> {
+    let token = installation_token(state, target).await?;
+    let expected_app = expected_app_id(state.config.as_ref())?;
+    let response = state
+        .http
+        .get(format!(
+            "{GITHUB_API}/repos/{}/{}/commits/{}/check-runs",
+            target.owner, target.repo, target.head_sha
+        ))
+        .query(&[
+            ("check_name", state.config.check_run_name.as_str()),
+            ("filter", "latest"),
+            ("per_page", "100"),
+        ])
+        .header("authorization", format!("Bearer {token}"))
+        .header("accept", "application/vnd.github+json")
+        .header("x-github-api-version", API_VERSION)
+        .header("user-agent", USER_AGENT)
+        .send()
+        .await
+        .map_err(|_| "check_run_listing_transient".to_string())?;
+    if !response.status().is_success() {
+        return Err("check_run_listing_transient".to_string());
+    }
+    let body: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|_| "check_run_listing_invalid".to_string())?;
+    let runs = body
+        .get("check_runs")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "check_run_listing_invalid".to_string())?;
+    let total = body
+        .get("total_count")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(runs.len() as u64);
+    if total > runs.len() as u64 {
+        return Err("check_run_listing_incomplete".to_string());
+    }
+    let mut matches = runs.iter().filter(|check| {
+        check.get("name").and_then(serde_json::Value::as_str)
+            == Some(state.config.check_run_name.as_str())
+            && check.get("head_sha").and_then(serde_json::Value::as_str)
+                == Some(target.head_sha.as_str())
+            && check.get("external_id").and_then(serde_json::Value::as_str) == Some(external_id)
+            && check
+                .pointer("/app/id")
+                .and_then(serde_json::Value::as_u64)
+                == Some(expected_app)
+    });
+    let first = matches.next();
+    if matches.next().is_some() {
+        return Err("duplicate_authoritative_check_runs".to_string());
+    }
+    first
+        .map(|check| {
+            check
+                .get("id")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| "check_run_listing_invalid".to_string())
+        })
+        .transpose()
+}
+
+/// Read one persisted Check Run id and prove it still names the exact
+/// repository/head/context/App/logical attempt that the durable intent records.
+pub(crate) async fn observe_check_run(
+    state: &AppState,
+    target: &CheckTarget,
+    check_run_id: u64,
+    expected_external_id: &str,
+) -> Result<ObservedCheckState, String> {
+    let token = installation_token(state, target).await?;
+    let expected_app = expected_app_id(state.config.as_ref())?;
+    let response = state
+        .http
+        .get(format!(
+            "{GITHUB_API}/repos/{}/{}/check-runs/{check_run_id}",
+            target.owner, target.repo
+        ))
+        .header("authorization", format!("Bearer {token}"))
+        .header("accept", "application/vnd.github+json")
+        .header("x-github-api-version", API_VERSION)
+        .header("user-agent", USER_AGENT)
+        .send()
+        .await
+        .map_err(|_| "check_lookup_transient".to_string())?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err("check_not_found".to_string());
+    }
+    if !response.status().is_success() {
+        return Err("check_lookup_transient".to_string());
+    }
+    let check: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|_| "check_lookup_invalid".to_string())?;
+    let identity_matches = check.get("id").and_then(serde_json::Value::as_u64) == Some(check_run_id)
+        && check.get("name").and_then(serde_json::Value::as_str)
+            == Some(state.config.check_run_name.as_str())
+        && check.get("head_sha").and_then(serde_json::Value::as_str)
+            == Some(target.head_sha.as_str())
+        && check.get("external_id").and_then(serde_json::Value::as_str)
+            == Some(expected_external_id)
+        && check.pointer("/app/id").and_then(serde_json::Value::as_u64) == Some(expected_app);
+    if !identity_matches {
+        return Err("check_identity_mismatch".to_string());
+    }
+    match check.get("status").and_then(serde_json::Value::as_str) {
+        Some("completed") => {
+            let conclusion = check
+                .get("conclusion")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "check_terminal_missing_conclusion".to_string())?;
+            Ok(ObservedCheckState::Completed {
+                conclusion: conclusion.to_string(),
+            })
+        }
+        Some(_) => Ok(ObservedCheckState::InProgress),
+        None => Err("check_lookup_invalid".to_string()),
     }
 }
 
@@ -427,7 +573,35 @@ pub(crate) async fn report_started(
     job_id: &str,
 ) -> Option<u64> {
     match reporter_for(state.config.as_ref(), target) {
-        Reporter::CheckRun => start_check_run(state, target, job_id).await,
+        Reporter::CheckRun => {
+            let mut intent = match crate::report_intent::begin(state, target, job_id).await {
+                Ok(Some(intent)) => intent,
+                Ok(None) => return None,
+                Err(error) => {
+                    tracing::error!("authoritative report intent could not be persisted: {error}");
+                    return None;
+                }
+            };
+            let external_id = crate::report_intent::external_id(&intent);
+            let check_run_id = match find_check_run_by_external_id(state, target, &external_id).await {
+                Ok(Some(id)) => Some(id),
+                Ok(None) => create_check_run(state, target, job_id, &external_id).await,
+                Err(error) => {
+                    tracing::error!("authoritative Check Run discovery failed: {error}");
+                    None
+                }
+            };
+            if let Some(id) = check_run_id {
+                if let Err(error) = crate::report_intent::record_check_id(state, &mut intent, id).await {
+                    // The pre-create intent and deterministic external id remain
+                    // enough for restart reconciliation. Do not discard the id
+                    // in this process, but trusted success will still require a
+                    // later durable terminal transition.
+                    tracing::error!("authoritative Check Run id was not persisted: {error}");
+                }
+            }
+            check_run_id
+        }
         Reporter::CommitStatus => {
             let _ = post_commit_status(
                 state,
@@ -478,29 +652,71 @@ pub(crate) async fn report_finished(
     if reporter == Reporter::None {
         return Delivery::NotConfigured;
     }
+
+    let mut effective_succeeded = succeeded;
+    let mut effective_summary = summary.to_string();
+    if reporter == Reporter::CheckRun {
+        if let Err(error) = crate::report_intent::record_terminal_execution(
+            state,
+            target,
+            check_run_id,
+            succeeded,
+        )
+        .await
+        {
+            // A local success that cannot be made durable is explicitly not
+            // authoritative success. Publishing failure is safer than a green
+            // Check Run whose crash-recovery evidence cannot be reconstructed.
+            tracing::error!("authoritative terminal execution state was not persisted: {error}");
+            effective_succeeded = false;
+            effective_summary = if succeeded {
+                "Local execution passed, but durable authoritative evidence could not be persisted; refusing trusted success."
+                    .to_string()
+            } else {
+                "Local execution failed and durable reporting evidence could not be persisted."
+                    .to_string()
+            };
+        }
+    }
+
     let plan = verdict_plan(reporter, check_run_id, state.config.github_token.is_some());
+    let mut delivery = Delivery::Undelivered;
     for step in plan {
         let delivered = match (step, check_run_id) {
             (Delivery::CheckRun, Some(id)) => {
-                finish_check_run(state, target, id, succeeded, summary, log_tail).await
+                finish_check_run(
+                    state,
+                    target,
+                    id,
+                    effective_succeeded,
+                    &effective_summary,
+                    log_tail,
+                )
+                .await
             }
             (Delivery::CommitStatus, _) => {
-                let status = if succeeded { "success" } else { "failure" };
-                post_commit_status(state, target, status, summary).await
+                let status = if effective_succeeded { "success" } else { "failure" };
+                post_commit_status(state, target, status, &effective_summary).await
             }
             _ => false,
         };
         if delivered {
-            return step;
+            delivery = step;
+            break;
         }
     }
-    tracing::error!(
-        "verdict for {}/{}@{} was not delivered to GitHub by the configured reporting authority",
-        target.owner,
-        target.repo,
-        target.head_sha
-    );
-    Delivery::Undelivered
+    if delivery == Delivery::Undelivered {
+        tracing::error!(
+            "verdict for {}/{}@{} was not delivered to GitHub by the configured reporting authority",
+            target.owner,
+            target.repo,
+            target.head_sha
+        );
+    }
+    if reporter == Reporter::CheckRun {
+        crate::report_intent::record_delivery(state, target, check_run_id, delivery).await;
+    }
+    delivery
 }
 
 #[cfg(test)]
@@ -547,8 +763,18 @@ mod tests {
 
     #[test]
     fn repo_cache_keys_are_org_specific() {
-        let a = CheckTarget { owner: "org-a".into(), repo: "r".into(), head_sha: "a".repeat(40), installation_id: None };
-        let b = CheckTarget { owner: "org-b".into(), repo: "r".into(), head_sha: "a".repeat(40), installation_id: None };
+        let a = CheckTarget {
+            owner: "org-a".into(),
+            repo: "r".into(),
+            head_sha: "a".repeat(40),
+            installation_id: None,
+        };
+        let b = CheckTarget {
+            owner: "org-b".into(),
+            repo: "r".into(),
+            head_sha: "a".repeat(40),
+            installation_id: None,
+        };
         assert_ne!(cache_key(&a), cache_key(&b));
     }
 
