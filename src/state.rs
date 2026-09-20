@@ -57,4 +57,8 @@ pub(crate) struct Counters {
     pub(crate) nats_publish_failures: AtomicU64,
     pub(crate) gh_secrets_synced: AtomicU64,
     pub(crate) gh_secret_sync_failures: AtomicU64,
+    /// Number of authoritative report intents that have not reached a proven
+    /// terminal App Check Run state. A non-zero value makes authoritative
+    /// readiness fail closed.
+    pub(crate) unresolved_report_intents: AtomicU64,
 }
