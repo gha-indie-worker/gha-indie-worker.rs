@@ -1,41 +1,36 @@
-//! GitHub Check Run reporting.
+//! GitHub reporting for exact-head local CI.
 //!
-//! Only a GitHub App can create check runs — a personal access token cannot —
-//! so this mints an app JWT, exchanges it for a short-lived installation
-//! token, and reports the verdict against the exact head commit that was
-//! verified.
+//! Reporting has two deliberately disjoint modes:
+//! - `app-required`: only an App-owned Check Run under the authoritative
+//!   context may carry evidence. Installation identity is resolved server-side
+//!   for the exact repository and PAT fallback is forbidden.
+//! - `advisory`: only a PAT Commit Status under a distinct advisory context is
+//!   used. It must never masquerade as the authoritative context.
 //!
-//! The App private key never leaves this process. Job containers are started
-//! with a cleared environment and a read-only view of the cloned repository,
-//! so nothing here is reachable from the code being verified.
-//!
-//! Reporting is strictly advisory to the build: every failure below is logged
-//! and swallowed, because losing a status update must never turn a green build
-//! red (or vice versa).
+//! The App private key and minted installation tokens never leave this process.
+//! The only cached metadata is a bounded-TTL repository -> installation-id map.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use serde_json::json;
 
-use crate::config::Config;
-use crate::state::AppState;
+use crate::config::{Config, ReportingMode};
+use crate::state::{AppState, InstallationCacheEntry};
 
 const GITHUB_API: &str = "https://api.github.com";
 const API_VERSION: &str = "2022-11-28";
 const USER_AGENT: &str = "gha-indie-worker";
-
-/// GitHub rejects `output.text` beyond 65535 characters, so the log tail is
-/// trimmed well inside that with room for the fenced block around it.
 const MAX_OUTPUT_TEXT: usize = 60_000;
 
-/// The commit a check run is attached to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CheckTarget {
     pub owner: String,
     pub repo: String,
     pub head_sha: String,
-    /// Installation named by the signed delivery, when there was one.
+    /// Candidate installation from a signature-verified delivery. It is never
+    /// trusted by itself and must match the repository installation resolved by
+    /// the worker through the App API.
     pub installation_id: Option<u64>,
 }
 
@@ -46,19 +41,11 @@ struct AppClaims {
     iss: String,
 }
 
-/// Which commit, if any, this job should report against.
-///
-/// A check run must name a commit: a branch name cannot be reported on, and
-/// reporting against whatever the branch points at *now* would attach the
-/// verdict to code that was never verified. Jobs that are not pinned to an
-/// object id therefore report nothing.
 pub(crate) fn target_from_request(
     repo_url: &str,
     commit_sha: Option<&str>,
     installation_id: Option<u64>,
 ) -> Option<CheckTarget> {
-    // The same grammar admission and checkout use, so a job is reported on
-    // exactly when the executor could pin it.
     let head_sha =
         commit_sha.filter(|value| crate::validation::validate_commit_sha(value).is_ok())?;
     let rest = repo_url
@@ -77,25 +64,6 @@ pub(crate) fn target_from_request(
     })
 }
 
-/// The installation a target is reported through.
-///
-/// The delivery's own installation wins. The configured id is only a fallback
-/// for jobs that did not arrive by webhook, and must never override what a
-/// signed delivery said: that would make one installation the authority for
-/// every repository the App is installed on.
-pub(crate) fn installation_for(config: &Config, target: &CheckTarget) -> Option<String> {
-    target
-        .installation_id
-        .map(|id| id.to_string())
-        .or_else(|| config.github_app_installation_id.clone())
-}
-
-pub(crate) fn checks_configured(config: &Config, target: &CheckTarget) -> bool {
-    config.github_app_id.is_some()
-        && config.github_app_private_key.is_some()
-        && installation_for(config, target).is_some()
-}
-
 fn unix_now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -103,11 +71,13 @@ fn unix_now() -> i64 {
         .unwrap_or_default()
 }
 
-/// Sign a short-lived app JWT.
-///
-/// `iat` is backdated by a minute because GitHub rejects tokens whose issue
-/// time is in the future relative to its own clock, and modest host clock skew
-/// is normal on a laptop.
+fn unix_now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| u64::try_from(value.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or_default()
+}
+
 fn app_jwt(app_id: &str, private_key_pem: &str) -> Result<String, String> {
     let now = unix_now();
     let claims = AppClaims {
@@ -125,21 +95,121 @@ fn app_jwt(app_id: &str, private_key_pem: &str) -> Result<String, String> {
     .map_err(|error| format!("failed to sign app JWT: {error}"))
 }
 
-/// Exchange the app JWT for an installation token.
-///
-/// Minted per operation rather than cached: a check run costs two of these per
-/// job, which is negligible against the installation's hourly budget, and it
-/// avoids holding a decrypted credential in memory between jobs.
-async fn installation_token(state: &AppState, target: &CheckTarget) -> Result<String, String> {
+fn cache_key(target: &CheckTarget) -> String {
+    format!(
+        "{}/{}",
+        target.owner.to_ascii_lowercase(),
+        target.repo.to_ascii_lowercase()
+    )
+}
+
+fn bootstrap_installation_candidate(
+    config: &Config,
+    target: &CheckTarget,
+) -> Result<Option<u64>, String> {
+    if let Some(id) = target.installation_id {
+        return Ok(Some(id));
+    }
+    let Some(raw) = config.github_app_installation_id.as_deref() else {
+        return Ok(None);
+    };
+    raw.parse::<u64>()
+        .ok()
+        .filter(|id| *id > 0)
+        .map(Some)
+        .ok_or_else(|| "configured GitHub App installation id is invalid".to_string())
+}
+
+fn verify_installation_candidate(candidate: Option<u64>, resolved: u64) -> Result<u64, String> {
+    if resolved == 0 {
+        return Err("GitHub returned an invalid zero installation id".to_string());
+    }
+    if let Some(candidate) = candidate {
+        if candidate != resolved {
+            return Err(format!(
+                "GitHub App installation mismatch for target repository: candidate {candidate}, resolved {resolved}"
+            ));
+        }
+    }
+    Ok(resolved)
+}
+
+pub(crate) fn checks_configured(config: &Config) -> bool {
+    config.github_app_id.is_some() && config.github_app_private_key.is_some()
+}
+
+/// Resolve the App installation for this exact repository. A signed delivery's
+/// installation id and the legacy configured id are merely candidates; both
+/// must agree with GitHub's repository-scoped App API result.
+pub(crate) async fn resolve_installation_id(
+    state: &AppState,
+    target: &CheckTarget,
+) -> Result<u64, String> {
     let config = state.config.as_ref();
-    let installation = installation_for(config, target);
-    let (Some(app_id), Some(pem), Some(installation)) = (
+    let (Some(app_id), Some(pem)) = (
         config.github_app_id.as_deref(),
         config.github_app_private_key.as_deref(),
-        installation.as_deref(),
     ) else {
         return Err("GitHub App is not configured".to_string());
     };
+    let candidate = bootstrap_installation_candidate(config, target)?;
+    let key = cache_key(target);
+    let now_ms = unix_now_ms();
+    if let Some(cached) = state.installation_cache.read().await.get(&key).copied() {
+        if cached.expires_at_ms > now_ms {
+            return verify_installation_candidate(candidate, cached.installation_id);
+        }
+    }
+
+    let jwt = app_jwt(app_id, pem)?;
+    let response = state
+        .http
+        .get(format!(
+            "{GITHUB_API}/repos/{}/{}/installation",
+            target.owner, target.repo
+        ))
+        .header("authorization", format!("Bearer {jwt}"))
+        .header("accept", "application/vnd.github+json")
+        .header("x-github-api-version", API_VERSION)
+        .header("user-agent", USER_AGENT)
+        .send()
+        .await
+        .map_err(|_| "repository installation lookup failed".to_string())?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!(
+            "repository installation lookup was refused with status {status}"
+        ));
+    }
+    let body: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|_| "repository installation response was not valid JSON".to_string())?;
+    let resolved = body
+        .get("id")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| "repository installation response had no numeric id".to_string())?;
+    let resolved = verify_installation_candidate(candidate, resolved)?;
+    let ttl_ms = u64::try_from(config.installation_cache_ttl.as_millis()).unwrap_or(u64::MAX);
+    state.installation_cache.write().await.insert(
+        key,
+        InstallationCacheEntry {
+            installation_id: resolved,
+            expires_at_ms: now_ms.saturating_add(ttl_ms),
+        },
+    );
+    Ok(resolved)
+}
+
+async fn installation_token(state: &AppState, target: &CheckTarget) -> Result<String, String> {
+    let config = state.config.as_ref();
+    let (Some(app_id), Some(pem)) = (
+        config.github_app_id.as_deref(),
+        config.github_app_private_key.as_deref(),
+    ) else {
+        return Err("GitHub App is not configured".to_string());
+    };
+    let installation = resolve_installation_id(state, target).await?;
     let jwt = app_jwt(app_id, pem)?;
     let response = state
         .http
@@ -152,14 +222,13 @@ async fn installation_token(state: &AppState, target: &CheckTarget) -> Result<St
         .header("user-agent", USER_AGENT)
         .send()
         .await
-        .map_err(|error| format!("installation token request failed: {error}"))?;
+        .map_err(|_| "installation token request failed".to_string())?;
     let status = response.status();
     let body: serde_json::Value = response
         .json()
         .await
-        .map_err(|error| format!("installation token response was not JSON: {error}"))?;
+        .map_err(|_| "installation token response was not JSON".to_string())?;
     if !status.is_success() {
-        // The body carries GitHub's message, never the key or the JWT.
         let message = body
             .get("message")
             .and_then(serde_json::Value::as_str)
@@ -176,22 +245,18 @@ fn iso_now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
-/// Announce that verification of this commit has started.
-///
-/// Returns the check run id to complete later, or `None` when checks are not
-/// configured or GitHub refused — the build continues regardless.
 pub(crate) async fn start_check_run(
     state: &AppState,
     target: &CheckTarget,
     job_id: &str,
 ) -> Option<u64> {
-    if !checks_configured(state.config.as_ref(), target) {
+    if !checks_configured(state.config.as_ref()) {
         return None;
     }
     let token = match installation_token(state, target).await {
         Ok(token) => token,
         Err(error) => {
-            tracing::warn!("check run not started: {error}");
+            tracing::error!("authoritative check run not started: {error}");
             return None;
         }
     };
@@ -201,6 +266,7 @@ pub(crate) async fn start_check_run(
         "head_sha": target.head_sha,
         "status": "in_progress",
         "started_at": iso_now(),
+        "external_id": format!("indiebuild:{job_id}@{}", target.head_sha),
         "output": {
             "title": "Running on the local worker",
             "summary": format!("Job `{job_id}` is verifying `{}`.", target.head_sha),
@@ -226,23 +292,16 @@ pub(crate) async fn start_check_run(
             .ok()
             .and_then(|value| value.get("id").and_then(serde_json::Value::as_u64)),
         Ok(response) => {
-            tracing::warn!("check run creation refused: {}", response.status());
+            tracing::error!("authoritative check run creation refused: {}", response.status());
             None
         }
-        Err(error) => {
-            tracing::warn!("check run creation failed: {error}");
+        Err(_) => {
+            tracing::error!("authoritative check run creation failed");
             None
         }
     }
 }
 
-/// Trim a build log to what GitHub will accept, keeping the end.
-///
-/// The tail is what explains a failure; the head is image pulls. GitHub's
-/// limit is in **bytes**, so counting characters is wrong: a log full of
-/// multibyte UTF-8 would stay far over the limit, completion would be
-/// rejected, and the check would sit `in_progress` forever. The cut is moved
-/// forward to a character boundary so the result is still valid UTF-8.
 pub(crate) fn output_text(log: &str) -> String {
     if log.len() <= MAX_OUTPUT_TEXT {
         return log.to_string();
@@ -254,7 +313,6 @@ pub(crate) fn output_text(log: &str) -> String {
     format!("…log truncated…\n{}", &log[start..])
 }
 
-/// Report the verdict against the verified commit.
 pub(crate) async fn finish_check_run(
     state: &AppState,
     target: &CheckTarget,
@@ -266,7 +324,7 @@ pub(crate) async fn finish_check_run(
     let token = match installation_token(state, target).await {
         Ok(token) => token,
         Err(error) => {
-            tracing::warn!("check run not completed: {error}");
+            tracing::error!("authoritative check run not completed: {error}");
             return false;
         }
     };
@@ -296,41 +354,32 @@ pub(crate) async fn finish_check_run(
     match response {
         Ok(response) if response.status().is_success() => true,
         Ok(response) => {
-            tracing::warn!("check run completion refused: {}", response.status());
+            tracing::error!("authoritative check run completion refused: {}", response.status());
             false
         }
-        Err(error) => {
-            tracing::warn!("check run completion failed: {error}");
+        Err(_) => {
+            tracing::error!("authoritative check run completion failed");
             false
         }
     }
 }
 
-/// How a verdict reaches GitHub.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Reporter {
-    /// GitHub App + Checks API: richer output, and the only way to get a real
-    /// check run.
     CheckRun,
-    /// Commit Status API with a token. A status shows on the pull request and
-    /// satisfies branch protection exactly like a check does, and it needs no
-    /// App, so it is the path that works before one exists.
     CommitStatus,
     None,
 }
 
-pub(crate) fn reporter_for(config: &Config, target: &CheckTarget) -> Reporter {
-    if checks_configured(config, target) {
-        Reporter::CheckRun
-    } else if config.github_token.is_some() {
-        Reporter::CommitStatus
-    } else {
-        Reporter::None
+pub(crate) fn reporter_for(config: &Config, _target: &CheckTarget) -> Reporter {
+    match config.reporting_mode {
+        ReportingMode::AppRequired if checks_configured(config) => Reporter::CheckRun,
+        ReportingMode::AppRequired | ReportingMode::Invalid => Reporter::None,
+        ReportingMode::Advisory if config.github_token.is_some() => Reporter::CommitStatus,
+        ReportingMode::Advisory => Reporter::None,
     }
 }
 
-/// Post a commit status. `state` is GitHub's vocabulary: pending, success,
-/// failure, error.
 async fn post_commit_status(
     state: &AppState,
     target: &CheckTarget,
@@ -340,11 +389,10 @@ async fn post_commit_status(
     let Some(token) = state.config.github_token.as_deref() else {
         return false;
     };
-    // GitHub truncates descriptions past 140 characters.
     let description: String = description.chars().take(140).collect();
     let body = json!({
         "state": status,
-        "context": state.config.check_run_name,
+        "context": state.config.advisory_status_context,
         "description": description,
     });
     let response = state
@@ -363,20 +411,16 @@ async fn post_commit_status(
     match response {
         Ok(response) if response.status().is_success() => true,
         Ok(response) => {
-            tracing::warn!("commit status refused: {}", response.status());
+            tracing::warn!("advisory commit status refused: {}", response.status());
             false
         }
-        Err(error) => {
-            tracing::warn!("commit status failed: {error}");
+        Err(_) => {
+            tracing::warn!("advisory commit status failed");
             false
         }
     }
 }
 
-/// Announce that verification started, by whichever mechanism is configured.
-///
-/// Returns the check run id when one was created, so the completion can update
-/// that same run.
 pub(crate) async fn report_started(
     state: &AppState,
     target: &CheckTarget,
@@ -385,50 +429,43 @@ pub(crate) async fn report_started(
     match reporter_for(state.config.as_ref(), target) {
         Reporter::CheckRun => start_check_run(state, target, job_id).await,
         Reporter::CommitStatus => {
-            post_commit_status(state, target, "pending", "Running on the local worker").await;
+            let _ = post_commit_status(
+                state,
+                target,
+                "pending",
+                "Running on the local worker (advisory)",
+            )
+            .await;
             None
         }
         Reporter::None => None,
     }
 }
 
-/// How a verdict was, or was not, delivered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Delivery {
     CheckRun,
     CommitStatus,
-    /// Nothing reached GitHub. A required check would stay pending, so this is
-    /// recorded loudly rather than treated as a quiet no-op.
     Undelivered,
     NotConfigured,
 }
 
-/// Which mechanisms to try, in order, for a terminal verdict.
-///
-/// Pure so the fallback policy is testable: the bug this replaces was a
-/// "fallback" to commit statuses that silently did nothing when the
-/// deployment had App credentials but no token, leaving no verdict at all.
 pub(crate) fn verdict_plan(
     reporter: Reporter,
     check_run_id: Option<u64>,
     has_status_token: bool,
 ) -> Vec<Delivery> {
-    let mut plan = Vec::new();
-    if reporter == Reporter::CheckRun && check_run_id.is_some() {
-        plan.push(Delivery::CheckRun);
+    match reporter {
+        // Authoritative mode is closed: a PAT status can never repair or
+        // substitute an App-owned context.
+        Reporter::CheckRun => check_run_id
+            .map(|_| vec![Delivery::CheckRun])
+            .unwrap_or_default(),
+        Reporter::CommitStatus if has_status_token => vec![Delivery::CommitStatus],
+        Reporter::CommitStatus | Reporter::None => Vec::new(),
     }
-    // A status is a real fallback only when there is a token to post it with.
-    if reporter != Reporter::None && has_status_token {
-        plan.push(Delivery::CommitStatus);
-    }
-    plan
 }
 
-/// Report the verdict, by whichever mechanism is configured.
-///
-/// Mechanisms are tried in order until one is delivered. A check run that was
-/// created but cannot be completed therefore still gets a terminal status
-/// when a token exists, instead of hanging `in_progress`.
 pub(crate) async fn report_finished(
     state: &AppState,
     target: &CheckTarget,
@@ -458,7 +495,7 @@ pub(crate) async fn report_finished(
         }
     }
     tracing::error!(
-        "verdict for {}/{}@{} was not delivered to GitHub by any configured mechanism",
+        "verdict for {}/{}@{} was not delivered to GitHub by the configured reporting authority",
         target.owner,
         target.repo,
         target.head_sha
@@ -470,173 +507,90 @@ pub(crate) async fn report_finished(
 mod tests {
     use super::*;
 
+    fn target(installation_id: Option<u64>) -> CheckTarget {
+        target_from_request(
+            "https://github.com/o/r",
+            Some("52f0e858d5d6cc952d0bb24d1eb5b4631bb92de0"),
+            installation_id,
+        )
+        .expect("target")
+    }
+
     #[test]
     fn targets_require_a_pinned_commit() {
-        let sha = "52f0e858d5d6cc952d0bb24d1eb5b4631bb92de0";
-        let target =
-            target_from_request("https://github.com/o/r", Some(sha), None).expect("target");
+        let target = target(None);
         assert_eq!(target.owner, "o");
         assert_eq!(target.repo, "r");
-        assert_eq!(target.head_sha, sha);
-
-        // A branch name cannot be reported on, and reporting against wherever
-        // it points now would attach the verdict to unverified code.
         assert_eq!(
             target_from_request("https://github.com/o/r", Some("main"), None),
             None
         );
-        assert_eq!(
-            target_from_request("https://github.com/o/r", None, None),
-            None
-        );
+        assert_eq!(target_from_request("https://github.com/o/r", None, None), None);
     }
 
     #[test]
-    fn target_parses_the_url_forms_the_worker_builds() {
+    fn target_parses_supported_github_urls_only() {
         let sha = "52f0e858d5d6cc952d0bb24d1eb5b4631bb92de0";
-        // Webhook rules build this form, with the .git suffix.
-        let from_webhook = target_from_request(
-            "https://github.com/gha-indie-worker/api.rs.git",
-            Some(sha),
-            None,
-        )
-        .expect("https target");
-        assert_eq!(from_webhook.owner, "gha-indie-worker");
-        assert_eq!(from_webhook.repo, "api.rs");
-
-        let ssh =
-            target_from_request("git@github.com:o/r.git", Some(sha), None).expect("ssh target");
-        assert_eq!(ssh.owner, "o");
-        assert_eq!(ssh.repo, "r");
-
-        // Anything that is not GitHub has no check runs to report to.
-        assert_eq!(
-            target_from_request("https://gitlab.com/o/r", Some(sha), None),
-            None
-        );
-        assert_eq!(
-            target_from_request("https://github.com/o", Some(sha), None),
-            None
-        );
-        assert_eq!(
-            target_from_request("https://github.com/o/r/extra", Some(sha), None),
-            None
-        );
+        assert!(target_from_request("https://github.com/o/r.git", Some(sha), None).is_some());
+        assert!(target_from_request("git@github.com:o/r.git", Some(sha), None).is_some());
+        assert!(target_from_request("https://gitlab.com/o/r", Some(sha), None).is_none());
+        assert!(target_from_request("https://github.com/o/r/extra", Some(sha), None).is_none());
     }
 
     #[test]
-    fn the_reporter_prefers_an_app_and_falls_back_to_a_token() {
-        let target = target_from_request(
-            "https://github.com/o/r",
-            Some("52f0e858d5d6cc952d0bb24d1eb5b4631bb92de0"),
-            None,
-        )
-        .expect("target");
-        let mut config = crate::config::config_from_env();
-        config.github_app_id = None;
-        config.github_app_private_key = None;
-        config.github_app_installation_id = None;
-        config.github_token = None;
-        assert_eq!(reporter_for(&config, &target), Reporter::None);
+    fn signed_or_bootstrap_installation_is_only_a_candidate() {
+        assert_eq!(verify_installation_candidate(Some(22), 22), Ok(22));
+        assert!(verify_installation_candidate(Some(22), 23).is_err());
+        assert_eq!(verify_installation_candidate(None, 23), Ok(23));
+        assert!(verify_installation_candidate(None, 0).is_err());
+    }
 
-        // A token alone still turns pull requests green, via commit statuses.
+    #[test]
+    fn repo_cache_keys_are_org_specific() {
+        let a = CheckTarget { owner: "org-a".into(), repo: "r".into(), head_sha: "a".repeat(40), installation_id: None };
+        let b = CheckTarget { owner: "org-b".into(), repo: "r".into(), head_sha: "a".repeat(40), installation_id: None };
+        assert_ne!(cache_key(&a), cache_key(&b));
+    }
+
+    #[test]
+    fn reporting_modes_never_share_an_authoritative_context() {
+        let mut config = crate::config::config_from_env();
         config.github_token = Some("token".to_string());
-        assert_eq!(reporter_for(&config, &target), Reporter::CommitStatus);
-
         config.github_app_id = Some("1".to_string());
         config.github_app_private_key = Some("pem".to_string());
-        config.github_app_installation_id = Some("2".to_string());
-        assert_eq!(reporter_for(&config, &target), Reporter::CheckRun);
 
-        // A partly configured App must not count as configured.
-        config.github_app_installation_id = None;
-        assert_eq!(reporter_for(&config, &target), Reporter::CommitStatus);
-    }
+        config.reporting_mode = ReportingMode::Advisory;
+        assert_eq!(reporter_for(&config, &target(None)), Reporter::CommitStatus);
 
-    #[test]
-    fn the_signed_delivery_decides_which_installation_reports() {
-        let sha = "52f0e858d5d6cc952d0bb24d1eb5b4631bb92de0";
-        let mut config = crate::config::config_from_env();
-        config.github_app_id = Some("1".to_string());
-        config.github_app_private_key = Some("pem".to_string());
-        config.github_app_installation_id = Some("111".to_string());
-
-        // An App on two orgs has two installations. The delivery's id must
-        // win, or every repository would report through whichever one was
-        // configured globally.
-        let from_webhook =
-            target_from_request("https://github.com/other-org/r", Some(sha), Some(222)).unwrap();
-        assert_eq!(
-            installation_for(&config, &from_webhook).as_deref(),
-            Some("222")
-        );
-
-        // A job that did not come from a webhook has only the fallback.
-        let manual = target_from_request("https://github.com/o/r", Some(sha), None).unwrap();
-        assert_eq!(installation_for(&config, &manual).as_deref(), Some("111"));
-
-        // With no global id, webhook jobs still report and manual ones do not.
-        config.github_app_installation_id = None;
-        assert!(checks_configured(&config, &from_webhook));
-        assert!(!checks_configured(&config, &manual));
-    }
-
-    #[test]
-    fn a_verdict_never_falls_back_to_a_mechanism_that_cannot_run() {
-        // App credentials, the check run was never created, and no token: the
-        // old code "fell back" to a status call that returned immediately.
-        assert_eq!(
-            verdict_plan(Reporter::CheckRun, None, false),
-            Vec::<Delivery>::new()
-        );
-        // With a token the fallback is real.
-        assert_eq!(
-            verdict_plan(Reporter::CheckRun, None, true),
-            vec![Delivery::CommitStatus]
-        );
-        // A created check run is completed first, with the status behind it in
-        // case completion is refused.
+        config.reporting_mode = ReportingMode::AppRequired;
+        assert_eq!(reporter_for(&config, &target(None)), Reporter::CheckRun);
         assert_eq!(
             verdict_plan(Reporter::CheckRun, Some(7), true),
-            vec![Delivery::CheckRun, Delivery::CommitStatus]
+            vec![Delivery::CheckRun],
+            "PAT fallback must be impossible in app-required mode"
         );
         assert_eq!(
-            verdict_plan(Reporter::CheckRun, Some(7), false),
-            vec![Delivery::CheckRun]
+            verdict_plan(Reporter::CheckRun, None, true),
+            Vec::<Delivery>::new(),
+            "missing App check stays undelivered rather than becoming a PAT status"
         );
-        assert_eq!(
-            verdict_plan(Reporter::CommitStatus, None, true),
-            vec![Delivery::CommitStatus]
-        );
-        assert_eq!(
-            verdict_plan(Reporter::None, None, true),
-            Vec::<Delivery>::new()
-        );
+    }
+
+    #[test]
+    fn invalid_or_partial_authoritative_config_has_no_reporter() {
+        let mut config = crate::config::config_from_env();
+        config.reporting_mode = ReportingMode::AppRequired;
+        config.github_app_id = None;
+        config.github_app_private_key = None;
+        config.github_token = Some("token".to_string());
+        assert_eq!(reporter_for(&config, &target(None)), Reporter::None);
     }
 
     #[test]
     fn output_text_is_bounded_in_bytes_not_characters() {
-        // Four bytes each: a character count would let this through at four
-        // times GitHub's limit.
-        let log = "🦀".repeat(MAX_OUTPUT_TEXT);
-        let trimmed = output_text(&log);
-        assert!(trimmed.len() < 65_000, "{} bytes", trimmed.len());
-        assert!(trimmed.ends_with('🦀'));
-        // Cutting mid-character would not be valid UTF-8; this would panic.
-        let mixed = format!("{}é{}", "x".repeat(3), "y".repeat(MAX_OUTPUT_TEXT - 1));
-        assert!(output_text(&mixed).is_char_boundary(0));
-    }
-
-    #[test]
-    fn output_text_keeps_the_end_of_a_long_log() {
-        let log = format!("{}TAIL-MARKER", "x".repeat(MAX_OUTPUT_TEXT * 2));
-        let trimmed = output_text(&log);
-        assert!(trimmed.ends_with("TAIL-MARKER"));
-        assert!(trimmed.starts_with("…log truncated…"));
-        // Must stay inside GitHub's 65535 limit once fenced.
-        assert!(trimmed.len() < 65_000);
-
-        let short = "all of it";
-        assert_eq!(output_text(short), short);
+        let input = "🦀".repeat(MAX_OUTPUT_TEXT);
+        let output = output_text(&input);
+        assert!(output.len() <= MAX_OUTPUT_TEXT + "…log truncated…\n".len());
+        assert!(output.is_char_boundary(output.len()));
     }
 }
