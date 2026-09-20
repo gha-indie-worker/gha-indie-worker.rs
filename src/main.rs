@@ -24,6 +24,7 @@ mod jobs;
 mod lambda_exec;
 mod nats_submit;
 mod profiles;
+mod report_intent;
 mod state;
 mod types;
 mod util;
@@ -112,6 +113,12 @@ async fn main() {
         recent_request_ids: Arc::new(RwLock::new(HashSet::new())),
         installation_cache: Arc::new(RwLock::new(HashMap::new())),
     };
+
+    // Authoritative CI evidence is reconciled before the HTTP server can ever
+    // answer readiness. A process restart therefore cannot silently orphan an
+    // in-progress Check Run or treat an undelivered local success as trusted.
+    report_intent::reconcile_all(&state).await;
+    tokio::spawn(report_intent::run_periodic_reconciler(state.clone()));
 
     // Durable JetStream build-request intake (opt-in).
     if config.nats_intake_enabled && state.nats.is_some() {
