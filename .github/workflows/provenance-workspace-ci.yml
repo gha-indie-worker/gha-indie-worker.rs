@@ -1,0 +1,87 @@
+name: provenance-workspace-ci
+
+on:
+  push:
+    branches:
+      - feat/pull-request-events-and-fork-denial
+  pull_request:
+    branches: ['**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: provenance-workspace-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  K8S_PROVENANCE_COMMIT: 5cfac43c6900898f36f588d044ca34083da1c726
+  LIBS_PROVENANCE_COMMIT: 84d565eeb7e1e78ce0851a2e3c95966e5cc12e36
+  WORKER_PATH: workspace/remote/deployments/build-server-rs
+
+jobs:
+  rust:
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 30
+    steps:
+      - name: Recreate immutable source workspace
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ORESoftware/k8s-cluster
+          ref: ${{ env.K8S_PROVENANCE_COMMIT }}
+          path: workspace
+          persist-credentials: false
+
+      - name: Materialize immutable public libs gitlink
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf workspace/remote/libs
+          git init workspace/remote/libs
+          git -C workspace/remote/libs remote add origin https://github.com/ORESoftware/k8s-libs-and-shared-defs.git
+          GIT_TERMINAL_PROMPT=0 git -C workspace/remote/libs fetch --depth=1 --no-tags origin "$LIBS_PROVENANCE_COMMIT"
+          git -C workspace/remote/libs checkout --detach FETCH_HEAD
+          test "$(git -C workspace/remote/libs rev-parse HEAD)" = "$LIBS_PROVENANCE_COMMIT"
+
+      - name: Remove historical worker snapshot
+        shell: bash
+        run: rm -rf "$WORKER_PATH"
+
+      - name: Overlay exact worker branch commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: ${{ env.WORKER_PATH }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Assert provenance layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C workspace rev-parse HEAD)" = "$K8S_PROVENANCE_COMMIT"
+          test "$(git -C workspace/remote/libs rev-parse HEAD)" = "$LIBS_PROVENANCE_COMMIT"
+          test -f "$WORKER_PATH/Cargo.toml"
+          test -f workspace/remote/libs/telemetry-rs/Cargo.toml
+          test -f workspace/remote/libs/runtime-config-client-rs/Cargo.toml
+          test -f workspace/remote/libs/nats/subject-defs/generated/rust/Cargo.toml
+          grep -F 'ORESoftware/k8s-cluster' "$WORKER_PATH/SOURCE_PROVENANCE.md"
+          grep -F "$K8S_PROVENANCE_COMMIT" "$WORKER_PATH/SOURCE_PROVENANCE.md"
+
+      - name: Install Rust 1.90 with clippy and rustfmt
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: '1.90.0'
+          components: clippy,rustfmt
+
+      - name: Format
+        shell: bash
+        run: cargo fmt --manifest-path "$WORKER_PATH/Cargo.toml" --all -- --check
+
+      - name: Test bins
+        shell: bash
+        run: cargo test --locked --manifest-path "$WORKER_PATH/Cargo.toml" --bins
+
+      - name: Clippy
+        shell: bash
+        run: cargo clippy --locked --manifest-path "$WORKER_PATH/Cargo.toml" --bins -- -D warnings

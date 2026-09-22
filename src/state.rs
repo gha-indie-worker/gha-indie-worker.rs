@@ -11,6 +11,12 @@ use crate::types::BuildJobRecord;
 pub(crate) const SERVICE_NAME: &str = "dd-build-server";
 pub(crate) const DEFAULT_PORT: u16 = 8100;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct InstallationCacheEntry {
+    pub(crate) installation_id: u64,
+    pub(crate) expires_at_ms: u64,
+}
+
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) config: Arc<Config>,
@@ -27,6 +33,10 @@ pub(crate) struct AppState {
     /// Local dedupe of NATS/webhook requestIds (fiducia + JetStream Nats-Msg-Id
     /// are the distributed guards; this catches quick same-process redelivery).
     pub(crate) recent_request_ids: Arc<RwLock<HashSet<String>>>,
+    /// Bounded-TTL metadata cache for a GitHub App's repository installation.
+    /// This contains only numeric installation ids; installation access tokens,
+    /// JWTs and private-key material are deliberately never retained here.
+    pub(crate) installation_cache: Arc<RwLock<HashMap<String, InstallationCacheEntry>>>,
 }
 
 #[derive(Default)]
@@ -47,4 +57,8 @@ pub(crate) struct Counters {
     pub(crate) nats_publish_failures: AtomicU64,
     pub(crate) gh_secrets_synced: AtomicU64,
     pub(crate) gh_secret_sync_failures: AtomicU64,
+    /// Number of authoritative report intents that have not reached a proven
+    /// terminal App Check Run state. A non-zero value makes authoritative
+    /// readiness fail closed.
+    pub(crate) unresolved_report_intents: AtomicU64,
 }

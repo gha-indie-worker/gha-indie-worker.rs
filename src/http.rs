@@ -14,6 +14,7 @@ use subtle::ConstantTimeEq;
 use tokio::fs;
 use tokio_util::io::ReaderStream;
 
+use crate::config::ReportingMode;
 use crate::exec::build_dependencies_ready;
 use crate::jobs::enqueue_build;
 use crate::state::{AppState, SERVICE_NAME};
@@ -26,8 +27,6 @@ pub(crate) fn request_is_authorized(headers: &HeaderMap, secret: &str) -> bool {
         .or_else(|| headers.get("x-build-server-auth"))
         .or_else(|| headers.get("x-agent-auth"))
         .and_then(|value| value.to_str().ok())
-        // Constant-time comparison of digests: no timing side channel and no
-        // length leak from the shared secret.
         .is_some_and(|value| {
             let presented = Sha256::digest(value.as_bytes());
             let expected = Sha256::digest(secret.as_bytes());
@@ -111,6 +110,15 @@ pub(crate) async fn descriptor(State(state): State<AppState>) -> impl IntoRespon
             "registry": config.registry_webhook_secret.is_some(),
             "rules": config.webhook_rules.len()
         },
+        "githubReporting": {
+            "mode": match config.reporting_mode {
+                ReportingMode::Advisory => "advisory",
+                ReportingMode::AppRequired => "app-required",
+                ReportingMode::Invalid => "invalid",
+            },
+            "authoritativeContext": config.check_run_name,
+            "advisoryContext": config.advisory_status_context,
+        },
         "secretSync": { "enabled": config.gh_sync_enabled, "rules": config.gh_sync_rules.len() }
     }))
 }
@@ -160,7 +168,13 @@ pub(crate) async fn healthz(State(state): State<AppState>) -> impl IntoResponse 
 }
 
 pub(crate) async fn readyz(State(state): State<AppState>) -> Response {
-    let ready = build_dependencies_ready(&state.config);
+    let dependencies_ready = build_dependencies_ready(&state.config);
+    let unresolved = state
+        .counters
+        .unresolved_report_intents
+        .load(Ordering::Relaxed);
+    let reporting_ready = state.config.reporting_mode != ReportingMode::AppRequired || unresolved == 0;
+    let ready = dependencies_ready && reporting_ready;
     let status = if ready {
         StatusCode::OK
     } else {
@@ -171,7 +185,9 @@ pub(crate) async fn readyz(State(state): State<AppState>) -> Response {
         Json(json!({
             "ok": ready,
             "service": SERVICE_NAME,
-            "dependenciesReady": ready,
+            "dependenciesReady": dependencies_ready,
+            "reportingReady": reporting_ready,
+            "unresolvedReportIntents": unresolved,
         })),
     )
         .into_response()
@@ -255,11 +271,25 @@ pub(crate) async fn metrics(State(state): State<AppState>) -> impl IntoResponse 
         state.counters.gh_secrets_synced.load(Ordering::Relaxed),
         state.counters.gh_secret_sync_failures.load(Ordering::Relaxed),
     ));
+    let dependencies_ready = build_dependencies_ready(&state.config);
+    let unresolved = state
+        .counters
+        .unresolved_report_intents
+        .load(Ordering::Relaxed);
+    let reporting_ready = state.config.reporting_mode != ReportingMode::AppRequired || unresolved == 0;
     body.push_str(&format!(
         "# HELP dd_build_server_dependencies_ready Whether auth, work storage, and required build tools are available.\n\
          # TYPE dd_build_server_dependencies_ready gauge\n\
-         dd_build_server_dependencies_ready {}\n",
-        u8::from(build_dependencies_ready(&state.config))
+         dd_build_server_dependencies_ready {}\n\
+         # HELP dd_build_server_unresolved_report_intents Authoritative report intents not yet reconciled to terminal App Check Run evidence.\n\
+         # TYPE dd_build_server_unresolved_report_intents gauge\n\
+         dd_build_server_unresolved_report_intents {}\n\
+         # HELP dd_build_server_reporting_ready Whether authoritative reporting evidence is fully reconciled.\n\
+         # TYPE dd_build_server_reporting_ready gauge\n\
+         dd_build_server_reporting_ready {}\n",
+        u8::from(dependencies_ready),
+        unresolved,
+        u8::from(reporting_ready),
     ));
     (
         [(
@@ -322,8 +352,6 @@ pub(crate) async fn list_builds(State(state): State<AppState>, headers: HeaderMa
         .cloned()
         .collect::<Vec<_>>();
     jobs.sort_by_key(|job| std::cmp::Reverse(job.created_at_ms));
-    // With persistence on, also surface recent jobs from prior processes
-    // (the in-memory map only holds this process's jobs).
     if let Some(db) = state.db.as_ref() {
         let known: HashSet<String> = jobs.iter().map(|job| job.id.clone()).collect();
         let persisted = db::recent_jobs(db, 200).await;
@@ -473,9 +501,6 @@ pub(crate) async fn api_docs_json() -> impl axum::response::IntoResponse {
     )
 }
 
-/// Build the HTTP router with all routes and the request state baked in.
-/// Extracted so integration tests can drive the exact production route table
-/// in-process via `tower::ServiceExt::oneshot`.
 pub(crate) fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/", get(descriptor))
@@ -497,12 +522,6 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .merge(dd_runtime_config_client::router())
 }
 
-/// End-to-end HTTP tests that drive the production `build_router` in-process via
-/// `tower::ServiceExt::oneshot`. No network, DB, NATS, or fiducia is required:
-/// db/nats are `None` and coordination is disabled, so these exercise the real
-/// auth middleware, request validation, webhook verification, and read handlers
-/// exactly as deployed. They deliberately use payloads that are rejected BEFORE
-/// a job is enqueued, so no real `git`/`nerdctl` subprocess is ever spawned.
 #[cfg(test)]
 mod e2e {
     use super::*;
@@ -516,7 +535,7 @@ mod e2e {
     use tokio::sync::{RwLock, Semaphore};
     use tower::ServiceExt;
 
-    use crate::config::Config;
+    use crate::config::{Config, ReportingMode};
     use crate::state::Counters;
 
     const AUTH: &str = "test-server-auth-secret";
@@ -529,6 +548,14 @@ mod e2e {
             work_root: std::env::temp_dir().join(format!("dd-bs-e2e-{unique}")),
             git_bin: "git".to_string(),
             git_http_auth_header: None,
+            github_token: None,
+            github_app_id: None,
+            github_app_private_key: None,
+            github_app_installation_id: None,
+            reporting_mode: ReportingMode::Advisory,
+            check_run_name: "indiebuild.dev/ci".to_string(),
+            advisory_status_context: "indiebuild.dev/ci-advisory".to_string(),
+            installation_cache_ttl: Duration::from_secs(300),
             nerdctl_bin: "nerdctl".to_string(),
             kubectl_bin: "kubectl".to_string(),
             tar_bin: "tar".to_string(),
@@ -598,6 +625,7 @@ mod e2e {
             nats: None,
             holder: "dd-build-server/e2e-test".to_string(),
             recent_request_ids: Arc::new(RwLock::new(HashSet::new())),
+            installation_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -638,8 +666,6 @@ mod e2e {
         format!("sha256={}", hex::encode(mac.finalize().into_bytes()))
     }
 
-    // ---- health / observability: unauthenticated, no secret leakage ----
-
     #[tokio::test]
     async fn health_ready_metrics_are_public_and_ok() {
         for path in ["/healthz", "/readyz", "/metrics"] {
@@ -652,12 +678,27 @@ mod e2e {
     }
 
     #[tokio::test]
+    async fn authoritative_unresolved_report_intent_degrades_readiness() {
+        let mut config = test_config();
+        config.reporting_mode = ReportingMode::AppRequired;
+        config.github_app_id = Some("1".to_string());
+        config.github_app_private_key = Some("test-only-pem-placeholder".to_string());
+        let state = state_from(config);
+        state
+            .counters
+            .unresolved_report_intents
+            .store(1, Ordering::Relaxed);
+        let (status, body) = send(build_router(state), get("/readyz")).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(body.contains("\"reportingReady\":false"), "{body}");
+        assert!(body.contains("\"unresolvedReportIntents\":1"), "{body}");
+    }
+
+    #[tokio::test]
     async fn healthz_does_not_leak_the_auth_secret() {
         let (_, body) = send(app(test_config()), get("/healthz")).await;
         assert!(!body.contains(AUTH), "healthz body leaked the auth secret");
     }
-
-    // ---- auth enforcement on mutating routes ----
 
     #[tokio::test]
     async fn submit_without_auth_is_rejected_before_any_work() {
@@ -675,8 +716,6 @@ mod e2e {
 
     #[tokio::test]
     async fn wrong_secret_of_different_length_still_unauthorized_no_length_leak() {
-        // The digest compare must not behave differently for a short vs long
-        // wrong secret; both are simply unauthorized.
         for wrong in ["x", "a-much-longer-wrong-secret-value-than-the-real-one"] {
             let body = json!({ "repoUrl": "https://github.com/ORESoftware/x.git" });
             let (status, _) =
@@ -688,8 +727,6 @@ mod e2e {
     #[tokio::test]
     async fn alternate_auth_headers_are_accepted() {
         for header in ["x-server-auth", "x-build-server-auth", "x-agent-auth"] {
-            // Authenticated but repo not allowed → 400 (proves auth passed, then
-            // validation ran). A 401 would mean the header was not honored.
             let body = json!({ "repoUrl": "https://github.com/attacker/x.git" });
             let request = Request::builder()
                 .method("POST")
@@ -712,8 +749,6 @@ mod e2e {
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert!(body.contains("disabled"));
     }
-
-    // ---- submission validation: the injection guards, end to end over HTTP ----
 
     async fn assert_submit_rejected(body: serde_json::Value) {
         let (status, _) = send(app(test_config()), post_json("/builds", Some(AUTH), &body)).await;
@@ -803,8 +838,6 @@ mod e2e {
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
-    // ---- GitHub webhook: HMAC gate, fails closed, no panic on bad sha ----
-
     #[tokio::test]
     async fn github_webhook_missing_signature_is_unauthorized() {
         let body = json!({ "ref": "refs/heads/dev" }).to_string();
@@ -858,9 +891,6 @@ mod e2e {
 
     #[tokio::test]
     async fn github_webhook_malformed_sha_does_not_panic_and_is_ignored() {
-        // A non-ASCII/short `after` used to panic via a byte-slice; now it is
-        // gated by valid_commit_sha and ignored. A real matching rule exists so
-        // the only thing stopping a build is the sha check.
         let mut config = test_config();
         config.webhook_rules = vec![webhooks::WebhookRule {
             repo: "ORESoftware/x".to_string(),
@@ -892,8 +922,6 @@ mod e2e {
         assert_eq!(status, StatusCode::OK, "must not 500/panic");
         assert!(body.contains("ignored"));
     }
-
-    // ---- registry webhook: secret gate + delivery-id dedupe guard ----
 
     #[tokio::test]
     async fn registry_webhook_wrong_secret_is_unauthorized() {
@@ -941,8 +969,6 @@ mod e2e {
         assert_eq!(status, StatusCode::OK);
     }
 
-    // ---- path-traversal safety on the job read endpoints ----
-
     fn authed_get(uri: &str) -> Request<Body> {
         Request::builder()
             .uri(uri)
@@ -953,7 +979,6 @@ mod e2e {
 
     #[tokio::test]
     async fn job_read_endpoints_require_auth() {
-        // Unauthenticated reads are rejected before any filesystem/map access.
         for uri in ["/builds/anything/logs", "/builds/anything/artifacts"] {
             let (status, _) = send(app(test_config()), get(uri)).await;
             assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}");
@@ -962,9 +987,6 @@ mod e2e {
 
     #[tokio::test]
     async fn job_logs_traversal_and_unknown_id_are_not_found() {
-        // Even WITH valid auth, a traversal or unknown job id resolves through
-        // the in-memory job map (miss → 404), never a raw filesystem path, so
-        // `../../etc/passwd` cannot read an arbitrary file.
         for uri in [
             "/builds/..%2f..%2f..%2fetc%2fpasswd/logs",
             "/builds/does-not-exist/logs",
