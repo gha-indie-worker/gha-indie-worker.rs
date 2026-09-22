@@ -33,13 +33,16 @@ jobs:
           path: workspace
           persist-credentials: false
 
-      - name: Materialize immutable libs gitlink
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: ORESoftware/k8s-libs-and-shared-defs
-          ref: ${{ env.LIBS_PROVENANCE_COMMIT }}
-          path: workspace/remote/libs
-          persist-credentials: false
+      - name: Materialize immutable public libs gitlink
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf workspace/remote/libs
+          git init workspace/remote/libs
+          git -C workspace/remote/libs remote add origin https://github.com/ORESoftware/k8s-libs-and-shared-defs.git
+          GIT_TERMINAL_PROMPT=0 git -C workspace/remote/libs fetch --depth=1 --no-tags origin "$LIBS_PROVENANCE_COMMIT"
+          git -C workspace/remote/libs checkout --detach FETCH_HEAD
+          test "$(git -C workspace/remote/libs rev-parse HEAD)" = "$LIBS_PROVENANCE_COMMIT"
 
       - name: Remove historical worker snapshot
         shell: bash
