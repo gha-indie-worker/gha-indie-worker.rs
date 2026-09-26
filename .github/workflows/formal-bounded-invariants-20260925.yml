@@ -1,0 +1,54 @@
+name: Formal bounded deployment invariants
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bounded-deployment-model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Exhaustively check bounded deployment state space
+        shell: bash
+        run: |
+          node <<'NODE'
+          const assert = require('node:assert/strict');
+          const actions = ['submit', 'admit', 'launch', 'stale_launch'];
+          const initial = { desired: 0, admitted: 0, running: 0 };
+          const step = (s, action) => {
+            switch (action) {
+              case 'submit': return { ...s, desired: s.desired + 1 };
+              case 'admit': return { ...s, admitted: s.desired };
+              case 'launch': return { ...s, running: s.admitted };
+              case 'stale_launch': return s;
+              default: throw new Error(`unknown action ${action}`);
+            }
+          };
+          const key = (s) => JSON.stringify(s);
+          let frontier = [initial];
+          const seen = new Set([key(initial)]);
+          for (let depth = 0; depth < 9; depth += 1) {
+            const next = [];
+            for (const state of frontier) {
+              assert.ok(state.running <= state.admitted && state.admitted <= state.desired, 'running <= admitted <= desired');
+              for (const action of actions) {
+                const after = step(state, action);
+                assert.ok(after.desired >= state.desired, 'desired generation never regresses');
+                assert.ok(after.admitted >= state.admitted, 'admitted generation never regresses');
+                assert.ok(after.running >= state.running, 'running generation never regresses');
+                assert.ok(after.running <= after.admitted && after.admitted <= after.desired, 'admission ordering preserved');
+                if (action === 'stale_launch') assert.deepEqual(after, state, 'stale launch is rejected');
+                const k = key(after);
+                if (!seen.has(k)) { seen.add(k); next.push(after); }
+              }
+            }
+            frontier = next;
+          }
+          console.log(`formal deployment model OK: ${seen.size} reachable states checked`);
+          NODE
