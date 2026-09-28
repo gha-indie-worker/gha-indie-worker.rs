@@ -109,7 +109,7 @@ pub async fn execute(
 }
 
 
-fn validate_scintilla_api_url(value: &str) -> Result<reqwest::Url, String> {
+pub(crate) fn validate_scintilla_api_url(value: &str) -> Result<reqwest::Url, String> {
     let mut url = reqwest::Url::parse(value)
         .map_err(|_| "BUILD_SERVER_SCINTILLA_API_URL must be a valid URL".to_string())?;
     if !matches!(url.scheme(), "http" | "https")
