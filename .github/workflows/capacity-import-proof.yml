@@ -1,0 +1,43 @@
+name: Capacity import proof
+
+on:
+  pull_request:
+    paths:
+      - 'imports/k8s-cluster/gha-capacity-broker-rs/**'
+      - 'K8S_EXTRACTION_20260927.md'
+      - '.github/workflows/capacity-import-proof.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: capacity-import-proof-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-import:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.90.0
+          components: rustfmt, clippy
+      - name: Verify exact candidate head
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+      - name: Format imported policy capsule
+        run: cargo +1.90.0 fmt --manifest-path imports/k8s-cluster/gha-capacity-broker-rs/Cargo.toml --all -- --check
+      - name: Clippy imported policy capsule
+        run: cargo +1.90.0 clippy --manifest-path imports/k8s-cluster/gha-capacity-broker-rs/Cargo.toml --locked --all-targets -- -D warnings
+      - name: Test imported policy capsule
+        run: cargo +1.90.0 test --manifest-path imports/k8s-cluster/gha-capacity-broker-rs/Cargo.toml --locked --all-targets
