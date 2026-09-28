@@ -248,9 +248,13 @@ pub(crate) async fn run_logged_command_inner(
 }
 
 pub(crate) fn build_dependencies_ready(config: &Config) -> bool {
-    config.server_auth_secret.is_some()
-        && config.work_root.exists()
-        && executable_available(&config.git_bin)
+    if config.server_auth_secret.is_none() || !config.work_root.exists() {
+        return false;
+    }
+    if !config.local_executor_enabled {
+        return true;
+    }
+    executable_available(&config.git_bin)
         && executable_available(&config.nerdctl_bin)
         && executable_available(&config.tar_bin)
         && (!config.deploy_enabled || executable_available(&config.kubectl_bin))
