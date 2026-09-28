@@ -35,3 +35,10 @@ Borrow from `remote/deployments/ci-profile-runner-rs`:
 The existing split remains authoritative here. Bring forward improvements from the newer k8s copy selectively (Fiducia locking/idempotency, durable NATS intake, webhook dedupe, fixed-profile artifacts, least-privilege secret sync) through normal review instead of overwriting this repo.
 
 The original k8s services and manifests remain untouched during this extraction.
+
+
+## Executable import evidence
+
+The staged capacity-broker import remains a review capsule, not production wiring. Its original `Cargo.toml` and `Cargo.lock` are copied from `ORESoftware/k8s-cluster@cc675fd772d56e917d6b19e03a9c62e98d02248d` so the imported policy core can be compiled and tested independently without silently changing its dependency graph.
+
+`.github/workflows/capacity-import-proof.yml` runs exact-head formatting, warnings-denied Clippy, and locked tests for that capsule. Passing the capsule proves the extracted policy code remains executable; it does **not** claim the main GIW build server calls it or that GitHub billing/variable mutation credentials are deployed.
