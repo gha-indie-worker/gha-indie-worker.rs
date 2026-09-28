@@ -269,6 +269,8 @@ pub(crate) fn build_dependencies_ready(config: &Config) -> bool {
             config.scintilla_executor_enabled
                 && config.scintilla_function_id.is_some()
                 && config.scintilla_auth_token.is_some()
+                && crate::scintilla_exec::validate_scintilla_api_url(&config.scintilla_api_url)
+                    .is_ok()
         }
         _ => false,
     }
