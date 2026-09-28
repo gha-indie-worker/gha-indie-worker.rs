@@ -30,17 +30,30 @@ pub struct OrgPolicy {
     pub selected_repository_ids: Vec<u64>,
 }
 
-fn default_warn_percent() -> f64 { 75.0 }
-fn default_self_hosted_percent() -> f64 { 90.0 }
-fn default_hard_stop_percent() -> f64 { 100.0 }
-fn default_hosted_runs_on() -> Vec<String> { vec![DEFAULT_HOSTED_RUNS_ON.to_string()] }
+fn default_warn_percent() -> f64 {
+    75.0
+}
+
+fn default_self_hosted_percent() -> f64 {
+    90.0
+}
+
+fn default_hard_stop_percent() -> f64 {
+    100.0
+}
+
+fn default_hosted_runs_on() -> Vec<String> {
+    vec![DEFAULT_HOSTED_RUNS_ON.to_string()]
+}
 
 impl OrgPolicy {
     pub fn validate(&self) -> Result<(), String> {
         if !self.warn_percent.is_finite() || !(0.0..=100.0).contains(&self.warn_percent) {
             return Err("warnPercent must be between 0 and 100".to_string());
         }
-        if !self.self_hosted_percent.is_finite() || !(0.0..=100.0).contains(&self.self_hosted_percent) {
+        if !self.self_hosted_percent.is_finite()
+            || !(0.0..=100.0).contains(&self.self_hosted_percent)
+        {
             return Err("selfHostedPercent must be between 0 and 100".to_string());
         }
         if !self.hard_stop_percent.is_finite() || self.hard_stop_percent < 100.0 {
@@ -52,9 +65,13 @@ impl OrgPolicy {
         if self.self_hosted_percent > self.hard_stop_percent {
             return Err("selfHostedPercent must not exceed hardStopPercent".to_string());
         }
-        if self.included_minutes.is_some_and(|minutes| !minutes.is_finite() || minutes <= 0.0) {
+        if self
+            .included_minutes
+            .is_some_and(|minutes| !minutes.is_finite() || minutes <= 0.0)
+        {
             return Err("includedMinutes must be positive when configured".to_string());
         }
+
         let hosted = validate_runs_on(&self.hosted_runs_on, "hostedRunsOn")?;
         let self_hosted = validate_runs_on(&self.self_hosted_runs_on, "selfHostedRunsOn")?;
         if !hosted.is_disjoint(&self_hosted) {
@@ -66,14 +83,28 @@ impl OrgPolicy {
 }
 
 fn validate_runs_on(values: &[String], field: &str) -> Result<BTreeSet<String>, String> {
-    if values.is_empty() { return Err(format!("{field} must contain at least one label")); }
-    if values.len() > 8 { return Err(format!("{field} must contain no more than eight labels")); }
+    if values.is_empty() {
+        return Err(format!("{field} must contain at least one label"));
+    }
+    if values.len() > 8 {
+        return Err(format!("{field} must contain no more than eight labels"));
+    }
+
     let mut normalized = BTreeSet::new();
     for value in values {
         let trimmed = value.trim();
-        if trimmed.is_empty() || trimmed.len() > 100 { return Err(format!("{field} contains an empty or oversized label")); }
-        if trimmed != value { return Err(format!("{field} labels must not contain surrounding whitespace")); }
-        if !trimmed.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.')) {
+        if trimmed.is_empty() || trimmed.len() > 100 {
+            return Err(format!("{field} contains an empty or oversized label"));
+        }
+        if trimmed != value {
+            return Err(format!(
+                "{field} labels must not contain surrounding whitespace"
+            ));
+        }
+        if !trimmed
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+        {
             return Err(format!("{field} contains an invalid label: {trimmed}"));
         }
         if !normalized.insert(trimmed.to_ascii_lowercase()) {
@@ -86,8 +117,14 @@ fn validate_runs_on(values: &[String], field: &str) -> Result<BTreeSet<String>, 
 fn validate_repository_ids(values: &[u64]) -> Result<(), String> {
     let mut seen = BTreeSet::new();
     for value in values {
-        if *value == 0 { return Err("selectedRepositoryIds must contain only positive IDs".to_string()); }
-        if !seen.insert(*value) { return Err(format!("selectedRepositoryIds contains duplicate repository ID {value}")); }
+        if *value == 0 {
+            return Err("selectedRepositoryIds must contain only positive IDs".to_string());
+        }
+        if !seen.insert(*value) {
+            return Err(format!(
+                "selectedRepositoryIds contains duplicate repository ID {value}"
+            ));
+        }
     }
     Ok(())
 }
@@ -111,26 +148,55 @@ pub struct BillingUsageItem {
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct BillingUsageResponse { pub usage_items: Vec<BillingUsageItem> }
+pub struct BillingUsageResponse {
+    pub usage_items: Vec<BillingUsageItem>,
+}
 
 impl BillingUsageResponse {
     fn actions_minute_items(&self) -> impl Iterator<Item = &BillingUsageItem> {
-        self.usage_items.iter().filter(|item| item.product.eq_ignore_ascii_case("Actions") && item.unit_type.eq_ignore_ascii_case("minutes"))
+        self.usage_items.iter().filter(|item| {
+            item.product.eq_ignore_ascii_case("Actions")
+                && item.unit_type.eq_ignore_ascii_case("minutes")
+        })
     }
-    pub fn actions_minutes(&self) -> f64 { self.actions_gross_minutes() }
+
+    /// Total Actions minutes consumed before included-usage and other discounts.
+    /// This is the capacity-routing numerator for an included-minute allowance.
+    pub fn actions_minutes(&self) -> f64 {
+        self.actions_gross_minutes()
+    }
+
     pub fn actions_gross_minutes(&self) -> f64 {
-        self.actions_minute_items().map(|item| nonnegative_finite(item.gross_quantity)).sum()
+        self.actions_minute_items()
+            .map(|item| nonnegative_finite(item.gross_quantity))
+            .sum()
     }
+
+    /// Actions minutes remaining after quantity discounts. This is useful for
+    /// cost reporting, but it must not replace gross minutes in capacity policy.
     pub fn actions_billable_minutes(&self) -> f64 {
-        self.actions_minute_items().map(|item| nonnegative_finite(item.net_quantity)).sum()
+        self.actions_minute_items()
+            .map(|item| nonnegative_finite(item.net_quantity))
+            .sum()
     }
 }
 
-fn nonnegative_finite(value: f64) -> f64 { if value.is_finite() { value.max(0.0) } else { 0.0 } }
+fn nonnegative_finite(value: f64) -> f64 {
+    if value.is_finite() {
+        value.max(0.0)
+    } else {
+        0.0
+    }
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "kebab-case")]
-pub enum ExecutionMode { Hosted, SelfHosted, BuildServer, Hold }
+pub enum ExecutionMode {
+    Hosted,
+    SelfHosted,
+    BuildServer,
+    Hold,
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -148,29 +214,107 @@ pub fn decide_capacity(policy: &OrgPolicy, actions_minutes: Option<f64>) -> Capa
         (Some(used), Some(included)) if included > 0.0 => Some((used / included) * 100.0),
         _ => None,
     };
+
     let mut warnings = Vec::new();
     if let Some(percent) = usage_percent {
-        if percent >= policy.warn_percent { warnings.push(format!("Actions usage is at {percent:.1}% of the configured included-minute budget")); }
-        if percent >= policy.self_hosted_percent { warnings.push("hosted capacity should no longer be the primary Linux lane".to_string()); }
-        if percent >= policy.hard_stop_percent { warnings.push("hosted runner allocation may be blocked by budget policy".to_string()); }
+        if percent >= policy.warn_percent {
+            warnings.push(format!(
+                "Actions usage is at {percent:.1}% of the configured included-minute budget"
+            ));
+        }
+        if percent >= policy.self_hosted_percent {
+            warnings.push("hosted capacity should no longer be the primary Linux lane".to_string());
+        }
+        if percent >= policy.hard_stop_percent {
+            warnings.push("hosted runner allocation may be blocked by budget policy".to_string());
+        }
     }
+
     if policy.prefer_self_hosted && policy.self_hosted_ready {
-        return CapacityDecision { mode: ExecutionMode::SelfHosted, runs_on: policy.self_hosted_runs_on.clone(), reason: "policy prefers the validated self-hosted Linux lane".to_string(), actions_minutes, usage_percent, warnings };
+        return CapacityDecision {
+            mode: ExecutionMode::SelfHosted,
+            runs_on: policy.self_hosted_runs_on.clone(),
+            reason: "policy prefers the validated self-hosted Linux lane".to_string(),
+            actions_minutes,
+            usage_percent,
+            warnings,
+        };
     }
+
     match usage_percent {
         Some(percent) if percent >= policy.hard_stop_percent => {
             if policy.self_hosted_ready {
-                CapacityDecision { mode: ExecutionMode::SelfHosted, runs_on: policy.self_hosted_runs_on.clone(), reason: "configured hosted-minute hard stop reached; using validated ARC capacity".to_string(), actions_minutes, usage_percent, warnings }
+                CapacityDecision {
+                    mode: ExecutionMode::SelfHosted,
+                    runs_on: policy.self_hosted_runs_on.clone(),
+                    reason:
+                        "configured hosted-minute hard stop reached; using validated ARC capacity"
+                            .to_string(),
+                    actions_minutes,
+                    usage_percent,
+                    warnings,
+                }
             } else if policy.build_server_enabled {
-                CapacityDecision { mode: ExecutionMode::BuildServer, runs_on: Vec::new(), reason: "hosted-minute hard stop reached and ARC is not certified; only reviewed build-server profiles may proceed".to_string(), actions_minutes, usage_percent, warnings }
+                CapacityDecision {
+                    mode: ExecutionMode::BuildServer,
+                    runs_on: Vec::new(),
+                    reason: "hosted-minute hard stop reached and ARC is not certified; only reviewed build-server profiles may proceed"
+                        .to_string(),
+                    actions_minutes,
+                    usage_percent,
+                    warnings,
+                }
             } else {
-                CapacityDecision { mode: ExecutionMode::Hold, runs_on: Vec::new(), reason: "hosted-minute hard stop reached and no certified fallback is available".to_string(), actions_minutes, usage_percent, warnings }
+                CapacityDecision {
+                    mode: ExecutionMode::Hold,
+                    runs_on: Vec::new(),
+                    reason:
+                        "hosted-minute hard stop reached and no certified fallback is available"
+                            .to_string(),
+                    actions_minutes,
+                    usage_percent,
+                    warnings,
+                }
             }
         }
-        Some(percent) if percent >= policy.self_hosted_percent && policy.self_hosted_ready => CapacityDecision { mode: ExecutionMode::SelfHosted, runs_on: policy.self_hosted_runs_on.clone(), reason: "configured self-hosted threshold reached".to_string(), actions_minutes, usage_percent, warnings },
-        Some(_) => CapacityDecision { mode: ExecutionMode::Hosted, runs_on: policy.hosted_runs_on.clone(), reason: "hosted-minute usage remains below the configured routing threshold".to_string(), actions_minutes, usage_percent, warnings },
-        None if policy.self_hosted_ready => CapacityDecision { mode: ExecutionMode::SelfHosted, runs_on: policy.self_hosted_runs_on.clone(), reason: "billing usage is unavailable; failing closed onto validated self-hosted capacity".to_string(), actions_minutes, usage_percent, warnings },
-        None => CapacityDecision { mode: ExecutionMode::Hold, runs_on: Vec::new(), reason: "billing usage is unavailable and self-hosted readiness is not certified".to_string(), actions_minutes, usage_percent, warnings },
+        Some(percent) if percent >= policy.self_hosted_percent && policy.self_hosted_ready => {
+            CapacityDecision {
+                mode: ExecutionMode::SelfHosted,
+                runs_on: policy.self_hosted_runs_on.clone(),
+                reason: "configured self-hosted threshold reached".to_string(),
+                actions_minutes,
+                usage_percent,
+                warnings,
+            }
+        }
+        Some(_) => CapacityDecision {
+            mode: ExecutionMode::Hosted,
+            runs_on: policy.hosted_runs_on.clone(),
+            reason: "hosted-minute usage remains below the configured routing threshold"
+                .to_string(),
+            actions_minutes,
+            usage_percent,
+            warnings,
+        },
+        None if policy.self_hosted_ready => CapacityDecision {
+            mode: ExecutionMode::SelfHosted,
+            runs_on: policy.self_hosted_runs_on.clone(),
+            reason:
+                "billing usage is unavailable; failing closed onto validated self-hosted capacity"
+                    .to_string(),
+            actions_minutes,
+            usage_percent,
+            warnings,
+        },
+        None => CapacityDecision {
+            mode: ExecutionMode::Hold,
+            runs_on: Vec::new(),
+            reason: "billing usage is unavailable and self-hosted readiness is not certified"
+                .to_string(),
+            actions_minutes,
+            usage_percent,
+            warnings,
+        },
     }
 }
 
@@ -183,26 +327,61 @@ pub struct VariableMutation {
     pub selected_repository_ids: Vec<u64>,
 }
 
-pub fn decision_variables(policy: &OrgPolicy, decision: &CapacityDecision) -> Result<BTreeMap<String, VariableMutation>, String> {
+pub fn decision_variables(
+    policy: &OrgPolicy,
+    decision: &CapacityDecision,
+) -> Result<BTreeMap<String, VariableMutation>, String> {
     policy.validate()?;
     if policy.selected_repository_ids.is_empty() {
-        return Err("selectedRepositoryIds must be non-empty before organization variables can mutate".to_string());
+        return Err(
+            "selectedRepositoryIds must be non-empty before organization variables can mutate"
+                .to_string(),
+        );
     }
+
     let effective_runs_on = match decision.mode {
         ExecutionMode::Hosted | ExecutionMode::SelfHosted => {
-            if decision.runs_on.is_empty() { return Err("an executable capacity decision must include a runner label".to_string()); }
+            if decision.runs_on.is_empty() {
+                return Err(
+                    "an executable capacity decision must include a runner label".to_string(),
+                );
+            }
             decision.runs_on.clone()
         }
-        ExecutionMode::BuildServer | ExecutionMode::Hold => vec![CI_HOLD_RUNNER_LABEL.to_string()],
+        ExecutionMode::BuildServer | ExecutionMode::Hold => {
+            vec![CI_HOLD_RUNNER_LABEL.to_string()]
+        }
     };
-    let runs_on = serde_json::to_string(&effective_runs_on).map_err(|error| format!("failed to serialize runs-on labels: {error}"))?;
-    let mode = match decision.mode { ExecutionMode::Hosted => "hosted", ExecutionMode::SelfHosted => "self-hosted", ExecutionMode::BuildServer => "build-server", ExecutionMode::Hold => "hold" };
+    let runs_on = serde_json::to_string(&effective_runs_on)
+        .map_err(|error| format!("failed to serialize runs-on labels: {error}"))?;
+    let mode = match decision.mode {
+        ExecutionMode::Hosted => "hosted",
+        ExecutionMode::SelfHosted => "self-hosted",
+        ExecutionMode::BuildServer => "build-server",
+        ExecutionMode::Hold => "hold",
+    };
+
     let mut values = BTreeMap::new();
-    values.insert("CI_EXECUTION_MODE".to_string(), VariableMutation { name: "CI_EXECUTION_MODE".to_string(), value: mode.to_string(), visibility: "selected".to_string(), selected_repository_ids: policy.selected_repository_ids.clone() });
-    values.insert("CI_LINUX_RUNS_ON_JSON".to_string(), VariableMutation { name: "CI_LINUX_RUNS_ON_JSON".to_string(), value: runs_on, visibility: "selected".to_string(), selected_repository_ids: policy.selected_repository_ids.clone() });
+    values.insert(
+        "CI_EXECUTION_MODE".to_string(),
+        VariableMutation {
+            name: "CI_EXECUTION_MODE".to_string(),
+            value: mode.to_string(),
+            visibility: "selected".to_string(),
+            selected_repository_ids: policy.selected_repository_ids.clone(),
+        },
+    );
+    values.insert(
+        "CI_LINUX_RUNS_ON_JSON".to_string(),
+        VariableMutation {
+            name: "CI_LINUX_RUNS_ON_JSON".to_string(),
+            value: runs_on,
+            visibility: "selected".to_string(),
+            selected_repository_ids: policy.selected_repository_ids.clone(),
+        },
+    );
     Ok(values)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -210,103 +389,249 @@ mod tests {
 
     fn policy() -> OrgPolicy {
         OrgPolicy {
-            included_minutes: Some(1_000.0),
+            included_minutes: Some(2_000.0),
             warn_percent: 75.0,
             self_hosted_percent: 90.0,
             hard_stop_percent: 100.0,
             prefer_self_hosted: false,
-            self_hosted_ready: false,
-            build_server_enabled: false,
+            self_hosted_ready: true,
+            build_server_enabled: true,
             hosted_runs_on: vec!["ubuntu-latest".to_string()],
-            self_hosted_runs_on: vec!["self-hosted".to_string(), "gha-indie-worker".to_string()],
-            selected_repository_ids: vec![42],
+            self_hosted_runs_on: vec!["sonus-ci".to_string()],
+            selected_repository_ids: vec![1, 2],
+        }
+    }
+
+    fn usage_item(product: &str, unit_type: &str, gross: f64, net: f64) -> BillingUsageItem {
+        BillingUsageItem {
+            product: product.to_string(),
+            sku: "test-sku".to_string(),
+            unit_type: unit_type.to_string(),
+            price_per_unit: 0.008,
+            gross_quantity: gross,
+            gross_amount: gross * 0.008,
+            discount_quantity: (gross - net).max(0.0),
+            discount_amount: ((gross - net).max(0.0)) * 0.008,
+            net_quantity: net,
+            net_amount: net * 0.008,
+            model: None,
         }
     }
 
     #[test]
-    fn gross_actions_minutes_drive_routing_evidence() {
+    fn parses_current_public_preview_summary_schema() {
+        let usage: BillingUsageResponse = serde_json::from_str(
+            r#"{
+                "timePeriod": {"year": 2026, "month": 8},
+                "organization": "sonus-auris",
+                "usageItems": [
+                    {
+                        "product": "Actions",
+                        "sku": "actions_linux",
+                        "unitType": "minutes",
+                        "pricePerUnit": 0.008,
+                        "grossQuantity": 1000,
+                        "grossAmount": 8,
+                        "discountQuantity": 900,
+                        "discountAmount": 7.2,
+                        "netQuantity": 100,
+                        "netAmount": 0.8
+                    }
+                ]
+            }"#,
+        )
+        .expect("current billing summary fixture");
+
+        assert_eq!(usage.actions_gross_minutes(), 1_000.0);
+        assert_eq!(usage.actions_billable_minutes(), 100.0);
+        assert_eq!(usage.actions_minutes(), 1_000.0);
+    }
+
+    #[test]
+    fn missing_usage_items_is_rejected() {
+        let result = serde_json::from_str::<BillingUsageResponse>(
+            r#"{"timePeriod":{"year":2026},"organization":"sonus-auris"}"#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn sums_only_actions_minutes_and_keeps_gross_separate_from_billable() {
         let usage = BillingUsageResponse {
-            usage_items: vec![BillingUsageItem {
-                product: "Actions".to_string(),
-                sku: "linux".to_string(),
-                unit_type: "minutes".to_string(),
-                price_per_unit: 0.0,
-                gross_quantity: 950.0,
-                gross_amount: 0.0,
-                discount_quantity: 900.0,
-                discount_amount: 0.0,
-                net_quantity: 50.0,
-                net_amount: 0.0,
-                model: None,
-            }],
+            usage_items: vec![
+                usage_item("Actions", "minutes", 125.5, 25.5),
+                usage_item("Packages", "gigabytes", 900.0, 900.0),
+                usage_item("Actions", "minutes", 24.5, 4.5),
+            ],
         };
-        assert_eq!(usage.actions_gross_minutes(), 950.0);
-        assert_eq!(usage.actions_billable_minutes(), 50.0);
+        assert_eq!(usage.actions_minutes(), 150.0);
+        assert_eq!(usage.actions_billable_minutes(), 30.0);
+    }
 
-        let mut configured = policy();
-        configured.self_hosted_ready = true;
-        let decision = decide_capacity(&configured, Some(usage.actions_minutes()));
+    #[test]
+    fn stays_hosted_below_threshold() {
+        let decision = decide_capacity(&policy(), Some(1_000.0));
+        assert_eq!(decision.mode, ExecutionMode::Hosted);
+        assert_eq!(decision.runs_on, vec!["ubuntu-latest"]);
+    }
+
+    #[test]
+    fn moves_to_arc_at_threshold() {
+        let decision = decide_capacity(&policy(), Some(1_800.0));
         assert_eq!(decision.mode, ExecutionMode::SelfHosted);
+        assert_eq!(decision.runs_on, vec!["sonus-ci"]);
     }
 
     #[test]
-    fn missing_billing_fails_closed_without_certified_capacity() {
-        let configured = policy();
-        let decision = decide_capacity(&configured, None);
-        assert_eq!(decision.mode, ExecutionMode::Hold);
-        assert!(decision.runs_on.is_empty());
-    }
-
-    #[test]
-    fn missing_billing_can_use_explicitly_certified_self_hosted_capacity() {
-        let mut configured = policy();
-        configured.self_hosted_ready = true;
-        let decision = decide_capacity(&configured, None);
-        assert_eq!(decision.mode, ExecutionMode::SelfHosted);
-        assert_eq!(decision.runs_on, configured.self_hosted_runs_on);
-    }
-
-    #[test]
-    fn hard_stop_uses_reviewed_build_server_only_when_enabled() {
-        let mut configured = policy();
-        configured.build_server_enabled = true;
-        let decision = decide_capacity(&configured, Some(1_000.0));
+    fn uses_bounded_build_server_only_at_hard_stop() {
+        let mut value = policy();
+        value.self_hosted_ready = false;
+        let decision = decide_capacity(&value, Some(2_000.0));
         assert_eq!(decision.mode, ExecutionMode::BuildServer);
         assert!(decision.runs_on.is_empty());
     }
 
     #[test]
-    fn organization_variable_mutation_requires_selected_repository_scope() {
-        let mut configured = policy();
-        configured.selected_repository_ids.clear();
-        let decision = decide_capacity(&configured, Some(100.0));
-        assert!(decision_variables(&configured, &decision).is_err());
+    fn holds_when_no_certified_capacity_exists() {
+        let mut value = policy();
+        value.self_hosted_ready = false;
+        value.build_server_enabled = false;
+        let decision = decide_capacity(&value, Some(2_000.0));
+        assert_eq!(decision.mode, ExecutionMode::Hold);
     }
 
     #[test]
-    fn hold_mode_writes_only_nonexistent_hold_runner_label() {
-        let configured = policy();
-        let decision = decide_capacity(&configured, None);
-        let variables = decision_variables(&configured, &decision).expect("bounded mutation");
-        let runs_on = variables
-            .get("CI_LINUX_RUNS_ON_JSON")
-            .expect("runs-on mutation");
+    fn billing_failure_fails_closed_to_validated_arc() {
+        let decision = decide_capacity(&policy(), None);
+        assert_eq!(decision.mode, ExecutionMode::SelfHosted);
+    }
+
+    #[test]
+    fn variable_mutation_is_selected_repository_only() {
+        let decision = decide_capacity(&policy(), Some(1_900.0));
+        let variables = decision_variables(&policy(), &decision).expect("variables");
+        assert_eq!(variables["CI_LINUX_RUNS_ON_JSON"].visibility, "selected");
+        assert_eq!(variables["CI_LINUX_RUNS_ON_JSON"].value, "[\"sonus-ci\"]");
+        assert_eq!(variables["CI_EXECUTION_MODE"].value, "self-hosted");
+    }
+
+    #[test]
+    fn broad_variable_visibility_is_impossible_without_repo_ids() {
+        let mut value = policy();
+        value.selected_repository_ids.clear();
+        let decision = decide_capacity(&value, Some(1_900.0));
+        assert!(decision_variables(&value, &decision).is_err());
+    }
+
+    #[test]
+    fn non_github_modes_publish_a_nonexistent_runner_label() {
+        let mut value = policy();
+        value.self_hosted_ready = false;
+        let build_server = decide_capacity(&value, Some(2_000.0));
+        let variables = decision_variables(&value, &build_server).expect("variables");
+        assert_eq!(variables["CI_EXECUTION_MODE"].value, "build-server");
         assert_eq!(
-            runs_on.value,
-            serde_json::to_string(&vec![CI_HOLD_RUNNER_LABEL]).expect("json")
+            variables["CI_LINUX_RUNS_ON_JSON"].value,
+            "[\"ci-capacity-hold-no-runner\"]"
         );
-        assert_eq!(runs_on.visibility, "selected");
-        assert_eq!(runs_on.selected_repository_ids, vec![42]);
+
+        value.build_server_enabled = false;
+        let hold = decide_capacity(&value, Some(2_000.0));
+        let variables = decision_variables(&value, &hold).expect("variables");
+        assert_eq!(variables["CI_EXECUTION_MODE"].value, "hold");
+        assert_eq!(
+            variables["CI_LINUX_RUNS_ON_JSON"].value,
+            "[\"ci-capacity-hold-no-runner\"]"
+        );
     }
 
     #[test]
-    fn policy_rejects_overlapping_or_duplicate_authority() {
-        let mut configured = policy();
-        configured.hosted_runs_on = vec!["gha-indie-worker".to_string()];
-        assert!(configured.validate().is_err());
+    fn prefer_self_hosted_overrides_low_usage_after_certification() {
+        let mut value = policy();
+        value.prefer_self_hosted = true;
+        let decision = decide_capacity(&value, Some(10.0));
+        assert_eq!(decision.mode, ExecutionMode::SelfHosted);
+        assert_eq!(decision.runs_on, vec!["sonus-ci"]);
+    }
 
-        let mut duplicate_repos = policy();
-        duplicate_repos.selected_repository_ids = vec![42, 42];
-        assert!(duplicate_repos.validate().is_err());
+    #[test]
+    fn prefer_self_hosted_does_not_bypass_readiness() {
+        let mut value = policy();
+        value.prefer_self_hosted = true;
+        value.self_hosted_ready = false;
+        let decision = decide_capacity(&value, Some(10.0));
+        assert_eq!(decision.mode, ExecutionMode::Hosted);
+    }
+
+    #[test]
+    fn unavailable_billing_holds_before_arc_certification() {
+        let mut value = policy();
+        value.self_hosted_ready = false;
+        let decision = decide_capacity(&value, None);
+        assert_eq!(decision.mode, ExecutionMode::Hold);
+    }
+
+    #[test]
+    fn negative_or_nonfinite_usage_is_clamped_and_matching_is_case_insensitive() {
+        let usage = BillingUsageResponse {
+            usage_items: vec![
+                usage_item("actions", "MINUTES", -50.0, -10.0),
+                usage_item("ACTIONS", "minutes", 12.5, 2.5),
+                usage_item("Actions", "minutes", f64::INFINITY, f64::NAN),
+            ],
+        };
+        assert_eq!(usage.actions_minutes(), 12.5);
+        assert_eq!(usage.actions_billable_minutes(), 2.5);
+    }
+
+    #[test]
+    fn runner_labels_are_trimmed_unique_and_lane_distinct() {
+        let mut value = policy();
+        value.self_hosted_runs_on = vec![" sonus-ci".to_string()];
+        assert!(value.validate().is_err());
+
+        value = policy();
+        value.self_hosted_runs_on = vec!["sonus-ci".to_string(), "SONUS-CI".to_string()];
+        assert!(value.validate().is_err());
+
+        value = policy();
+        value.self_hosted_runs_on = vec!["ubuntu-latest".to_string()];
+        assert!(value.validate().is_err());
+    }
+
+    #[test]
+    fn repository_ids_must_be_positive_and_unique() {
+        let mut value = policy();
+        value.selected_repository_ids = vec![1, 1];
+        assert!(value.validate().is_err());
+
+        value = policy();
+        value.selected_repository_ids = vec![0, 2];
+        assert!(value.validate().is_err());
+    }
+
+    #[test]
+    fn self_hosted_label_must_be_explicit() {
+        let mut value = policy();
+        value.self_hosted_runs_on.clear();
+        assert!(value.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_non_finite_policy_numbers() {
+        let mut value = policy();
+        value.warn_percent = f64::NAN;
+        assert!(value.validate().is_err());
+        value = policy();
+        value.included_minutes = Some(f64::INFINITY);
+        assert!(value.validate().is_err());
+    }
+
+    #[test]
+    fn validates_monotonic_thresholds() {
+        let mut value = policy();
+        value.warn_percent = 95.0;
+        value.self_hosted_percent = 90.0;
+        assert!(value.validate().is_err());
     }
 }
