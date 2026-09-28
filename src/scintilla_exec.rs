@@ -113,9 +113,8 @@ pub async fn execute(
     Err(format!("Scintilla build failed: {detail}"))
 }
 
-
 pub(crate) fn validate_scintilla_api_url(value: &str) -> Result<reqwest::Url, String> {
-    let mut url = reqwest::Url::parse(value)
+    let url = reqwest::Url::parse(value)
         .map_err(|_| "BUILD_SERVER_SCINTILLA_API_URL must be a valid URL".to_string())?;
     if !matches!(url.scheme(), "http" | "https")
         || url.host_str().is_none()
@@ -141,7 +140,6 @@ pub(crate) fn validate_scintilla_api_url(value: &str) -> Result<reqwest::Url, St
     }
     Ok(url)
 }
-
 
 fn bounded_remote_detail(value: &serde_json::Value) -> String {
     let raw = value
