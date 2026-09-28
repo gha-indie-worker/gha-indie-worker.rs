@@ -121,8 +121,8 @@ fn main() {
                     observed[index] = Some(owner);
                 }
                 Phase::Cas => {
-                    let expected = observed[index]
-                        .expect("program-order filtering requires read before CAS");
+                    let expected =
+                        observed[index].expect("program-order filtering requires read before CAS");
                     let won = owner == expected && expected.is_none();
                     if won {
                         owner = Some(event.worker);
@@ -137,7 +137,11 @@ fn main() {
             (false, true) => Worker::B,
             _ => panic!("claim history produced zero or multiple winners: {success:?}"),
         };
-        assert_eq!(owner, Some(winner), "final owner must be the successful CAS claimant");
+        assert_eq!(
+            owner,
+            Some(winner),
+            "final owner must be the successful CAS claimant"
+        );
 
         for (first, second) in [(Worker::A, Worker::B), (Worker::B, Worker::A)] {
             let first_cas = Event {
@@ -149,7 +153,10 @@ fn main() {
                 phase: Phase::Read,
             };
             if position(&order, first_cas) < position(&order, second_read) {
-                assert_eq!(winner, first, "real-time precedence must fix linearization order");
+                assert_eq!(
+                    winner, first,
+                    "real-time precedence must fix linearization order"
+                );
             }
         }
 
@@ -185,15 +192,30 @@ fn main() {
 
         let (owner_after_replay, replay_ok) = replay_claim(owner, winner);
         assert!(replay_ok, "winner replay must be idempotently accepted");
-        assert_eq!(owner_after_replay, owner, "winner replay must not change ownership");
+        assert_eq!(
+            owner_after_replay, owner,
+            "winner replay must not change ownership"
+        );
 
         let (owner_after_loser, loser_ok) = replay_claim(owner, opposite(winner));
-        assert!(!loser_ok, "losing worker must not steal an established claim");
-        assert_eq!(owner_after_loser, owner, "loser replay must not change ownership");
+        assert!(
+            !loser_ok,
+            "losing worker must not steal an established claim"
+        );
+        assert_eq!(
+            owner_after_loser, owner,
+            "loser replay must not change ownership"
+        );
     }
 
-    assert_eq!(histories, 6, "unexpected program-order-preserving history count");
-    assert!(concurrent_histories > 0, "no overlapping claim histories were explored");
+    assert_eq!(
+        histories, 6,
+        "unexpected program-order-preserving history count"
+    );
+    assert!(
+        concurrent_histories > 0,
+        "no overlapping claim histories were explored"
+    );
     println!(
         "worker claim interleaving linearizability model: {histories} histories, {concurrent_histories} concurrent; ok"
     );
