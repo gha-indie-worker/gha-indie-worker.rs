@@ -17,6 +17,7 @@ use uuid::Uuid;
 use crate::{append_log, AppState, BuildJobRecord};
 
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+const MAX_ERROR_DETAIL_CHARS: usize = 4096;
 
 pub async fn execute(
     state: &AppState,
@@ -45,6 +46,10 @@ pub async fn execute(
         .join(&format!("api/v1/functions/{function_id}/invoke"))
         .map_err(|_| "failed to construct Scintilla invocation URL".to_string())?;
     let client = reqwest::Client::builder()
+        // The bearer credential is scoped to the configured Scintilla origin.
+        // Never allow ambient HTTP(S)_PROXY settings to become an unreviewed
+        // credential egress path.
+        .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(config.job_deadline)
@@ -103,7 +108,7 @@ pub async fn execute(
     let detail = body
         .get("error")
         .or_else(|| body.get("message"))
-        .map(ToString::to_string)
+        .map(bounded_remote_detail)
         .unwrap_or_else(|| format!("HTTP {}", status.as_u16()));
     Err(format!("Scintilla build failed: {detail}"))
 }
@@ -118,9 +123,10 @@ pub(crate) fn validate_scintilla_api_url(value: &str) -> Result<reqwest::Url, St
         || url.password().is_some()
         || url.query().is_some()
         || url.fragment().is_some()
+        || url.path() != "/"
     {
         return Err(
-            "BUILD_SERVER_SCINTILLA_API_URL must be a credential-free HTTP(S) origin".to_string(),
+            "BUILD_SERVER_SCINTILLA_API_URL must be a credential-free HTTP(S) origin with no path, query, or fragment".to_string(),
         );
     }
     let host = url.host_str().unwrap_or_default();
@@ -133,8 +139,25 @@ pub(crate) fn validate_scintilla_api_url(value: &str) -> Result<reqwest::Url, St
                 .to_string(),
         );
     }
-    url.set_path("/");
     Ok(url)
+}
+
+
+fn bounded_remote_detail(value: &serde_json::Value) -> String {
+    let raw = value
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| value.to_string());
+    let truncated = raw.chars().count() > MAX_ERROR_DETAIL_CHARS;
+    let mut detail = raw
+        .chars()
+        .take(MAX_ERROR_DETAIL_CHARS)
+        .map(|character| if character.is_control() { ' ' } else { character })
+        .collect::<String>();
+    if truncated {
+        detail.push('…');
+    }
+    detail
 }
 
 async fn read_bounded_json(
@@ -178,6 +201,17 @@ mod tests {
         assert!(validate_scintilla_api_url("http://scintilla.example.com").is_err());
         assert!(validate_scintilla_api_url("https://user:pass@scintilla.example.com").is_err());
         assert!(validate_scintilla_api_url("https://scintilla.example.com?token=x").is_err());
+        assert!(validate_scintilla_api_url("https://scintilla.example.com/api").is_err());
+    }
+
+    #[test]
+    fn remote_error_detail_is_bounded_and_control_safe() {
+        let raw = format!("line\n{}\tend", "x".repeat(MAX_ERROR_DETAIL_CHARS + 64));
+        let detail = bounded_remote_detail(&serde_json::Value::String(raw));
+        assert!(!detail.contains('\n'));
+        assert!(!detail.contains('\t'));
+        assert!(detail.ends_with('…'));
+        assert_eq!(detail.chars().count(), MAX_ERROR_DETAIL_CHARS + 1);
     }
 
     #[test]
