@@ -39,6 +39,6 @@ The original k8s services and manifests remain untouched during this extraction.
 
 ## Executable import evidence
 
-The staged capacity-broker import remains a review capsule, not production wiring. Its original `Cargo.toml` and `Cargo.lock` are copied from `ORESoftware/k8s-cluster@cc675fd772d56e917d6b19e03a9c62e98d02248d` so the imported policy core can be compiled and tested independently without silently changing its dependency graph.
+The staged capacity-broker import remains a review capsule, not production wiring. Its `src/lib.rs`, `Cargo.toml`, and `Cargo.lock` are copied from `ORESoftware/k8s-cluster@cc675fd772d56e917d6b19e03a9c62e98d02248d`; CI verifies the donor `lib.rs` Git blob identity (`45b1734ba22789ae4eb6908c48b48a770a69a38b`) before compiling. Local policy regressions live in a separate integration-test file so the donor source is not silently rewritten.
 
-`.github/workflows/capacity-import-proof.yml` runs exact-head formatting, warnings-denied Clippy, and locked tests for that capsule. Passing the capsule proves the extracted policy code remains executable; it does **not** claim the main GIW build server calls it or that GitHub billing/variable mutation credentials are deployed.
+`.github/workflows/capacity-import-proof.yml` runs exact-head donor-identity verification, locked compilation, warnings-denied Clippy, and locked tests for that capsule. Passing the capsule proves the extracted policy code remains executable; it does **not** claim the main GIW build server calls it or that GitHub billing/variable mutation credentials are deployed.
