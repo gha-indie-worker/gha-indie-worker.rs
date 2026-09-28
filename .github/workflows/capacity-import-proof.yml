@@ -35,8 +35,10 @@ jobs:
         env:
           EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
-      - name: Format imported policy capsule
-        run: cargo +1.90.0 fmt --manifest-path imports/k8s-cluster/gha-capacity-broker-rs/Cargo.toml --all -- --check
+      - name: Verify imported policy source identity
+        run: test "$(git hash-object imports/k8s-cluster/gha-capacity-broker-rs/src/lib.rs)" = "45b1734ba22789ae4eb6908c48b48a770a69a38b"
+      - name: Check imported policy capsule
+        run: cargo +1.90.0 check --manifest-path imports/k8s-cluster/gha-capacity-broker-rs/Cargo.toml --locked --all-targets
       - name: Clippy imported policy capsule
         run: cargo +1.90.0 clippy --manifest-path imports/k8s-cluster/gha-capacity-broker-rs/Cargo.toml --locked --all-targets -- -D warnings
       - name: Test imported policy capsule
