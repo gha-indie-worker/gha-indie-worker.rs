@@ -583,6 +583,12 @@ mod e2e {
             lambda_url: "http://127.0.0.1:1/unused".to_string(),
             lambda_function_id: None,
             lambda_auth_secret: None,
+            local_executor_enabled: true,
+            default_executor: "local".to_string(),
+            scintilla_executor_enabled: false,
+            scintilla_api_url: "http://127.0.0.1:1/unused".to_string(),
+            scintilla_function_id: None,
+            scintilla_auth_token: None,
         }
     }
 
