@@ -9,6 +9,17 @@ pub(crate) struct BuildRequest {
     pub(crate) job_kind: Option<String>,
     pub(crate) repo_url: String,
     pub(crate) git_ref: Option<String>,
+    /// Immutable Git revision captured from a trusted webhook. When present,
+    /// the runner must detach to this exact commit rather than resolving the
+    /// mutable branch name at execution time.
+    pub(crate) commit_sha: Option<String>,
+    /// GitHub App installation that delivered the signed webhook this job came
+    /// from, which is the installation its result is reported through.
+    ///
+    /// Never read from a request body: it selects which installation's token
+    /// is minted, so only the signature-verified webhook path may set it.
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub(crate) github_installation_id: Option<u64>,
     #[serde(default)]
     pub(crate) image: String,
     /// Fixed operator-reviewed command pipeline for jobKind=run-profile.

@@ -1,0 +1,34 @@
+schema_version: ores.compose.v1
+project: gha-indie-worker
+allow_lazy_start: false
+
+# Runs the build worker itself — the daemon that receives GitHub webhooks,
+# verifies pull requests in Linux containers and reports the verdict.
+#
+# Configuration, including the auth and webhook secrets, comes from the
+# environment ores-compose is launched with, never from this file:
+#
+#     set -a; . ~/.config/gha-indie-worker/worker.env; set +a
+#     ores-compose up .ores-compose.yaml
+#
+# CARGO_TARGET_DIR is pinned so the command below finds the binary regardless
+# of a machine-wide cargo `target-dir`, which would otherwise put it elsewhere.
+services:
+  worker:
+    name: worker
+    runtime: host
+    command:
+      - env
+      - CARGO_TARGET_DIR=target
+      - ./target/debug/dd-build-server
+    build:
+      - ["env", "CARGO_TARGET_DIR=target", "cargo", "build", "--locked", "--bin", "dd-build-server"]
+    working_dir: .
+    replicas: 1
+    healthcheck:
+      # /readyz, not /healthz: it reports whether git, the container runtime
+      # and the work directory are actually usable, not merely that HTTP answers.
+      command: ["curl", "--fail", "--silent", "http://127.0.0.1:18095/readyz"]
+      interval_ms: 3000
+      timeout_ms: 2000
+      retries: 20

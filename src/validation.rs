@@ -36,7 +36,11 @@ pub(crate) fn ensure_allowed_prefix(
     }
 }
 
-pub(crate) fn validate_no_whitespace(name: &str, value: &str, max_len: usize) -> Result<(), String> {
+pub(crate) fn validate_no_whitespace(
+    name: &str,
+    value: &str,
+    max_len: usize,
+) -> Result<(), String> {
     if value.trim().is_empty() {
         return Err(format!("{name} must not be empty"));
     }
@@ -78,7 +82,11 @@ pub(crate) fn has_explicit_image_version(image: &str) -> bool {
     image.contains('@') || last_path.contains(':')
 }
 
-pub(crate) fn validate_image(config: &Config, image: &str, push: bool) -> Result<Option<EcrImage>, String> {
+pub(crate) fn validate_image(
+    config: &Config,
+    image: &str,
+    push: bool,
+) -> Result<Option<EcrImage>, String> {
     validate_no_whitespace("image", image, 512)?;
     // A leading dash would be parsed by nerdctl as a flag in the `-t <image>`
     // and `push <image>` positions; reject it before it reaches argv.
@@ -147,7 +155,9 @@ pub(crate) fn validate_relative_path(name: &str, value: &str) -> Result<PathBuf,
     Ok(clean)
 }
 
-pub(crate) fn validate_build_args(build_args: &Option<BTreeMap<String, String>>) -> Result<(), String> {
+pub(crate) fn validate_build_args(
+    build_args: &Option<BTreeMap<String, String>>,
+) -> Result<(), String> {
     let Some(build_args) = build_args else {
         return Ok(());
     };
@@ -231,7 +241,10 @@ pub(crate) fn validate_rollout_resource(value: &str) -> Result<String, String> {
     Ok(resource)
 }
 
-pub(crate) fn validate_deploy(config: &Config, deploy: &Option<DeployRequest>) -> Result<(), String> {
+pub(crate) fn validate_deploy(
+    config: &Config,
+    deploy: &Option<DeployRequest>,
+) -> Result<(), String> {
     let Some(deploy) = deploy else {
         return Ok(());
     };
@@ -254,7 +267,10 @@ pub(crate) fn validate_deploy(config: &Config, deploy: &Option<DeployRequest>) -
     Ok(())
 }
 
-pub(crate) fn validate_build_request(config: &Config, request: &BuildRequest) -> Result<(), String> {
+pub(crate) fn validate_build_request(
+    config: &Config,
+    request: &BuildRequest,
+) -> Result<(), String> {
     if let Some(schema_version) = clean_optional(request.schema_version.as_deref()) {
         if schema_version != "build-server.v1" {
             return Err("schemaVersion must be build-server.v1".to_string());
@@ -311,6 +327,12 @@ pub(crate) fn validate_build_request(config: &Config, request: &BuildRequest) ->
     if let Some(git_ref) = clean_optional(request.git_ref.as_deref()) {
         validate_no_whitespace("gitRef", &git_ref, 180)?;
     }
+    if let Some(commit_sha) = request.commit_sha.as_deref() {
+        if commit_sha.is_empty() {
+            return Err("commitSha must not be empty when provided".to_string());
+        }
+        validate_commit_sha(commit_sha)?;
+    }
     validate_relative_path("contextDir", request.context_dir.as_deref().unwrap_or("."))?;
     if job_kind != "run-profile" {
         validate_relative_path(
@@ -347,6 +369,20 @@ pub(crate) fn validate_build_request(config: &Config, request: &BuildRequest) ->
     }
 }
 
+pub(crate) fn validate_commit_sha(value: &str) -> Result<(), String> {
+    let valid_full_oid_length = matches!(value.len(), 40 | 64);
+    let canonical_lower_hex = value
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'));
+    if !valid_full_oid_length || !canonical_lower_hex {
+        return Err(
+            "commitSha must be a canonical lowercase 40- or 64-character hexadecimal Git object ID"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 pub(crate) fn request_job_kind(request: &BuildRequest) -> String {
     clean_optional(request.job_kind.as_deref()).unwrap_or_else(|| "build-image".to_string())
 }
@@ -356,6 +392,24 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
+
+    #[test]
+    fn commit_sha_requires_a_canonical_full_object_id() {
+        assert!(validate_commit_sha(&"a".repeat(40)).is_ok());
+        assert!(validate_commit_sha(&"a".repeat(64)).is_ok());
+        assert!(validate_commit_sha(&"a".repeat(39)).is_err());
+        assert!(validate_commit_sha(&"a".repeat(41)).is_err());
+        assert!(validate_commit_sha(&"a".repeat(63)).is_err());
+        assert!(validate_commit_sha(&"a".repeat(65)).is_err());
+        assert!(validate_commit_sha(&"A".repeat(40)).is_err());
+        assert!(validate_commit_sha(&format!("{}z", "a".repeat(39))).is_err());
+        assert!(validate_commit_sha(&format!(" {}", "a".repeat(40))).is_err());
+        assert!(validate_commit_sha(&format!("{} ", "a".repeat(40))).is_err());
+        assert!(validate_commit_sha(&format!("\t{}", "a".repeat(40))).is_err());
+        assert!(validate_commit_sha(&format!("{}\n", "a".repeat(40))).is_err());
+        // A leading dash must never survive to a git command line.
+        assert!(validate_commit_sha(&format!("-{}", "a".repeat(39))).is_err());
+    }
 
     #[test]
     fn repository_and_path_validation_blocks_command_and_path_injection() {
@@ -372,10 +426,7 @@ mod tests {
         assert!(validate_relative_path("contextDir", "c:d").is_err());
 
         // Rollout resource must be a clean TYPE/NAME positional, never a flag.
-        assert_eq!(
-            validate_rollout_resource("api").unwrap(),
-            "deployment/api"
-        );
+        assert_eq!(validate_rollout_resource("api").unwrap(), "deployment/api");
         assert_eq!(
             validate_rollout_resource("deployment.apps/api").unwrap(),
             "deployment.apps/api"

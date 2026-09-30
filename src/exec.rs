@@ -2,6 +2,7 @@ use std::{
     env,
     path::{Path, PathBuf},
     process::Stdio,
+    sync::OnceLock,
 };
 
 use tokio::{
@@ -73,8 +74,12 @@ pub(crate) async fn append_log(path: &Path, message: &str, max_bytes: u64) {
     }
 }
 
-pub(crate) async fn pipe_reader<R>(reader: R, log_path: PathBuf, prefix: &'static str, max_bytes: u64)
-where
+pub(crate) async fn pipe_reader<R>(
+    reader: R,
+    log_path: PathBuf,
+    prefix: &'static str,
+    max_bytes: u64,
+) where
     R: AsyncRead + Unpin,
 {
     let mut reader = BufReader::new(reader);
@@ -159,7 +164,8 @@ pub(crate) async fn run_logged_command_inner(
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         )
         .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_ASKPASS", "/bin/false")
+        .env("GIT_ASKPASS", askpass_deny_bin())
+        .envs(GIT_ISOLATION_ENV)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -256,6 +262,45 @@ pub(crate) fn build_dependencies_ready(config: &Config) -> bool {
         && (!config.deploy_enabled || executable_available(&config.kubectl_bin))
 }
 
+/// Cuts every worker-owned git process off from configuration the host
+/// supplies.
+///
+/// Clearing the environment and repointing `HOME` hides the *user's* config,
+/// but the system config and system attributes are still read, and a checkout
+/// is where they bite: a repository's `.gitattributes` can name a filter, and
+/// the host's config is what gives that name a command to run. Replacement
+/// refs can likewise substitute a different object for the one requested,
+/// which would defeat an exact-commit checkout from underneath it.
+///
+/// `GIT_CONFIG_GLOBAL` is pinned as well so that a `.gitconfig` appearing in
+/// the job directory — which is `HOME` here, and is writable by the code under
+/// test on any later command — can never configure a subsequent git call.
+pub(crate) const GIT_ISOLATION_ENV: [(&str, &str); 4] = [
+    ("GIT_CONFIG_NOSYSTEM", "1"),
+    ("GIT_ATTR_NOSYSTEM", "1"),
+    ("GIT_NO_REPLACE_OBJECTS", "1"),
+    ("GIT_CONFIG_GLOBAL", "/dev/null"),
+];
+
+/// Absolute path to a binary that always fails, used as `GIT_ASKPASS` so git can
+/// never obtain credentials interactively or from a GUI helper.
+///
+/// Linux ships `/bin/false`; macOS only has `/usr/bin/false`. Pointing
+/// `GIT_ASKPASS` at a path that does not exist is not fail-closed in the way it
+/// looks: git reports `cannot exec` and then falls back to asking on the
+/// terminal, so the value is resolved against the filesystem once at startup.
+pub(crate) fn askpass_deny_bin() -> &'static str {
+    static RESOLVED: OnceLock<&'static str> = OnceLock::new();
+    *RESOLVED.get_or_init(|| {
+        ["/bin/false", "/usr/bin/false"]
+            .into_iter()
+            .find(|candidate| Path::new(candidate).is_file())
+            // `GIT_TERMINAL_PROMPT=0` still refuses the prompt if neither
+            // exists, so keep the Linux default rather than leaving it unset.
+            .unwrap_or("/bin/false")
+    })
+}
+
 pub(crate) fn executable_available(value: &str) -> bool {
     let path = Path::new(value);
     if path.is_absolute() || path.components().count() > 1 {
@@ -271,6 +316,158 @@ pub(crate) fn executable_available(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A scratch directory standing in for a job directory, which is `HOME`
+    /// for every command the worker runs.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = env::temp_dir().join(format!("dd-bs-exec-{name}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    /// A real git binary rather than whatever `git` resolves to.
+    ///
+    /// On macOS `/usr/bin/git` is the `xcrun` shim, not git. Launched
+    /// concurrently with a cleared environment it is intermittently SIGKILLed
+    /// by the OS — measured at 3 failures in 40 runs of this suite against 0
+    /// in 40 with the binary it forwards to. Operators should point
+    /// `BUILD_SERVER_GIT_BIN` at the real binary for the same reason.
+    fn real_git() -> String {
+        [
+            "/Library/Developer/CommandLineTools/usr/bin/git",
+            "/Applications/Xcode.app/Contents/Developer/usr/bin/git",
+            "/opt/homebrew/bin/git",
+            "/usr/local/bin/git",
+        ]
+        .into_iter()
+        .find(|candidate| Path::new(candidate).is_file())
+        .unwrap_or("git")
+        .to_string()
+    }
+
+    fn test_config() -> Config {
+        let mut config = crate::config::config_from_env();
+        config.git_bin = real_git();
+        config.git_http_auth_header = None;
+        config
+    }
+
+    #[test]
+    fn host_git_configuration_is_cut_off() {
+        let isolation: std::collections::HashMap<_, _> = GIT_ISOLATION_ENV.into_iter().collect();
+        assert_eq!(isolation.get("GIT_CONFIG_NOSYSTEM"), Some(&"1"));
+        assert_eq!(isolation.get("GIT_ATTR_NOSYSTEM"), Some(&"1"));
+        assert_eq!(isolation.get("GIT_NO_REPLACE_OBJECTS"), Some(&"1"));
+        assert_eq!(isolation.get("GIT_CONFIG_GLOBAL"), Some(&"/dev/null"));
+    }
+
+    #[tokio::test]
+    async fn a_configured_credential_helper_is_never_invoked() {
+        // A helper answers without prompting, so GIT_ASKPASS and
+        // GIT_TERMINAL_PROMPT=0 do not stop it. It is planted where the worker's
+        // git would look for user configuration: HOME is the working directory.
+        let home = scratch("helper");
+        let marker = home.join("helper-was-invoked");
+        std::fs::write(
+            home.join(".gitconfig"),
+            format!(
+                "[credential]\n\thelper = \"!f() {{ touch '{}'; }}; f\"\n",
+                marker.display()
+            ),
+        )
+        .expect("plant helper");
+        let log = home.join("build.log");
+
+        // `git credential fill` exists to consult helpers, so it is the most
+        // direct way to ask "would one run?". It is expected to fail here: no
+        // helper, no prompt, nothing to fill with.
+        let config = test_config();
+        let _ = run_logged_command_with_input(
+            &config,
+            &log,
+            &home,
+            &config.git_bin,
+            vec!["credential".to_string(), "fill".to_string()],
+            vec!["credential".to_string(), "fill".to_string()],
+            b"protocol=https\nhost=example.invalid\n\n".to_vec(),
+        )
+        .await;
+        assert!(
+            !marker.exists(),
+            "a host-configured credential helper ran inside the checkout boundary"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_command_bearing_filter_from_host_config_does_not_run_on_checkout() {
+        // The repository names a filter in .gitattributes; configuration gives
+        // that name a command. If host configuration were honoured, checking
+        // the file out would execute it.
+        let home = scratch("filter");
+        let marker = home.join("filter-was-executed");
+        // HOME is each command's working directory, so for commands run inside
+        // the repository that is where user configuration would be found.
+        let repo = home.join("repo");
+        std::fs::create_dir_all(&repo).expect("repo dir");
+        std::fs::write(
+            repo.join(".gitconfig"),
+            format!(
+                "[filter \"pwn\"]\n\tsmudge = \"touch '{}'; cat\"\n\trequired = false\n[user]\n\tname = t\n\temail = t@example.invalid\n",
+                marker.display()
+            ),
+        )
+        .expect("plant filter");
+        let log = home.join("build.log");
+        let config = test_config();
+        let git = |args: &[&str]| {
+            let args: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+            let (config, log, repo) = (config.clone(), log.clone(), repo.clone());
+            async move {
+                let git_bin = config.git_bin.clone();
+                run_logged_command(&config, &log, &repo, &git_bin, args).await
+            }
+        };
+
+        git(&["init", "--quiet"]).await.expect("init");
+        std::fs::write(repo.join(".gitattributes"), "*.txt filter=pwn\n").expect("attributes");
+        std::fs::write(repo.join("payload.txt"), "content\n").expect("payload");
+        git(&["add", ".gitattributes", "payload.txt"])
+            .await
+            .expect("add");
+        git(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "fixture",
+        ])
+        .await
+        .expect("commit");
+        // Force the smudge path: remove the file and check it back out.
+        std::fs::remove_file(repo.join("payload.txt")).expect("remove");
+        git(&["checkout", "--force", "HEAD", "--", "payload.txt"])
+            .await
+            .expect("checkout");
+
+        assert!(
+            repo.join("payload.txt").exists(),
+            "the checkout itself worked"
+        );
+        assert!(
+            !marker.exists(),
+            "host git configuration supplied a command that ran during checkout"
+        );
+    }
+
+    #[test]
+    fn askpass_deny_binary_exists_on_this_platform() {
+        // A non-existent GIT_ASKPASS makes git fall back to prompting, so the
+        // resolved path must really be there on whichever host runs the worker.
+        assert!(Path::new(askpass_deny_bin()).is_file());
+    }
 
     #[test]
     fn executable_lookup_accepts_path_commands_and_rejects_missing_tools() {
