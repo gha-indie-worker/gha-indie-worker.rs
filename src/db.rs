@@ -13,25 +13,92 @@
 //! degrades to a logged warning instead of failing builds.
 
 use chrono::{DateTime, TimeZone, Utc};
+use sea_orm::sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sea_orm::{
-    sea_query::OnConflict, ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectOptions,
-    Database, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, QuerySelect,
+    sea_query::OnConflict, ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection,
+    EntityTrait, QueryFilter, QueryOrder, QuerySelect, SqlxPostgresConnector,
 };
 use std::time::Duration;
 
 use crate::entity::{build_jobs, gh_secret_sync_runs, webhook_deliveries};
 use crate::{BuildJobRecord, BuildStatus};
 
-pub async fn connect(database_url: &str) -> Result<DatabaseConnection, sea_orm::DbErr> {
-    let mut opts = ConnectOptions::new(database_url.to_string());
-    opts.max_connections(8)
+/// Stable runtime database authority names shared with the hardened ORM fleet.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DatabaseCapabilityProfile {
+    WebReadOnly,
+    ApiReadWrite,
+    WorkerReadOnly,
+    WorkerReadWrite,
+    Migrator,
+}
+
+impl DatabaseCapabilityProfile {
+    pub(crate) fn parse(value: &str) -> Result<Self, DatabaseProfileError> {
+        match value.trim() {
+            "web_ro" => Ok(Self::WebReadOnly),
+            "api_rw" => Ok(Self::ApiReadWrite),
+            "worker_ro" => Ok(Self::WorkerReadOnly),
+            "worker_rw" => Ok(Self::WorkerReadWrite),
+            "migrator" => Ok(Self::Migrator),
+            _ => Err(DatabaseProfileError::Unknown),
+        }
+    }
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::WebReadOnly => "web_ro",
+            Self::ApiReadWrite => "api_rw",
+            Self::WorkerReadOnly => "worker_ro",
+            Self::WorkerReadWrite => "worker_rw",
+            Self::Migrator => "migrator",
+        }
+    }
+
+    const fn permits_write_pool(self) -> bool {
+        matches!(self, Self::ApiReadWrite | Self::WorkerReadWrite)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DatabaseProfileError {
+    Unknown,
+    ReadOnlyOrMigrator,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DatabaseConnectError {
+    Profile(DatabaseProfileError),
+    InvalidDatabaseUrl,
+    ConnectFailed,
+}
+
+pub async fn connect(
+    database_url: &str,
+    profile: DatabaseCapabilityProfile,
+) -> Result<DatabaseConnection, DatabaseConnectError> {
+    if !profile.permits_write_pool() {
+        return Err(DatabaseConnectError::Profile(
+            DatabaseProfileError::ReadOnlyOrMigrator,
+        ));
+    }
+
+    let application_name = format!("dd-build-server-{}", profile.as_str());
+    let options = database_url
+        .parse::<PgConnectOptions>()
+        .map_err(|_| DatabaseConnectError::InvalidDatabaseUrl)?
+        .application_name(&application_name);
+    let pool = PgPoolOptions::new()
+        .max_connections(8)
         .min_connections(1)
         .acquire_timeout(Duration::from_secs(10))
-        .idle_timeout(Duration::from_secs(300))
-        .sqlx_logging(true)
-        .sqlx_logging_level(log::LevelFilter::Debug);
-    let db = Database::connect(opts).await?;
+        .idle_timeout(Some(Duration::from_secs(300)))
+        .connect_with(options)
+        .await
+        .map_err(|_| DatabaseConnectError::ConnectFailed)?;
+    let db = SqlxPostgresConnector::from_sqlx_postgres_pool(pool);
     tracing::info!(
+        database_profile = profile.as_str(),
         "build-server database connected; migrations are not run at boot — converge the schema \
          with scripts/dpm.sh (contract: remote/libs/pg-defs/schema/databases/dd_build_server)"
     );
@@ -243,4 +310,41 @@ pub async fn recent_secret_sync_runs(
             tracing::warn!("failed to load secret sync runs: {error}");
             Vec::new()
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DatabaseCapabilityProfile, DatabaseConnectError, DatabaseProfileError};
+
+    #[test]
+    fn stable_profile_names_round_trip() {
+        for value in ["web_ro", "api_rw", "worker_ro", "worker_rw", "migrator"] {
+            let profile = DatabaseCapabilityProfile::parse(value).expect("known profile");
+            assert_eq!(profile.as_str(), value);
+        }
+    }
+
+    #[test]
+    fn unknown_profile_fails_closed() {
+        assert_eq!(
+            DatabaseCapabilityProfile::parse("admin"),
+            Err(DatabaseProfileError::Unknown)
+        );
+    }
+
+    #[tokio::test]
+    async fn read_only_and_migrator_profiles_fail_before_network_io() {
+        for profile in [
+            DatabaseCapabilityProfile::WebReadOnly,
+            DatabaseCapabilityProfile::WorkerReadOnly,
+            DatabaseCapabilityProfile::Migrator,
+        ] {
+            assert!(matches!(
+                super::connect("not-a-database-url", profile).await,
+                Err(DatabaseConnectError::Profile(
+                    DatabaseProfileError::ReadOnlyOrMigrator
+                ))
+            ));
+        }
+    }
 }
