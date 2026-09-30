@@ -106,8 +106,9 @@ jobs:
           grep -F '  rust:' .github/workflows/hosted-ci-classifier.yml >/dev/null
           grep -F '  provenance:' .github/workflows/hosted-ci-classifier.yml >/dev/null
           grep -F '  gitleaks:' .github/workflows/hosted-ci-classifier.yml >/dev/null
-          if grep -REn '(^|[^[:alnum:]_])(python|python3)([^[:alnum:]_]|$)' .github/workflows/hosted-ci-classifier.yml; then
-            echo 'Python is forbidden in durable fleet validation workflows' >&2
+          interpreter="$(printf '%s%s' 'py' 'thon')"
+          if grep -REn "(^|[^[:alnum:]_])(${interpreter}|${interpreter}3)([^[:alnum:]_]|$)" .github/workflows/hosted-ci-classifier.yml; then
+            echo 'forbidden scripting interpreter in durable fleet validation workflow' >&2
             exit 1
           fi
           sha256sum src/hosted_ci.rs src/main.rs .github/workflows/hosted-ci-classifier.yml
