@@ -4,6 +4,23 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 
 use crate::{fiducia, gh_secrets, profiles, webhooks};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReportingMode {
+    Advisory,
+    AppRequired,
+    Invalid,
+}
+
+impl ReportingMode {
+    fn parse(value: &str) -> Self {
+        match value {
+            "advisory" => Self::Advisory,
+            "app-required" => Self::AppRequired,
+            _ => Self::Invalid,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct Config {
     pub(crate) work_root: PathBuf,
@@ -11,6 +28,25 @@ pub(crate) struct Config {
     /// Precomputed Basic authorization header for trusted private GitHub clones.
     /// Never serialized or written to command logs.
     pub(crate) git_http_auth_header: Option<String>,
+    /// Raw token used only for advisory Commit Status reporting. Cloning uses
+    /// the header above. In app-required mode this token is never an authority
+    /// for the protected check context.
+    pub(crate) github_token: Option<String>,
+    pub(crate) github_app_id: Option<String>,
+    /// PEM contents, read once at startup. Never logged, and never passed to a
+    /// job container.
+    pub(crate) github_app_private_key: Option<String>,
+    /// Optional bootstrap candidate. It is never trusted by itself: the worker
+    /// verifies it against the repository's App installation before use.
+    pub(crate) github_app_installation_id: Option<String>,
+    pub(crate) reporting_mode: ReportingMode,
+    /// Authoritative App Check Run context.
+    pub(crate) check_run_name: String,
+    /// Deliberately distinct PAT Commit Status context for advisory mode.
+    pub(crate) advisory_status_context: String,
+    /// Cache only repo -> installation-id metadata. Installation tokens are
+    /// always short lived and never persisted/cached here.
+    pub(crate) installation_cache_ttl: Duration,
     pub(crate) nerdctl_bin: String,
     pub(crate) kubectl_bin: String,
     pub(crate) tar_bin: String,
@@ -81,6 +117,27 @@ pub(crate) struct Config {
     pub(crate) lambda_url: String,
     pub(crate) lambda_function_id: Option<String>,
     pub(crate) lambda_auth_secret: Option<String>,
+}
+
+pub(crate) fn validate_reporting_config(config: &Config) -> Result<(), String> {
+    if config.reporting_mode == ReportingMode::Invalid {
+        return Err("BUILD_SERVER_REPORTING_MODE must be advisory or app-required".to_string());
+    }
+    if config.check_run_name.trim().is_empty() || config.advisory_status_context.trim().is_empty() {
+        return Err("GitHub reporting contexts must not be empty".to_string());
+    }
+    if config.check_run_name == config.advisory_status_context {
+        return Err("authoritative and advisory GitHub reporting contexts must be distinct".to_string());
+    }
+    if config.reporting_mode == ReportingMode::AppRequired {
+        if config.github_app_id.is_none() {
+            return Err("app-required reporting needs BUILD_SERVER_GITHUB_APP_ID".to_string());
+        }
+        if config.github_app_private_key.is_none() {
+            return Err("app-required reporting needs a readable BUILD_SERVER_GITHUB_APP_PRIVATE_KEY_PATH".to_string());
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn first_env(keys: &[&str]) -> Option<String> {
@@ -187,6 +244,16 @@ pub(crate) fn config_from_env() -> Config {
 
     let coordination_enabled = env_bool("BUILD_SERVER_COORDINATION_ENABLED", false);
     let github_token = first_env(&["BUILD_SERVER_GIT_TOKEN", "GH_PAT"]);
+    // Read once, so the key lives in this process and nowhere else. Startup
+    // validation makes an unreadable key fatal only in app-required mode.
+    let github_app_private_key = first_env(&["BUILD_SERVER_GITHUB_APP_PRIVATE_KEY_PATH"])
+        .and_then(|path| match std::fs::read_to_string(&path) {
+            Ok(contents) => Some(contents),
+            Err(error) => {
+                tracing::error!("cannot read GitHub App private key at {path}: {error}");
+                None
+            }
+        });
     let git_http_auth_header = github_token.as_deref().map(|token| {
         format!(
             "AUTHORIZATION: basic {}",
@@ -216,6 +283,20 @@ pub(crate) fn config_from_env() -> Config {
         )),
         git_bin: env_value("BUILD_SERVER_GIT_BIN", "git"),
         git_http_auth_header,
+        github_token,
+        github_app_id: first_env(&["BUILD_SERVER_GITHUB_APP_ID"]),
+        github_app_private_key,
+        github_app_installation_id: first_env(&["BUILD_SERVER_GITHUB_APP_INSTALLATION_ID"]),
+        reporting_mode: ReportingMode::parse(&env_value("BUILD_SERVER_REPORTING_MODE", "advisory")),
+        check_run_name: env_value("BUILD_SERVER_CHECK_RUN_NAME", "indiebuild.dev/ci"),
+        advisory_status_context: env_value(
+            "BUILD_SERVER_ADVISORY_STATUS_CONTEXT",
+            "indiebuild.dev/ci-advisory",
+        ),
+        installation_cache_ttl: Duration::from_secs(env_u64(
+            "BUILD_SERVER_INSTALLATION_CACHE_TTL_SECONDS",
+            300,
+        )),
         nerdctl_bin: env_value("BUILD_SERVER_NERDCTL_BIN", "/usr/local/bin/nerdctl"),
         kubectl_bin: env_value("BUILD_SERVER_KUBECTL_BIN", "/usr/bin/kubectl"),
         tar_bin: env_value("BUILD_SERVER_TAR_BIN", "/bin/tar"),
@@ -315,5 +396,31 @@ pub(crate) fn config_from_env() -> Config {
         ),
         lambda_function_id: first_env(&["BUILD_SERVER_LAMBDA_FUNCTION_ID"]),
         lambda_auth_secret: first_env(&["BUILD_SERVER_LAMBDA_AUTH_SECRET"]),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reporting_validation_is_fail_closed() {
+        let mut config = config_from_env();
+        config.reporting_mode = ReportingMode::Invalid;
+        assert!(validate_reporting_config(&config).is_err());
+
+        config.reporting_mode = ReportingMode::AppRequired;
+        config.github_app_id = None;
+        config.github_app_private_key = None;
+        assert!(validate_reporting_config(&config).is_err());
+
+        config.github_app_id = Some("1".to_string());
+        config.github_app_private_key = Some("pem".to_string());
+        config.check_run_name = "indiebuild.dev/ci".to_string();
+        config.advisory_status_context = "indiebuild.dev/ci".to_string();
+        assert!(validate_reporting_config(&config).is_err());
+
+        config.advisory_status_context = "indiebuild.dev/ci-advisory".to_string();
+        assert!(validate_reporting_config(&config).is_ok());
     }
 }

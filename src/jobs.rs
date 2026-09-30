@@ -252,12 +252,28 @@ pub(crate) async fn execute_profile(state: &AppState, job: &BuildJobRecord) -> R
     .await;
     clone_repository(config, request, &job_dir, &repo_dir, &log_path).await?;
 
-    let context_path = resolve_repo_path(
-        &repo_dir,
-        "contextDir",
-        request.context_dir.as_deref().unwrap_or("."),
-    )
-    .await?;
+    // The repository may name which reviewed profile it wants. It is read only
+    // after the checkout, because the file belongs to the commit under test.
+    let repo_config = crate::indiebuild::read(&repo_dir).await?;
+    let profile = crate::indiebuild::select_profile(config, repo_config.as_ref(), profile)?;
+    if profile.name != profile_name {
+        append_log(
+            &log_path,
+            &format!(
+                "{} selected profile {} (request asked for {profile_name})\n",
+                crate::indiebuild::CONFIG_FILE,
+                profile.name
+            ),
+            config.max_log_bytes,
+        )
+        .await;
+    }
+
+    // A declared target names the directory its profile runs in, which is how
+    // a monorepo points the worker at one crate.
+    let context_dir = crate::indiebuild::context_override(repo_config.as_ref())
+        .unwrap_or_else(|| request.context_dir.as_deref().unwrap_or(".").to_string());
+    let context_path = resolve_repo_path(&repo_dir, "contextDir", &context_dir).await?;
     for step in profile.steps {
         let step_cwd = validate_relative_path("profile step subdirectory", step.subdirectory)?;
         let container_cwd = if step_cwd == Path::new(".") {
@@ -489,6 +505,19 @@ pub(crate) async fn execute_build(state: &AppState, job: &BuildJobRecord) -> Res
     Ok(())
 }
 
+/// Last slice of a build log, for the failure text shown on GitHub.
+///
+/// Reads the tail rather than the whole file: logs carry image pulls and full
+/// compiler output, and only the end explains an outcome.
+async fn tail_of_log(path: &Path) -> String {
+    const TAIL_BYTES: usize = 60_000;
+    let Ok(contents) = fs::read(path).await else {
+        return String::new();
+    };
+    let start = contents.len().saturating_sub(TAIL_BYTES);
+    String::from_utf8_lossy(&contents[start..]).into_owned()
+}
+
 pub(crate) async fn run_job(state: AppState, id: String) {
     let permit = match state.semaphore.clone().acquire_owned().await {
         Ok(permit) => permit,
@@ -501,6 +530,28 @@ pub(crate) async fn run_job(state: AppState, id: String) {
             .await;
             return;
         }
+    };
+
+    // Tell GitHub the commit is being verified, before any work starts, so a
+    // pull request shows the job as running rather than as missing. Only jobs
+    // pinned to a commit can be reported on.
+    let (report_target, log_path_for_report) = {
+        let jobs = state.jobs.read().await;
+        match jobs.get(&id) {
+            Some(job) => (
+                crate::checks::target_from_request(
+                    &job.request.repo_url,
+                    job.request.commit_sha.as_deref(),
+                    job.request.github_installation_id,
+                ),
+                PathBuf::from(&job.log_path),
+            ),
+            None => (None, PathBuf::new()),
+        }
+    };
+    let check_run_id = match report_target.as_ref() {
+        Some(target) => crate::checks::report_started(&state, target, &id).await,
+        None => None,
     };
 
     // Distributed mutual exclusion (fiducia.cloud): one lock per image ref, so
@@ -622,6 +673,33 @@ pub(crate) async fn run_job(state: AppState, id: String) {
 
     state.counters.running.fetch_sub(1, Ordering::Relaxed);
     drop(permit);
+
+    if let Some(target) = report_target.as_ref() {
+        let (succeeded, summary) = match &result {
+            Ok(()) => (true, "Verified on the local worker.".to_string()),
+            Err(error) => (false, format!("Failed on the local worker: {error}")),
+        };
+        let log_tail = tail_of_log(&log_path_for_report).await;
+        let delivery = crate::checks::report_finished(
+            &state,
+            target,
+            check_run_id,
+            succeeded,
+            &summary,
+            &log_tail,
+        )
+        .await;
+        // The build log is what an operator reads when a required check never
+        // resolved, so an undelivered verdict is written there too.
+        if delivery == crate::checks::Delivery::Undelivered {
+            append_log(
+                &log_path_for_report,
+                "\nverdict was NOT delivered to GitHub: no configured reporting mechanism succeeded\n",
+                state.config.max_log_bytes,
+            )
+            .await;
+        }
+    }
 
     match result {
         Ok(()) => {
@@ -809,6 +887,7 @@ mod checkout_tests {
             repo_url: repo_url.to_string(),
             git_ref: git_ref.map(str::to_string),
             commit_sha: commit_sha.map(str::to_string),
+            github_installation_id: None,
             image: String::new(),
             profile: Some("rust-verify".to_string()),
             context_dir: None,
@@ -926,6 +1005,11 @@ mod idempotency_tests {
             )),
             git_bin: "git".to_string(),
             git_http_auth_header: None,
+            github_token: None,
+            github_app_id: None,
+            github_app_private_key: None,
+            github_app_installation_id: None,
+            check_run_name: "indiebuild.dev/ci".to_string(),
             nerdctl_bin: "nerdctl".to_string(),
             kubectl_bin: "kubectl".to_string(),
             tar_bin: "tar".to_string(),
@@ -1006,6 +1090,7 @@ mod idempotency_tests {
             repo_url: "https://github.com/ORESoftware/k8s-cluster.git".to_string(),
             git_ref: Some(revision.to_string()),
             commit_sha: Some(revision.to_string()),
+            github_installation_id: None,
             image: String::new(),
             profile: Some("playwright".to_string()),
             context_dir: None,

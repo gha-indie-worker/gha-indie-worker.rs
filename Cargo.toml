@@ -23,6 +23,9 @@ dd-runtime-config-client = { path = "../../libs/runtime-config-client-rs" }
 futures-util = "0.3"
 hex = "0.4"
 hmac = "0.12"
+# GitHub App authentication for the Checks API: check runs can only be
+# created by an App, which authenticates with an RS256-signed JWT.
+jsonwebtoken = "9"
 # LevelFilter for ConnectOptions::sqlx_logging_level (billing-server pattern).
 log = "0.4"
 reqwest = { version = "=0.12.9", default-features = false, features = ["json", "rustls-tls"] }
@@ -37,6 +40,9 @@ sha2 = "0.10"
 # Constant-time comparison for the API auth header and webhook HMACs.
 subtle = "2"
 time = "=0.3.44"
+# Per-repository .indiebuild.toml, which selects one operator-reviewed
+# profile. Repositories never supply commands or images.
+toml = "0.8"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["io"] }
 uuid = { version = "1", features = ["v4"] }

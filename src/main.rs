@@ -9,6 +9,7 @@ use tokio::{
     sync::{RwLock, Semaphore},
 };
 
+mod checks;
 mod config;
 mod db;
 mod ecr;
@@ -18,17 +19,19 @@ mod exec;
 mod fiducia;
 mod gh_secrets;
 mod http;
+mod indiebuild;
 mod jobs;
 mod lambda_exec;
 mod nats_submit;
 mod profiles;
+mod report_intent;
 mod state;
 mod types;
 mod util;
 mod validation;
 mod webhooks;
 
-use config::{config_from_env, env_u64, env_usize, env_value, Config};
+use config::{config_from_env, env_u64, env_usize, env_value, validate_reporting_config, Config};
 use exec::append_log;
 use http::build_router;
 use jobs::enqueue_build;
@@ -42,6 +45,9 @@ async fn main() {
     let _otel = dd_telemetry::init("dd-build-server");
 
     let config = Arc::new(config_from_env());
+    if let Err(error) = validate_reporting_config(config.as_ref()) {
+        panic!("invalid GitHub reporting configuration: {error}");
+    }
     let host = env_value("HOST", "0.0.0.0");
     let port = env_u64("PORT", DEFAULT_PORT as u64) as u16;
     let max_concurrent = env_usize("BUILD_SERVER_MAX_CONCURRENT_BUILDS", 1);
@@ -105,7 +111,14 @@ async fn main() {
         nats,
         holder,
         recent_request_ids: Arc::new(RwLock::new(HashSet::new())),
+        installation_cache: Arc::new(RwLock::new(HashMap::new())),
     };
+
+    // Authoritative CI evidence is reconciled before the HTTP server can ever
+    // answer readiness. A process restart therefore cannot silently orphan an
+    // in-progress Check Run or treat an undelivered local success as trusted.
+    report_intent::reconcile_all(&state).await;
+    tokio::spawn(report_intent::run_periodic_reconciler(state.clone()));
 
     // Durable JetStream build-request intake (opt-in).
     if config.nats_intake_enabled && state.nats.is_some() {
