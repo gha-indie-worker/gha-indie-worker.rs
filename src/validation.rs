@@ -322,11 +322,22 @@ pub(crate) fn validate_build_request(config: &Config, request: &BuildRequest) ->
     if request.push.unwrap_or(false) && !config.push_enabled {
         return Err("push is disabled by BUILD_SERVER_PUSH_ENABLED=false".to_string());
     }
-    match request.executor.as_deref() {
-        None | Some("local") => {}
-        Some("lambda") => {
+    let executor = request
+        .executor
+        .as_deref()
+        .unwrap_or(config.default_executor.as_str());
+    match executor {
+        "local" => {
+            if !config.local_executor_enabled {
+                return Err(
+                    "executor \"local\" is disabled by BUILD_SERVER_LOCAL_ENABLED=false"
+                        .to_string(),
+                );
+            }
+        }
+        "lambda" => {
             if job_kind == "run-profile" {
-                return Err("run-profile currently requires executor=local".to_string());
+                return Err("run-profile is not supported by executor=lambda".to_string());
             }
             if !config.lambda_executor_enabled {
                 return Err(
@@ -335,7 +346,31 @@ pub(crate) fn validate_build_request(config: &Config, request: &BuildRequest) ->
                 );
             }
         }
-        Some(other) => return Err(format!("executor {other:?} must be local or lambda")),
+        "scintilla" => {
+            if !config.scintilla_executor_enabled {
+                return Err(
+                    "executor \"scintilla\" is disabled by BUILD_SERVER_SCINTILLA_ENABLED=false"
+                        .to_string(),
+                );
+            }
+            if config.scintilla_function_id.is_none() {
+                return Err(
+                    "executor \"scintilla\" requires BUILD_SERVER_SCINTILLA_FUNCTION_ID"
+                        .to_string(),
+                );
+            }
+            if config.scintilla_auth_token.is_none() {
+                return Err(
+                    "executor \"scintilla\" requires BUILD_SERVER_SCINTILLA_AUTH_TOKEN"
+                        .to_string(),
+                );
+            }
+        }
+        other => {
+            return Err(format!(
+                "executor {other:?} must be local, lambda, or scintilla"
+            ))
+        }
     }
     if let Some(request_id) = clean_optional(request.request_id.as_deref()) {
         validate_no_whitespace("requestId", &request_id, 128)?;

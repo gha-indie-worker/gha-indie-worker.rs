@@ -81,6 +81,14 @@ pub(crate) struct Config {
     pub(crate) lambda_url: String,
     pub(crate) lambda_function_id: Option<String>,
     pub(crate) lambda_auth_secret: Option<String>,
+
+    // --- Scintilla API executor ---
+    pub(crate) local_executor_enabled: bool,
+    pub(crate) default_executor: String,
+    pub(crate) scintilla_executor_enabled: bool,
+    pub(crate) scintilla_api_url: String,
+    pub(crate) scintilla_function_id: Option<String>,
+    pub(crate) scintilla_auth_token: Option<String>,
 }
 
 pub(crate) fn first_env(keys: &[&str]) -> Option<String> {
@@ -315,5 +323,15 @@ pub(crate) fn config_from_env() -> Config {
         ),
         lambda_function_id: first_env(&["BUILD_SERVER_LAMBDA_FUNCTION_ID"]),
         lambda_auth_secret: first_env(&["BUILD_SERVER_LAMBDA_AUTH_SECRET"]),
+
+        local_executor_enabled: env_bool("BUILD_SERVER_LOCAL_ENABLED", true),
+        default_executor: env_value("BUILD_SERVER_DEFAULT_EXECUTOR", "local"),
+        scintilla_executor_enabled: env_bool("BUILD_SERVER_SCINTILLA_ENABLED", false),
+        scintilla_api_url: env_value(
+            "BUILD_SERVER_SCINTILLA_API_URL",
+            "http://scintilla-api-server.scintilla.svc.cluster.local:8080",
+        ),
+        scintilla_function_id: first_env(&["BUILD_SERVER_SCINTILLA_FUNCTION_ID"]),
+        scintilla_auth_token: first_env(&["BUILD_SERVER_SCINTILLA_AUTH_TOKEN"]),
     }
 }
