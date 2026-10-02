@@ -23,38 +23,41 @@ jobs:
           git checkout --detach FETCH_HEAD
           test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
 
-      - name: Install latest GraalVM Community JDK 25 directly
+      - name: Run on GraalVM 25.3 compatible runtime
         shell: bash
         run: |
           set -euo pipefail
-          release_json="$(curl --fail --silent --show-error --location \
-            'https://api.github.com/repos/graalvm/graalvm-ce-builds/releases?per_page=40')"
-          graal_url="$(printf '%s' "$release_json" | jq -r '
-            [.[] | select(.tag_name | startswith("jdk-25"))][0].assets[]?
-            | select(.name | test("^graalvm-community-jdk-25.*_linux-x64_bin.tar.gz$"))
-            | .browser_download_url
-          ' | head -n 1)"
-          test -n "$graal_url"
-          test "$graal_url" != "null"
-          echo "Using $graal_url"
-          curl --fail --location --retry 3 "$graal_url" --output /tmp/graalvm25.tar.gz
-          mkdir -p /tmp/graalvm25
-          tar -xzf /tmp/graalvm25.tar.gz -C /tmp/graalvm25 --strip-components=1
-          echo "JAVA_HOME=/tmp/graalvm25" >> "${GITHUB_ENV}"
-          echo "/tmp/graalvm25/bin" >> "${GITHUB_PATH}"
+          image='ghcr.io/graalvm/jdk-community:25i3'
+          docker pull "$image"
 
-      - name: Verify GraalVM Java and Maven
-        run: |
-          java -version
-          mvn -version
-          java -version 2>&1 | grep -i 'GraalVM'
+          maven_home="$(mvn -version | awk -F': ' '/^Maven home:/ {print $2}')"
+          test -d "$maven_home"
+          mkdir -p "$HOME/.m2"
 
-      - name: Verify compiler and runtime tests
-        run: mvn -B -ntp verify
+          docker run --rm \
+            -v "$PWD:/workspace" \
+            -v "$maven_home:/opt/maven:ro" \
+            -v "$HOME/.m2:/root/.m2" \
+            -w /workspace \
+            "$image" \
+            /bin/sh -lc '
+              set -eu
+              java -version
+              if ! /opt/maven/bin/mvn -B -ntp verify > /workspace/.ores-verify.log 2>&1; then
+                cat /workspace/.ores-verify.log
+                exit 1
+              fi
+              cat /workspace/.ores-verify.log
 
-      - name: Run Oreslang examples
-        run: |
-          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/showcase.ores"
-          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/together.ores"
-          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/callables.ores" | tee /tmp/oreslang-callables.out
-          grep -F "120:9:13" /tmp/oreslang-callables.out
+              /opt/maven/bin/mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/showcase.ores"
+              /opt/maven/bin/mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/together.ores"
+              /opt/maven/bin/mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/callables.ores" > /workspace/.ores-callables.log 2>&1
+              cat /workspace/.ores-callables.log
+            '
+
+          grep -F 'Tests run: 82, Failures: 0, Errors: 0, Skipped: 0' .ores-verify.log
+          if grep -F 'fallback runtime' .ores-verify.log; then
+            echo 'Unexpected Truffle fallback runtime' >&2
+            exit 1
+          fi
+          grep -F '120:9:13' .ores-callables.log
