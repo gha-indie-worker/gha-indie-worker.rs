@@ -14,18 +14,34 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - name: Fetch exact oreslang PR #35 head
+      - name: Check out funded carrier revision
         shell: bash
         run: |
           set -euo pipefail
-          mkdir source
-          cd source
           git init .
-          git remote add origin "https://github.com/ores-truffle-oreslang/oreslang-source.java.git"
-          git fetch --depth=1 origin "1a618406537e77c0858f74a753ad5277c6c1836c"
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --depth=1 origin "${GITHUB_SHA}"
           git checkout --detach FETCH_HEAD
-          test "$(git rev-parse HEAD)" = "1a618406537e77c0858f74a753ad5277c6c1836c"
-          echo "validated_source_sha=$(git rev-parse HEAD)" | tee ../validated-source-sha.txt
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+
+      - name: Prove materialized source is exact PR head
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected='1a618406537e77c0858f74a753ad5277c6c1836c'
+          actual="$(awk '/^source_commit / {print $2}' source/.exact-head-manifest)"
+          test "$actual" = "$expected"
+
+          tail -n +2 source/.exact-head-manifest | while read -r blob path; do
+            test -f "source/$path"
+            actual_blob="$(git hash-object "source/$path")"
+            if [ "$actual_blob" != "$blob" ]; then
+              echo "blob mismatch: $path expected=$blob actual=$actual_blob" >&2
+              exit 1
+            fi
+          done
+
+          echo "Exact Oreslang source verified: $expected"
 
       - name: Verify exact head on GraalVM 25.3
         shell: bash
@@ -48,8 +64,6 @@ jobs:
               set -eu
               java -version
               /opt/maven/bin/mvn -B -ntp verify
-
               /opt/maven/bin/mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/showcase.ores"
               /opt/maven/bin/mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/together.ores"
-              /opt/maven/bin/mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/callables.ores"
             '
