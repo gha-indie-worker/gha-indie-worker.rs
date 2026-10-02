@@ -1,0 +1,110 @@
+name: conformance-expressions-matrix
+
+on:
+  workflow_dispatch:
+    inputs:
+      sample:
+        description: Value used to verify input and JSON coercion semantics.
+        required: false
+        default: "7"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      payload: ${{ steps.emit.outputs.payload }}
+      scalar: ${{ steps.emit.outputs.scalar }}
+    steps:
+      - id: emit
+        name: Emit deterministic job outputs
+        shell: bash
+        env:
+          INPUT_SAMPLE: ${{ inputs.sample }}
+        run: |
+          set -euo pipefail
+          printf 'payload=%s\n' '{"enabled":true,"items":["alpha","beta"],"count":2}' >> "${GITHUB_OUTPUT}"
+          printf 'scalar=%s\n' "${INPUT_SAMPLE}" >> "${GITHUB_OUTPUT}"
+
+  matrix:
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        os:
+          - ubuntu-latest
+        value:
+          - "0"
+          - "1"
+        exclude:
+          - os: ubuntu-latest
+            value: "1"
+        include:
+          - os: ubuntu-latest
+            value: "2"
+            label: included
+    steps:
+      - id: expressions
+        name: Evaluate contexts, functions, and coercion
+        shell: bash
+        env:
+          MATRIX_VALUE: ${{ matrix.value }}
+          MATRIX_LABEL: ${{ matrix.label || 'base' }}
+          JSON_ENABLED: ${{ fromJSON(needs.prepare.outputs.payload).enabled }}
+          JSON_ITEM: ${{ fromJSON(needs.prepare.outputs.payload).items[1] }}
+          HAS_ALPHA: ${{ contains(fromJSON(needs.prepare.outputs.payload).items, 'alpha') }}
+          PREFIX_OK: ${{ startsWith(format('value-{0}', matrix.value), 'value-') }}
+          SUFFIX_OK: ${{ endsWith(format('value-{0}', matrix.value), matrix.value) }}
+          JOINED: ${{ join(fromJSON(needs.prepare.outputs.payload).items, ':') }}
+          ZEROISH: ${{ fromJSON(matrix.value) == 0 && 'zero' || 'nonzero' }}
+          RUNNER_OS_VALUE: ${{ runner.os }}
+          EVENT_VALUE: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          test "${JSON_ENABLED}" = "true"
+          test "${JSON_ITEM}" = "beta"
+          test "${HAS_ALPHA}" = "true"
+          test "${PREFIX_OK}" = "true"
+          test "${SUFFIX_OK}" = "true"
+          test "${JOINED}" = "alpha:beta"
+          test "${EVENT_VALUE}" = "workflow_dispatch"
+          case "${MATRIX_VALUE}" in
+            0) test "${ZEROISH}" = "zero" ;;
+            2) test "${ZEROISH}" = "nonzero" && test "${MATRIX_LABEL}" = "included" ;;
+            *) exit 91 ;;
+          esac
+          printf 'observed=%s\n' "${MATRIX_VALUE}:${MATRIX_LABEL}:${RUNNER_OS_VALUE}" >> "${GITHUB_OUTPUT}"
+
+      - name: Verify step output and default working directory
+        shell: bash
+        env:
+          OBSERVED: ${{ steps.expressions.outputs.observed }}
+          WORKSPACE_VALUE: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          test -n "${OBSERVED}"
+          test "${PWD}" = "${WORKSPACE_VALUE}"
+
+  aggregate:
+    if: ${{ always() }}
+    needs:
+      - prepare
+      - matrix
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify needs results and serialization
+        shell: bash
+        env:
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          MATRIX_RESULT: ${{ needs.matrix.result }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          test "${PREPARE_RESULT}" = "success"
+          test "${MATRIX_RESULT}" = "success"
+          test -n "${NEEDS_JSON}"
