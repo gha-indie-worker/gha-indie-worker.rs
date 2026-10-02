@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - audit/gha-parity-conformance-contract
   workflow_dispatch:
 
 permissions:
@@ -134,7 +135,7 @@ jobs:
     timeout-minutes: 30
     env:
       INTERFACES_REVISION: 7165a361462e624195e91cf88ec472b7d6e9c1da
-      TJSV_REVISION: a4b731fbf82c4d162abd74fd03758fa32bb76176
+      TJSV_REVISION: 69337efc11ba4ecaa90b48878c942384fc74f650
     steps:
       - name: Check out exact producer candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
