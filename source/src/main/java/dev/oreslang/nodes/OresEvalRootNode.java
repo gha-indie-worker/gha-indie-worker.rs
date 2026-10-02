@@ -112,7 +112,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (fn.parameters().isEmpty() && args.size() == 1 && args.getFirst() instanceof Object[] array && array.length == 0) args = List.of();
                 else throw new IllegalArgumentException("function " + fn.name() + " expects " + fn.parameters().size() + " arguments, got " + args.size());
             }
-            Env env = new Env(null);
+            Env env = new Env(null, fn.nonLexical());
             for (int i = 0; i < fn.parameters().size(); i++) {
                 Ast.Param param = fn.parameters().get(i);
                 env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
@@ -397,10 +397,11 @@ public final class OresEvalRootNode extends RootNode {
                 return Map.copyOf(result);
             }
             if (expr instanceof Ast.LambdaExpr lambda) {
-                Env captured = env.snapshot();
+                boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
+                Env captured = nonLexical ? null : env.snapshot();
                 return (Invokable) args -> {
                     if (args.size() != lambda.parameters().size()) throw new IllegalArgumentException("lambda arity mismatch");
-                    Env local = new Env(captured);
+                    Env local = new Env(captured, nonLexical);
                     for (int i = 0; i < lambda.parameters().size(); i++) {
                         Ast.Param param = lambda.parameters().get(i);
                         local.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
@@ -796,8 +797,14 @@ public final class OresEvalRootNode extends RootNode {
     private static final class Env {
         private static final Object MISSING = new Object();
         private final Env parent;
+        private final boolean descendantsNonLexical;
         private final Map<String, Slot> slots = new HashMap<>();
-        private Env(Env parent) { this.parent = parent; }
+        private Env(Env parent) { this(parent, parent != null && parent.descendantsNonLexical); }
+        private Env(Env parent, boolean descendantsNonLexical) {
+            this.parent = parent;
+            this.descendantsNonLexical = descendantsNonLexical;
+        }
+        private boolean descendantsNonLexical() { return descendantsNonLexical; }
         private void define(String name, Object value, Ast.BindingKind kind) {
             if (slots.putIfAbsent(name, new Slot(value, kind)) != null) throw new IllegalArgumentException("duplicate binding " + name);
         }
@@ -820,7 +827,11 @@ public final class OresEvalRootNode extends RootNode {
             if (parent != null) { parent.assign(name, value); return; }
             throw new IllegalArgumentException("unknown binding " + name);
         }
-        private Env snapshot() { Env cp=new Env(parent==null?null:parent.snapshot()); cp.slots.putAll(slots); return cp; }
+        private Env snapshot() {
+            Env cp = new Env(parent == null ? null : parent.snapshot(), descendantsNonLexical);
+            cp.slots.putAll(slots);
+            return cp;
+        }
         private void releaseMutexGuards(boolean failed) {
             Set<Object> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
             for (Slot slot : slots.values()) releaseMutexGuardsInValue(slot.value, failed, seen);

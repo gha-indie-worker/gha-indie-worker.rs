@@ -55,7 +55,9 @@ public final class OresMain {
             policy = policy.withCapabilities(additionalCapabilities.toArray(IsolatePolicy.Capability[]::new));
         }
 
-        Context.Builder builder = policy.restrictedContextBuilder(profile);
+        Context.Builder builder = policy.restrictedContextBuilder(profile)
+                .out(System.out)
+                .err(System.err);
         Source source = Source.newBuilder(OresLanguage.ID, new File(filename))
                 .mimeType(OresLanguage.MIME_TYPE)
                 .build();
