@@ -729,6 +729,21 @@ public final class OresEvalRootNode extends RootNode {
             return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '/' -> x / y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
         }
 
+        private long integralLong(Object value) {
+            if (!(value instanceof Number number) || !isIntegral(number)) {
+                throw new IllegalArgumentException("bitwise operator requires integer operands");
+            }
+            return number.longValue();
+        }
+
+        private int shiftDistance(Object value) {
+            long distance = integralLong(value);
+            if (distance < 0 || distance > 63) {
+                throw new IllegalArgumentException("shift distance must be between 0 and 63");
+            }
+            return (int) distance;
+        }
+
         private Object negate(Object value) {
             if (value instanceof Complex c) return new Complex(-c.real, -c.imaginary);
             if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) return -((Number) value).longValue();

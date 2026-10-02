@@ -1,4 +1,4 @@
-source_commit 17759f38a6fdfb25580263dff1a066faa7c66367
+source_commit b8ff862b95250c257a5874a5252ad6c217ecf4f7
 921c13f40b707f2b358ba2dc6cc9ec1b778d93c4  examples/actor-isolation-support.ores
 f53695a6967197758bb13d90916359d39f63b301  examples/callables.ores
 98e7b2af2e935729ac8e3dead01a30ccd7bb56b7  examples/modules-namespaces-callables.ores
@@ -10,7 +10,7 @@ e967d6671c3adea1c47adb8ec732a3b7f6fce61e  src/main/java/dev/oreslang/ast/Ast.jav
 fcba04eb2316cade4592a0dc26c4f3e2018a6cee  src/main/java/dev/oreslang/compiler/IncrementalCompiler.java
 80c76f972d5722474d3c29b64523fac8446129cf  src/main/java/dev/oreslang/compiler/OresCompiler.java
 bb1f667fe378b7e2ba6814847955b74369489673  src/main/java/dev/oreslang/launcher/OresMain.java
-9e55cfdcab7209351f6cf849996cb5541d0bfa9a  src/main/java/dev/oreslang/nodes/OresEvalRootNode.java
+4d54625d0e41d4e63faebda25671fd3edb768f94  src/main/java/dev/oreslang/nodes/OresEvalRootNode.java
 62ac55ad410d3e07d9494b73b3f658d43de70351  src/main/java/dev/oreslang/nodes/OresInteropRootNode.java
 125a37cf6ab7cbeaabf53a024dcb966b2dedf56a  src/main/java/dev/oreslang/OresLanguage.java
 69b0112141079c92b9e43f465737af87fa8a6496  src/main/java/dev/oreslang/parser/Lexer.java
