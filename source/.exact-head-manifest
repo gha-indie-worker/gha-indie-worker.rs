@@ -1,4 +1,4 @@
-source_commit b8ff862b95250c257a5874a5252ad6c217ecf4f7
+source_commit ee59b45e6824cb081b2d8f335f4c55aba308dd65
 921c13f40b707f2b358ba2dc6cc9ec1b778d93c4  examples/actor-isolation-support.ores
 f53695a6967197758bb13d90916359d39f63b301  examples/callables.ores
 98e7b2af2e935729ac8e3dead01a30ccd7bb56b7  examples/modules-namespaces-callables.ores
@@ -14,7 +14,7 @@ bb1f667fe378b7e2ba6814847955b74369489673  src/main/java/dev/oreslang/launcher/Or
 62ac55ad410d3e07d9494b73b3f658d43de70351  src/main/java/dev/oreslang/nodes/OresInteropRootNode.java
 125a37cf6ab7cbeaabf53a024dcb966b2dedf56a  src/main/java/dev/oreslang/OresLanguage.java
 69b0112141079c92b9e43f465737af87fa8a6496  src/main/java/dev/oreslang/parser/Lexer.java
-9a84accc82a448c17c30d88dbb5be6b21ce36e71  src/main/java/dev/oreslang/parser/Parser.java
+07f907aa9365d89c3b37ec6996b60b9db2d22417  src/main/java/dev/oreslang/parser/Parser.java
 9f0ebe1abec8577e56e9df315965ea8394c0992b  src/main/java/dev/oreslang/parser/Token.java
 c62bcee7ce34adfcd2d126a081aebc584e7802d8  src/main/java/dev/oreslang/runtime/ActorRuntime.java
 0fbe736580048f2e509ddfc69e462ec3bbd07ad4  src/main/java/dev/oreslang/runtime/CapabilityChecker.java
@@ -24,8 +24,8 @@ cfd11c6b104b5ad80fb0ea1353a9dc3561efdb84  src/main/java/dev/oreslang/runtime/Exe
 fc8f820444c58d27282ac9dacf62809c1beb4a1d  src/main/java/dev/oreslang/runtime/OresContext.java
 e05dd4bdc7b66114022e97849bcb524561de2202  src/main/java/dev/oreslang/runtime/OresMutex.java
 14a4adf94738ac42311bb1777c576e761804d402  src/main/java/dev/oreslang/runtime/OresNull.java
-07a2031b6d4ef9c438e7d74dff51555fae0ef641  src/main/java/dev/oreslang/types/OwnershipChecker.java
-2072cc5c18510211c461afb9ddf5f0a24ed2e0ec  src/main/java/dev/oreslang/types/TypeChecker.java
+6c5acf6702803dc65455971995e96795795fe079  src/main/java/dev/oreslang/types/OwnershipChecker.java
+6e947b53cabb98a0ada69bb664ea9cc9a5862d46  src/main/java/dev/oreslang/types/TypeChecker.java
 5f791be8515593c144d7546bfed04656da9a53cd  src/main/java/dev/oreslang/types/Types.java
 20a591ba34970babf007c781addcb0f4871c675a  src/main/java/module-info.java
 1bdcd72c08f66e1e920d88d5928590cc6770aa95  src/main/resources/META-INF/native-image/dev.oreslang/oreslang/native-image.properties

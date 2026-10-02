@@ -352,7 +352,7 @@ public final class OwnershipChecker {
                         ResolvedField target = findFieldTarget(klass, concreteReceiver, member.member(), new LinkedHashSet<>());
                         if (target != null) {
                             Ast.TypeRef fieldType = substituteType(
-                                    target.field().type(),
+                                    ownershipFieldType(target.field()),
                                     genericBindings(target.owner().genericParameters(), target.ownerType().arguments()));
                             if (!isCopyType(fieldType)) {
                                 throw error("cannot extract move-only field '" + target.owner().name() + "." + member.member()
@@ -376,7 +376,7 @@ public final class OwnershipChecker {
                 ResolvedField target = findFieldTarget(klass, concreteReceiver, member.member(), new LinkedHashSet<>());
                 if (target != null) {
                     Ast.TypeRef fieldType = substituteType(
-                            target.field().type(),
+                            ownershipFieldType(target.field()),
                             genericBindings(target.owner().genericParameters(), target.ownerType().arguments()));
                     ValueKind fieldKind = kindOfType(fieldType);
                     if (consuming && isRootedAtActorSelf(member.receiver(), scope) && fieldKind != ValueKind.COPY) {
@@ -1346,6 +1346,14 @@ public final class OwnershipChecker {
             if (containsAcquiredMutexGuardType(argument)) return true;
         }
         return false;
+    }
+
+    private Ast.TypeRef ownershipFieldType(Ast.FieldDecl field) {
+        if (field.type() != null) return field.type();
+        if (field.initializer() instanceof Ast.LiteralExpr literal) {
+            return inferLiteralType(literal.value());
+        }
+        return Ast.TypeRef.inferred();
     }
 
     private Ast.TypeRef inferLiteralType(Object value) {
