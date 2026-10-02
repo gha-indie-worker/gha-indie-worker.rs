@@ -2,6 +2,9 @@ name: Build log TJSV current canary
 
 on:
   pull_request:
+  push:
+    branches:
+      - audit/gha-parity-conformance-contract
   workflow_dispatch:
 
 permissions:
@@ -17,7 +20,7 @@ jobs:
     timeout-minutes: 25
     env:
       INTERFACES_REVISION: 7165a361462e624195e91cf88ec472b7d6e9c1da
-      TJSV_REVISION: 93dd73cb246a09b0a1c62d7192cc62ca6ecbe405
+      TJSV_REVISION: 69337efc11ba4ecaa90b48878c942384fc74f650
     steps:
       - name: Check out exact worker candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
