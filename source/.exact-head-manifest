@@ -1,4 +1,4 @@
-source_commit 4e640495aced7e520bf33ec8d9ea06072acc590c
+source_commit 17759f38a6fdfb25580263dff1a066faa7c66367
 921c13f40b707f2b358ba2dc6cc9ec1b778d93c4  examples/actor-isolation-support.ores
 f53695a6967197758bb13d90916359d39f63b301  examples/callables.ores
 98e7b2af2e935729ac8e3dead01a30ccd7bb56b7  examples/modules-namespaces-callables.ores
@@ -10,11 +10,11 @@ e967d6671c3adea1c47adb8ec732a3b7f6fce61e  src/main/java/dev/oreslang/ast/Ast.jav
 fcba04eb2316cade4592a0dc26c4f3e2018a6cee  src/main/java/dev/oreslang/compiler/IncrementalCompiler.java
 80c76f972d5722474d3c29b64523fac8446129cf  src/main/java/dev/oreslang/compiler/OresCompiler.java
 bb1f667fe378b7e2ba6814847955b74369489673  src/main/java/dev/oreslang/launcher/OresMain.java
-57e6c017b79bd4d007db9cdf57a3b2ecd30a1b0d  src/main/java/dev/oreslang/nodes/OresEvalRootNode.java
+9e55cfdcab7209351f6cf849996cb5541d0bfa9a  src/main/java/dev/oreslang/nodes/OresEvalRootNode.java
 62ac55ad410d3e07d9494b73b3f658d43de70351  src/main/java/dev/oreslang/nodes/OresInteropRootNode.java
 125a37cf6ab7cbeaabf53a024dcb966b2dedf56a  src/main/java/dev/oreslang/OresLanguage.java
 69b0112141079c92b9e43f465737af87fa8a6496  src/main/java/dev/oreslang/parser/Lexer.java
-7e44788e2c5cdf987686c80f87d99761e791bb66  src/main/java/dev/oreslang/parser/Parser.java
+9a84accc82a448c17c30d88dbb5be6b21ce36e71  src/main/java/dev/oreslang/parser/Parser.java
 9f0ebe1abec8577e56e9df315965ea8394c0992b  src/main/java/dev/oreslang/parser/Token.java
 c62bcee7ce34adfcd2d126a081aebc584e7802d8  src/main/java/dev/oreslang/runtime/ActorRuntime.java
 0fbe736580048f2e509ddfc69e462ec3bbd07ad4  src/main/java/dev/oreslang/runtime/CapabilityChecker.java
@@ -25,7 +25,7 @@ fc8f820444c58d27282ac9dacf62809c1beb4a1d  src/main/java/dev/oreslang/runtime/Ore
 e05dd4bdc7b66114022e97849bcb524561de2202  src/main/java/dev/oreslang/runtime/OresMutex.java
 14a4adf94738ac42311bb1777c576e761804d402  src/main/java/dev/oreslang/runtime/OresNull.java
 07a2031b6d4ef9c438e7d74dff51555fae0ef641  src/main/java/dev/oreslang/types/OwnershipChecker.java
-ffd0ead126baafca2a27c82cc3d9122a5e8697e0  src/main/java/dev/oreslang/types/TypeChecker.java
+2072cc5c18510211c461afb9ddf5f0a24ed2e0ec  src/main/java/dev/oreslang/types/TypeChecker.java
 5f791be8515593c144d7546bfed04656da9a53cd  src/main/java/dev/oreslang/types/Types.java
 20a591ba34970babf007c781addcb0f4871c675a  src/main/java/module-info.java
 1bdcd72c08f66e1e920d88d5928590cc6770aa95  src/main/resources/META-INF/native-image/dev.oreslang/oreslang/native-image.properties

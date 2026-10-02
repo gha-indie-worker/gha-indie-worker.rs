@@ -314,9 +314,18 @@ public final class Parser {
 
     private Ast.FieldDecl parseField(Ast.Visibility visibility) {
         Ast.BindingKind kind = parseBindingKind();
-        Ast.TypeRef type = parseTypeRef();
-        String name = consume(IDENT, "expected field name").lexeme();
+        Ast.TypeRef type = null;
+        String name;
+        if (check(IDENT) && checkNext(EQUAL)) {
+            name = advance().lexeme();
+        } else {
+            type = parseTypeRef();
+            name = consume(IDENT, "expected field name").lexeme();
+        }
         Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
+        if (type == null && initializer == null) {
+            throw error(previous(), "inferred field '" + name + "' requires an initializer");
+        }
         consumeStatementTerminator("field declaration should end with ';'");
         return new Ast.FieldDecl(name, visibility, kind, type, initializer);
     }
