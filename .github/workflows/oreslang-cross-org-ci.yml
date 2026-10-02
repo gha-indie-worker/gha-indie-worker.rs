@@ -11,20 +11,31 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - name: Set up GraalVM
-        uses: graalvm/setup-graalvm@v1
-        with:
-          version: '25.3'
-          java-version: '25'
-          distribution: 'graalvm'
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          cache: maven
-      - name: Verify compiler/runtime tests
+      - name: Check out exact revision without external actions
+        shell: bash
+        run: |
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --depth=1 origin "${GITHUB_SHA}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+
+      - name: Select preinstalled Java 21
+        shell: bash
+        run: |
+          if [ -n "${JAVA_HOME_21_X64:-}" ] && [ -x "${JAVA_HOME_21_X64}/bin/java" ]; then
+            echo "JAVA_HOME=${JAVA_HOME_21_X64}" >> "${GITHUB_ENV}"
+            echo "${JAVA_HOME_21_X64}/bin" >> "${GITHUB_PATH}"
+          fi
+          java -version
+          mvn -version
+
+      - name: Verify compiler and runtime tests
         run: mvn -B -ntp verify
+
       - name: Run Oreslang examples
         run: |
           mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/showcase.ores"
