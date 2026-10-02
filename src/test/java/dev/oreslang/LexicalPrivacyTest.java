@@ -17,37 +17,32 @@ import static org.junit.jupiter.api.Assertions.*;
 final class LexicalPrivacyTest {
 
     @Test
-    void lexAndLexicalAreExplicitAliasesForNormalLexicalCapture() throws Exception {
+    void lexIsTheSingleExplicitKeywordAndLexicalRemainsAnOrdinaryIdentifier() throws Exception {
         String output = run("""
                 pub routine main() => void {
                   val int base = 10;
+                  val int lexical = 5;
 
-                  val Fnc<int, int> short_form = lex |int x| -> {
-                    return x + base;
+                  val Fnc<int, int> explicit = lex |int x| -> {
+                    return x + base + lexical;
                   };
 
-                  val Fnc<int, int> long_form = lexical |int x| -> {
-                    return x + base;
-                  };
-
-                  stdio.stdout.write(short_form(2));
-                  stdio.stdout.write(":");
-                  stdio.stdout.write(long_form(3));
+                  stdio.stdout.write(explicit(2));
                   return;
                 }
                 """);
 
-        assertEquals("12:13", output);
+        assertEquals("17", output);
     }
 
     @Test
-    void namedLexicalModifierIsPreservedForTooling() {
+    void namedLexModifierIsPreservedForTooling() {
         Ast.Program program = Parser.parse("""
                 lex fnc helper() => int {
                   return 1;
                 }
 
-                lexical routine task() => void {
+                lex routine task() => void {
                   return;
                 }
                 """);
@@ -140,10 +135,10 @@ final class LexicalPrivacyTest {
     }
 
     @Test
-    void captureFreeLexicalLambdaUsesNoEnvironmentPlan() {
+    void captureFreeLexLambdaUsesNoEnvironmentPlan() {
         Ast.LambdaExpr lambda = returnedLambda("""
                 fnc make() => (() -> int) {
-                  return lexical || -> {
+                  return lex || -> {
                     return 7;
                   };
                 }
@@ -211,6 +206,21 @@ final class LexicalPrivacyTest {
                         """)));
 
         assertTrue(error.getMessage().contains("use of moved value 'box'"));
+    }
+
+    @Test
+    void duplicateAndMixedCaptureModifiersAreRejected() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                lex lex fnc bad() => void { return; }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                lex nlex fnc bad() => void { return; }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                nlex lex fnc bad() => void { return; }
+                """));
     }
 
     private static Ast.LambdaExpr returnedLambda(String source, String functionName) {

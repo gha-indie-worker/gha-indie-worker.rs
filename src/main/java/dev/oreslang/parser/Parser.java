@@ -49,12 +49,12 @@ public final class Parser {
                     continue;
                 }
                 if (match(CLASS)) {
-                    if (modifiers.nonLexical || modifiers.explicitLexical) throw error(previous(), "'lex', 'lexical', and 'nlex' apply only to fnc, routine, or lambda");
+                    if (modifiers.nonLexical || modifiers.explicitLexical) throw error(previous(), "'lex' and 'nlex' apply only to fnc, routine, or lambda");
                     rootDeclarations.add(parseClass(modifiers.isAbstract || afterDefineAbstract));
                     continue;
                 }
                 if (match(INTERFACE)) {
-                    if (modifiers.nonLexical || modifiers.explicitLexical) throw error(previous(), "'lex', 'lexical', and 'nlex' apply only to fnc, routine, or lambda");
+                    if (modifiers.nonLexical || modifiers.explicitLexical) throw error(previous(), "'lex' and 'nlex' apply only to fnc, routine, or lambda");
                     rootDeclarations.add(parseInterface(modifiers.visibility));
                     continue;
                 }
@@ -126,11 +126,11 @@ public final class Parser {
         if (match(DEFINE)) {
             boolean afterDefineAbstract = match(ABSTRACT);
             if (match(CLASS)) {
-                if (modifiers.nonLexical || modifiers.explicitLexical) throw error(previous(), "'lex', 'lexical', and 'nlex' apply only to fnc, routine, or lambda");
+                if (modifiers.nonLexical || modifiers.explicitLexical) throw error(previous(), "'lex' and 'nlex' apply only to fnc, routine, or lambda");
                 return parseClass(modifiers.isAbstract || afterDefineAbstract);
             }
             if (match(INTERFACE)) {
-                if (modifiers.nonLexical || modifiers.explicitLexical) throw error(previous(), "'lex', 'lexical', and 'nlex' apply only to fnc, routine, or lambda");
+                if (modifiers.nonLexical || modifiers.explicitLexical) throw error(previous(), "'lex' and 'nlex' apply only to fnc, routine, or lambda");
                 return parseInterface(modifiers.visibility);
             }
             throw error(previous(), "expected class or interface after 'define'");
@@ -144,7 +144,7 @@ public final class Parser {
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
         if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
         if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
-        if (modifiers.nonLexical || modifiers.explicitLexical) throw error(peek(), "'lex', 'lexical', and 'nlex' apply only to fnc, routine, or lambda");
+        if (modifiers.nonLexical || modifiers.explicitLexical) throw error(peek(), "'lex' and 'nlex' apply only to fnc, routine, or lambda");
         if (match(INTERFACE)) return parseInterface(modifiers.visibility);
         if (match(TYPE)) return parseTypeAlias();
         if (isBindingKind(peek().type())) return parseModuleBinding(modifiers.visibility);
@@ -350,14 +350,14 @@ public final class Parser {
             if (match(PUB)) visibility = Ast.Visibility.PUBLIC;
             else if (match(PRIVATE)) visibility = Ast.Visibility.PRIVATE;
             else if (match(ASYNC)) async = true;
-            else if (match(LEX, LEXICAL)) {
-                if (explicitLexical) throw error(previous(), "duplicate lexical capture modifier");
-                if (nonLexical) throw error(previous(), "'lex'/'lexical' cannot be combined with 'nlex'");
+            else if (match(LEX)) {
+                if (explicitLexical) throw error(previous(), "duplicate 'lex' capture modifier");
+                if (nonLexical) throw error(previous(), "'lex' cannot be combined with 'nlex'");
                 explicitLexical = true;
             }
             else if (match(NLEX)) {
                 if (nonLexical) throw error(previous(), "duplicate 'nlex' capture modifier");
-                if (explicitLexical) throw error(previous(), "'nlex' cannot be combined with 'lex'/'lexical'");
+                if (explicitLexical) throw error(previous(), "'nlex' cannot be combined with 'lex'");
                 nonLexical = true;
             }
             else if (match(STATIC)) isStatic = true;
@@ -801,7 +801,7 @@ public final class Parser {
     }
 
     private String consumeMemberName() {
-        if (match(IDENT, LEX, LEXICAL, NLEX)) return previous().lexeme();
+        if (match(IDENT, LEX, NLEX)) return previous().lexeme();
         throw error(peek(), "expected member name after '.'");
     }
 
@@ -837,10 +837,10 @@ public final class Parser {
             if (check(LPAREN) && looksLikeLambda()) return parseLambda(true, false);
             throw error(previous(), "'nlex' in expression position must prefix a lambda");
         }
-        if (match(LEX, LEXICAL)) {
+        if (match(LEX)) {
             if (check(PIPE)) return parsePipeLambda(false, true);
             if (check(LPAREN) && looksLikeLambda()) return parseLambda(false, true);
-            throw error(previous(), "'lex'/'lexical' in expression position must prefix a lambda");
+            throw error(previous(), "'lex' in expression position must prefix a lambda");
         }
         if (check(PIPE)) return parsePipeLambda(false, false);
         if (check(LPAREN) && looksLikeLambda()) return parseLambda(false, false);
