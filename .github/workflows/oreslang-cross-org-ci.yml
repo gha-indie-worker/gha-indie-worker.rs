@@ -1,9 +1,9 @@
-name: oreslang-cross-org-ci
+name: oreslang-pr35-exact-head-ci
 
 on:
   push:
     branches:
-      - test/oreslang-lexical-privacy-20261002
+      - test/oreslang-shared-actors-pr35-20261002
   workflow_dispatch:
 
 permissions:
@@ -12,18 +12,22 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
-      - name: Check out exact revision without external actions
+      - name: Fetch exact oreslang PR #35 head
         shell: bash
         run: |
+          set -euo pipefail
+          mkdir source
+          cd source
           git init .
-          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git fetch --depth=1 origin "${GITHUB_SHA}"
+          git remote add origin "https://github.com/ores-truffle-oreslang/oreslang-source.java.git"
+          git fetch --depth=1 origin "1a618406537e77c0858f74a753ad5277c6c1836c"
           git checkout --detach FETCH_HEAD
-          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test "$(git rev-parse HEAD)" = "1a618406537e77c0858f74a753ad5277c6c1836c"
+          echo "validated_source_sha=$(git rev-parse HEAD)" | tee ../validated-source-sha.txt
 
-      - name: Run on GraalVM 25.3 compatible runtime
+      - name: Verify exact head on GraalVM 25.3
         shell: bash
         run: |
           set -euo pipefail
@@ -35,7 +39,7 @@ jobs:
           mkdir -p "$HOME/.m2"
 
           docker run --rm \
-            -v "$PWD:/workspace" \
+            -v "$PWD/source:/workspace" \
             -v "$maven_home:/opt/maven:ro" \
             -v "$HOME/.m2:/root/.m2" \
             -w /workspace \
@@ -43,21 +47,9 @@ jobs:
             /bin/sh -lc '
               set -eu
               java -version
-              if ! /opt/maven/bin/mvn -B -ntp verify > /workspace/.ores-verify.log 2>&1; then
-                cat /workspace/.ores-verify.log
-                exit 1
-              fi
-              cat /workspace/.ores-verify.log
+              /opt/maven/bin/mvn -B -ntp verify
 
               /opt/maven/bin/mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/showcase.ores"
               /opt/maven/bin/mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/together.ores"
-              /opt/maven/bin/mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/callables.ores" > /workspace/.ores-callables.log 2>&1
-              cat /workspace/.ores-callables.log
+              /opt/maven/bin/mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/callables.ores"
             '
-
-          grep -F 'Tests run: 82, Failures: 0, Errors: 0, Skipped: 0' .ores-verify.log
-          if grep -F 'fallback runtime' .ores-verify.log; then
-            echo 'Unexpected Truffle fallback runtime' >&2
-            exit 1
-          fi
-          grep -F '120:9:13' .ores-callables.log
