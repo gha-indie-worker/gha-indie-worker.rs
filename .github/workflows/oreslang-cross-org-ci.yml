@@ -28,7 +28,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          expected='a69419bce13660da5edabb1309ce8d8178e55980'
+          expected='4e640495aced7e520bf33ec8d9ea06072acc590c'
           actual="$(awk '/^source_commit / {print $2}' source/.exact-head-manifest)"
           test "$actual" = "$expected"
 
