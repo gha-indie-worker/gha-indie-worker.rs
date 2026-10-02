@@ -23,17 +23,23 @@ jobs:
           git checkout --detach FETCH_HEAD
           test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
 
-      - name: Set up JDK 25
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '25'
-          cache: maven
+      - name: Install Temurin JDK 25 directly
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            "https://api.adoptium.net/v3/binary/latest/25/ga/linux/x64/jdk/hotspot/normal/eclipse" \
+            --output /tmp/jdk25.tar.gz
+          mkdir -p /tmp/jdk25
+          tar -xzf /tmp/jdk25.tar.gz -C /tmp/jdk25 --strip-components=1
+          echo "JAVA_HOME=/tmp/jdk25" >> "${GITHUB_ENV}"
+          echo "/tmp/jdk25/bin" >> "${GITHUB_PATH}"
 
       - name: Verify Java and Maven
         run: |
           java -version
           mvn -version
+          java -version 2>&1 | grep -E '25(\\.|\\+)'
 
       - name: Verify compiler and runtime tests
         run: mvn -B -ntp verify
