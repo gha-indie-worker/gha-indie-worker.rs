@@ -12,7 +12,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Check out exact revision without external actions
         shell: bash
@@ -23,23 +23,31 @@ jobs:
           git checkout --detach FETCH_HEAD
           test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
 
-      - name: Install Temurin JDK 25 directly
+      - name: Install latest GraalVM Community JDK 25 directly
         shell: bash
         run: |
           set -euo pipefail
-          curl --fail --location --retry 3 \
-            "https://api.adoptium.net/v3/binary/latest/25/ga/linux/x64/jdk/hotspot/normal/eclipse" \
-            --output /tmp/jdk25.tar.gz
-          mkdir -p /tmp/jdk25
-          tar -xzf /tmp/jdk25.tar.gz -C /tmp/jdk25 --strip-components=1
-          echo "JAVA_HOME=/tmp/jdk25" >> "${GITHUB_ENV}"
-          echo "/tmp/jdk25/bin" >> "${GITHUB_PATH}"
+          release_json="$(curl --fail --silent --show-error --location \
+            'https://api.github.com/repos/graalvm/graalvm-ce-builds/releases?per_page=40')"
+          graal_url="$(printf '%s' "$release_json" | jq -r '
+            [.[] | select(.tag_name | startswith("jdk-25"))][0].assets[]?
+            | select(.name | test("^graalvm-community-jdk-25.*_linux-x64_bin.tar.gz$"))
+            | .browser_download_url
+          ' | head -n 1)"
+          test -n "$graal_url"
+          test "$graal_url" != "null"
+          echo "Using $graal_url"
+          curl --fail --location --retry 3 "$graal_url" --output /tmp/graalvm25.tar.gz
+          mkdir -p /tmp/graalvm25
+          tar -xzf /tmp/graalvm25.tar.gz -C /tmp/graalvm25 --strip-components=1
+          echo "JAVA_HOME=/tmp/graalvm25" >> "${GITHUB_ENV}"
+          echo "/tmp/graalvm25/bin" >> "${GITHUB_PATH}"
 
-      - name: Verify Java and Maven
+      - name: Verify GraalVM Java and Maven
         run: |
           java -version
           mvn -version
-          java -version 2>&1 | grep -F 'version "25'
+          java -version 2>&1 | grep -i 'GraalVM'
 
       - name: Verify compiler and runtime tests
         run: mvn -B -ntp verify
