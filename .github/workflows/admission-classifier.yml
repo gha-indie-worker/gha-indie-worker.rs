@@ -1,0 +1,47 @@
+name: admission classifier
+
+on:
+  pull_request:
+    paths:
+      - src/admission.rs
+      - src/main.rs
+      - .github/workflows/admission-classifier.yml
+  push:
+    branches: [main]
+    paths:
+      - src/admission.rs
+      - src/main.rs
+      - .github/workflows/admission-classifier.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: admission-classifier-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          show-progress: false
+          submodules: false
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+          components: rustfmt
+      - name: Check formatting
+        run: rustfmt --edition 2021 --check src/admission.rs
+      - name: Compile and run the dependency-free classifier contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --edition 2021 --test -D warnings src/admission.rs -o "${RUNNER_TEMP}/admission-classifier-tests"
+          "${RUNNER_TEMP}/admission-classifier-tests"
