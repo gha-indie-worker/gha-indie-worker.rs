@@ -17,7 +17,7 @@ public final class Lexer {
         KEYWORDS.put("try", TRY); KEYWORDS.put("catch", CATCH); KEYWORDS.put("finally", FINALLY);
         KEYWORDS.put("end", END); KEYWORDS.put("fi", FI); KEYWORDS.put("if", IF); KEYWORDS.put("do", DO);
         KEYWORDS.put("else", ELSE); KEYWORDS.put("then", THEN); KEYWORDS.put("new", NEW); KEYWORDS.put("done", DONE);
-        KEYWORDS.put("await", AWAIT); KEYWORDS.put("async", ASYNC); KEYWORDS.put("actor", ACTOR); KEYWORDS.put("shared", SHARED); KEYWORDS.put("def", DEF); KEYWORDS.put("fnc", FNC); KEYWORDS.put("routine", ROUTINE);
+        KEYWORDS.put("await", AWAIT); KEYWORDS.put("async", ASYNC); KEYWORDS.put("nlex", NLEX); KEYWORDS.put("actor", ACTOR); KEYWORDS.put("def", DEF); KEYWORDS.put("fnc", FNC); KEYWORDS.put("routine", ROUTINE);
         KEYWORDS.put("for", FOR); KEYWORDS.put("of", OF); KEYWORDS.put("yield", YIELD); KEYWORDS.put("super", SUPER); KEYWORDS.put("elseif", ELSEIF); KEYWORDS.put("switch", SWITCH);
         KEYWORDS.put("type", TYPE); KEYWORDS.put("typeof", TYPEOF); KEYWORDS.put("interface", INTERFACE); KEYWORDS.put("impl", IMPL); KEYWORDS.put("abstract", ABSTRACT);
         KEYWORDS.put("void", VOID); KEYWORDS.put("static", STATIC); KEYWORDS.put("pub", PUB); KEYWORDS.put("private", PRIVATE);
@@ -53,6 +53,7 @@ public final class Lexer {
             case '[' -> add(LBRACKET); case ']' -> add(RBRACKET); case ',' -> add(COMMA); case '.' -> add(DOT);
             case ';' -> add(SEMICOLON); case ':' -> add(COLON); case '?' -> add(QUESTION); case '@' -> add(AT); case '+' -> add(PLUS);
             case '*' -> add(STAR); case '%' -> add(PERCENT); case '|' -> add(PIPE); case '&' -> add(AMP);
+            case '^' -> add(CARET); case '~' -> add(TILDE);
             case '-' -> add(match('>') ? ARROW : MINUS);
             case '!' -> add(match('=') ? BANG_EQUAL : BANG);
             case '=' -> add(match('>') ? FAT_ARROW : match('=') ? EQUAL_EQUAL : EQUAL);
