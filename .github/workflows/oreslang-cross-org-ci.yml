@@ -1,0 +1,33 @@
+name: oreslang-cross-org-ci
+
+on:
+  push:
+    branches:
+      - test/oreslang-lexical-privacy-20261002
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Verify compiler/runtime tests
+        run: mvn -B -ntp verify
+      - name: Run Oreslang examples
+        run: |
+          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/showcase.ores"
+          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/together.ores"
+          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/callables.ores" | tee /tmp/oreslang-callables.out
+          grep -F "120:9:13" /tmp/oreslang-callables.out
