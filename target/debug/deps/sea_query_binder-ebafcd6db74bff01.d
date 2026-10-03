@@ -1,0 +1,10 @@
+/Users/alexandermills/codes/gha-indie-worker/worker-sha-wt/target/debug/deps/sea_query_binder-ebafcd6db74bff01.d: /Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sea-query-binder-0.7.0/src/lib.rs /Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sea-query-binder-0.7.0/src/sqlx_postgres.rs /Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sea-query-binder-0.7.0/src/values.rs /Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sea-query-binder-0.7.0/src/sqlx.rs
+
+/Users/alexandermills/codes/gha-indie-worker/worker-sha-wt/target/debug/deps/libsea_query_binder-ebafcd6db74bff01.rlib: /Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sea-query-binder-0.7.0/src/lib.rs /Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sea-query-binder-0.7.0/src/sqlx_postgres.rs /Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sea-query-binder-0.7.0/src/values.rs /Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sea-query-binder-0.7.0/src/sqlx.rs
+
+/Users/alexandermills/codes/gha-indie-worker/worker-sha-wt/target/debug/deps/libsea_query_binder-ebafcd6db74bff01.rmeta: /Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sea-query-binder-0.7.0/src/lib.rs /Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sea-query-binder-0.7.0/src/sqlx_postgres.rs /Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sea-query-binder-0.7.0/src/values.rs /Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sea-query-binder-0.7.0/src/sqlx.rs
+
+/Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sea-query-binder-0.7.0/src/lib.rs:
+/Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sea-query-binder-0.7.0/src/sqlx_postgres.rs:
+/Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sea-query-binder-0.7.0/src/values.rs:
+/Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sea-query-binder-0.7.0/src/sqlx.rs:

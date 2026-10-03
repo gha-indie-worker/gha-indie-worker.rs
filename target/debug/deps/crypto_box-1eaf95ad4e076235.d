@@ -1,0 +1,10 @@
+/Users/alexandermills/codes/gha-indie-worker/worker-sha-wt/target/debug/deps/crypto_box-1eaf95ad4e076235.d: /Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crypto_box-0.9.1/src/lib.rs /Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crypto_box-0.9.1/src/public_key.rs /Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crypto_box-0.9.1/src/secret_key.rs /Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crypto_box-0.9.1/src/../README.md
+
+/Users/alexandermills/codes/gha-indie-worker/worker-sha-wt/target/debug/deps/libcrypto_box-1eaf95ad4e076235.rlib: /Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crypto_box-0.9.1/src/lib.rs /Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crypto_box-0.9.1/src/public_key.rs /Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crypto_box-0.9.1/src/secret_key.rs /Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crypto_box-0.9.1/src/../README.md
+
+/Users/alexandermills/codes/gha-indie-worker/worker-sha-wt/target/debug/deps/libcrypto_box-1eaf95ad4e076235.rmeta: /Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crypto_box-0.9.1/src/lib.rs /Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crypto_box-0.9.1/src/public_key.rs /Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crypto_box-0.9.1/src/secret_key.rs /Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crypto_box-0.9.1/src/../README.md
+
+/Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crypto_box-0.9.1/src/lib.rs:
+/Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crypto_box-0.9.1/src/public_key.rs:
+/Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crypto_box-0.9.1/src/secret_key.rs:
+/Users/alexandermills/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crypto_box-0.9.1/src/../README.md:
