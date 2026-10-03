@@ -2,16 +2,8 @@ name: hosted CI classifier
 
 on:
   pull_request:
-    paths:
-      - src/hosted_ci.rs
-      - src/main.rs
-      - .github/workflows/hosted-ci-classifier.yml
   push:
     branches: [main]
-    paths:
-      - src/hosted_ci.rs
-      - src/main.rs
-      - .github/workflows/hosted-ci-classifier.yml
   workflow_dispatch:
 
 permissions:
