@@ -1,0 +1,2 @@
+service_name = "litegraph-node"
+json_stdio = true
