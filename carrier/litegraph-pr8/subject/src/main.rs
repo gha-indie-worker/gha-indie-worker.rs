@@ -364,14 +364,18 @@ async fn invoke(
         .await;
 
     match result {
-        Ok(response) => {
+        Ok(mut response) => {
             let mut out_headers = HeaderMap::new();
             out_headers.insert("x-litegraph-queue-depth", HeaderValue::from_static("0"));
             out_headers.insert(
                 "x-litegraph-execution",
                 HeaderValue::from_static(service.mode()),
             );
-            (out_headers, Bytes::from(response.payload)).into_response()
+            // InvocationResponse zeroizes any payload it still owns on Drop.
+            // Transfer the allocation once into the HTTP body instead of cloning
+            // tenant output and leaving an extra sensitive copy in memory.
+            let payload = std::mem::take(&mut response.payload);
+            (out_headers, Bytes::from(payload)).into_response()
         }
         Err(error) => runtime_error_response(error),
     }
