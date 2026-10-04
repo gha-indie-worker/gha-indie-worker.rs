@@ -1,0 +1,14 @@
+[package]
+name = "litegraph-node"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+async-trait = "0.1"
+axum = "0.8"
+litegraph-gpu-host = { git = "https://github.com/litegraph/litegraph-gpu-host", rev = "9154bc3d3cbf62109fcd354256fd800b33198ebc" }
+litegraph-modeld = { git = "https://github.com/litegraph/litegraph-modeld", rev = "07dc685521cb1edaf36abea85491c7e9a2a00fb5" }
+litegraph-runtime = { git = "https://github.com/litegraph/litegraph-runtime", rev = "f16c6e95bcc66c84bcbb49a524ee3fbd7087fdcd" }
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }

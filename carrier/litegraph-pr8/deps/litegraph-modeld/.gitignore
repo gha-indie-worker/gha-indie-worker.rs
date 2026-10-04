@@ -1,0 +1,7 @@
+/target
+Cargo.lock
+
+# Fleet-local scratch/worktrees and agent-policy link
+.ores/
+tmp/
+temp/

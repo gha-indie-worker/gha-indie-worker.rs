@@ -1,0 +1,2 @@
+service_name = "litegraph-modeld"
+json_stdio = true
