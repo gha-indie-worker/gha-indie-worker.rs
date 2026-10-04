@@ -1,5 +1,5 @@
 # sha1	carrier_path
-# subject litegraph/litegraph-node@a59cf016f14734c00f611dd74f11d46a34667be2
+# subject litegraph/litegraph-node@c0e15e417aef82d65b93c14f9382654e53b5d396
 579f17551720a7939d424a850b1040dff11ead1e	carrier/litegraph-pr8/subject/.github/workflows/ci.yml
 3e2da82cbd670fb822ae3c29eae4267e5102dce0	carrier/litegraph-pr8/subject/.gitignore
 1d0f260dff82cea02fe7a3ea599fc1e9a56d095e	carrier/litegraph-pr8/subject/.ores-otel.toml
@@ -8,7 +8,7 @@ cd118fae4450f9b4eb1718221aae06c440bde48c	carrier/litegraph-pr8/subject/Cargo.tom
 4e8258923778444726758c07b0ebad17e7741558	carrier/litegraph-pr8/subject/README.md
 c3f67b6771b777215340531caf051bc25cef066c	carrier/litegraph-pr8/subject/rust-toolchain.toml
 0018991e7122982d749de93e7253b7ea2e28d955	carrier/litegraph-pr8/subject/src/lib.rs
-9d7266d645c0f91d746217cdea32f4dc3fda1604	carrier/litegraph-pr8/subject/src/main.rs
+851b112bd5d3a741b1b5c3a421aef55d34c89d88	carrier/litegraph-pr8/subject/src/main.rs
 # gpu-host 9154bc3d3cbf62109fcd354256fd800b33198ebc
 93b16988f069bdc6f6bebf96018e27ea52cb16cd	carrier/litegraph-pr8/deps/litegraph-gpu-host/.github/workflows/ci.yml
 3e2da82cbd670fb822ae3c29eae4267e5102dce0	carrier/litegraph-pr8/deps/litegraph-gpu-host/.gitignore
