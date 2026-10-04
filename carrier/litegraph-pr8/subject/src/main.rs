@@ -398,18 +398,18 @@ fn runtime_error_parts(error: &RuntimeError) -> (StatusCode, &'static str) {
         RuntimeError::InvalidCapability(_) => (StatusCode::BAD_REQUEST, "invalid capability"),
         RuntimeError::DeadlineExceeded => (StatusCode::GATEWAY_TIMEOUT, "deadline exceeded"),
         RuntimeError::Cancelled => (StatusCode::REQUEST_TIMEOUT, "request cancelled"),
-        RuntimeError::Accelerator(_) => {
-            (StatusCode::BAD_GATEWAY, "accelerator execution failed")
-        }
+        RuntimeError::Accelerator(_) => (StatusCode::BAD_GATEWAY, "accelerator execution failed"),
         RuntimeError::ResponseTooLarge { .. } => {
             (StatusCode::INTERNAL_SERVER_ERROR, "response too large")
         }
-        RuntimeError::CapabilityLimitExceeded => {
-            (StatusCode::INTERNAL_SERVER_ERROR, "capability limit exceeded")
-        }
-        RuntimeError::CapabilityMemoryExceeded => {
-            (StatusCode::INTERNAL_SERVER_ERROR, "capability memory limit exceeded")
-        }
+        RuntimeError::CapabilityLimitExceeded => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "capability limit exceeded",
+        ),
+        RuntimeError::CapabilityMemoryExceeded => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "capability memory limit exceeded",
+        ),
         RuntimeError::Guest(_) => (StatusCode::INTERNAL_SERVER_ERROR, "guest execution failed"),
     }
 }
