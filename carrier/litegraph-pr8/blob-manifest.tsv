@@ -8,7 +8,7 @@ cd118fae4450f9b4eb1718221aae06c440bde48c	carrier/litegraph-pr8/subject/Cargo.tom
 4e8258923778444726758c07b0ebad17e7741558	carrier/litegraph-pr8/subject/README.md
 c3f67b6771b777215340531caf051bc25cef066c	carrier/litegraph-pr8/subject/rust-toolchain.toml
 0018991e7122982d749de93e7253b7ea2e28d955	carrier/litegraph-pr8/subject/src/lib.rs
-cf89b9dca69963a7c751a20f4bbfdf7238f92cff	carrier/litegraph-pr8/subject/src/main.rs
+9d7266d645c0f91d746217cdea32f4dc3fda1604	carrier/litegraph-pr8/subject/src/main.rs
 # gpu-host 9154bc3d3cbf62109fcd354256fd800b33198ebc
 93b16988f069bdc6f6bebf96018e27ea52cb16cd	carrier/litegraph-pr8/deps/litegraph-gpu-host/.github/workflows/ci.yml
 3e2da82cbd670fb822ae3c29eae4267e5102dce0	carrier/litegraph-pr8/deps/litegraph-gpu-host/.gitignore
