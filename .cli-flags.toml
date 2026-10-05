@@ -1,0 +1,45 @@
+[help]
+url = "https://github.com/ores-zen/ores-zen-docs"
+columns = ["options", "env", "type", "default", "description"]
+
+[env]
+load = false
+
+[parse]
+allow_unknown = false
+stop_at_first_positional = false
+
+[flags.listen_addr]
+env = "ORES_ZEN_LISTEN_ADDR"
+aliases = ["listen-addr"]
+type = "string"
+default = "0.0.0.0:8080"
+help = "TCP listen address for the private API server."
+
+[flags.max_body_bytes]
+env = "ORES_ZEN_MAX_BODY_BYTES"
+aliases = ["max-body-bytes"]
+type = "integer"
+default = 1048576
+help = "Maximum accepted webhook request body size in bytes."
+
+[flags.ingress_replay_window_seconds]
+env = "ORES_ZEN_INGRESS_REPLAY_WINDOW_SECONDS"
+aliases = ["ingress-replay-window-seconds"]
+type = "integer"
+default = 90
+help = "Maximum edge-to-API HMAC timestamp skew."
+
+[flags.database_max_connections]
+env = "ORES_ZEN_DATABASE_MAX_CONNECTIONS"
+aliases = ["database-max-connections"]
+type = "integer"
+default = 10
+help = "Maximum Postgres connections used by the API process."
+
+[flags.database_acquire_timeout_seconds]
+env = "ORES_ZEN_DATABASE_ACQUIRE_TIMEOUT_SECONDS"
+aliases = ["database-acquire-timeout-seconds"]
+type = "integer"
+default = 5
+help = "Postgres pool acquisition timeout in seconds."

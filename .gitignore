@@ -1,0 +1,11 @@
+/target/
+/.ores/
+/.env
+/.env.*
+!/env/enc/*.env.enc
+/env/dec/
+*.pem
+*.key
+*.p12
+*.pfx
+.DS_Store
