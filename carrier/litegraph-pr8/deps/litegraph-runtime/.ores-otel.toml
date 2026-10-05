@@ -1,0 +1,2 @@
+service_name = "litegraph-runtime"
+json_stdio = true

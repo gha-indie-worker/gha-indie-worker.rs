@@ -1,0 +1,43 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: verify immutable sibling pins
+        run: |
+          test "$(grep -c 'git = \"https://github.com/litegraph/' Cargo.toml)" -eq 3
+          test "$(grep -c 'rev = \"[0-9a-f]\{40\}\"' Cargo.toml)" -eq 3
+      - name: require private dependency token
+        env:
+          LITEGRAPH_REPO_READ_TOKEN: ${{ secrets.LITEGRAPH_REPO_READ_TOKEN }}
+        run: test -n "${LITEGRAPH_REPO_READ_TOKEN}"
+      - name: configure private dependency access
+        env:
+          LITEGRAPH_REPO_READ_TOKEN: ${{ secrets.LITEGRAPH_REPO_READ_TOKEN }}
+        run: git config --global url."https://x-access-token:${LITEGRAPH_REPO_READ_TOKEN}@github.com/".insteadOf "https://github.com/"
+      - run: rustc --version && cargo --version
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo test --all-features
+      - name: remove private dependency credentials
+        if: always()
+        env:
+          LITEGRAPH_REPO_READ_TOKEN: ${{ secrets.LITEGRAPH_REPO_READ_TOKEN }}
+        run: git config --global --unset-all url."https://x-access-token:${LITEGRAPH_REPO_READ_TOKEN}@github.com/".insteadOf || true

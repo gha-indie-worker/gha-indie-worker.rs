@@ -1,0 +1,38 @@
+# sha1	carrier_path
+# subject litegraph/litegraph-node@c0e15e417aef82d65b93c14f9382654e53b5d396
+579f17551720a7939d424a850b1040dff11ead1e	carrier/litegraph-pr8/subject/.github/workflows/ci.yml
+3e2da82cbd670fb822ae3c29eae4267e5102dce0	carrier/litegraph-pr8/subject/.gitignore
+1d0f260dff82cea02fe7a3ea599fc1e9a56d095e	carrier/litegraph-pr8/subject/.ores-otel.toml
+a347a3619a0bc02e3efa498a2ba05123de4c65dc	carrier/litegraph-pr8/subject/AGENTS.md
+cd118fae4450f9b4eb1718221aae06c440bde48c	carrier/litegraph-pr8/subject/Cargo.toml
+4e8258923778444726758c07b0ebad17e7741558	carrier/litegraph-pr8/subject/README.md
+c3f67b6771b777215340531caf051bc25cef066c	carrier/litegraph-pr8/subject/rust-toolchain.toml
+0018991e7122982d749de93e7253b7ea2e28d955	carrier/litegraph-pr8/subject/src/lib.rs
+851b112bd5d3a741b1b5c3a421aef55d34c89d88	carrier/litegraph-pr8/subject/src/main.rs
+# gpu-host 9154bc3d3cbf62109fcd354256fd800b33198ebc
+93b16988f069bdc6f6bebf96018e27ea52cb16cd	carrier/litegraph-pr8/deps/litegraph-gpu-host/.github/workflows/ci.yml
+3e2da82cbd670fb822ae3c29eae4267e5102dce0	carrier/litegraph-pr8/deps/litegraph-gpu-host/.gitignore
+bcb64fe397fb4bbe06a3629a2a4dbd8b18ed3f25	carrier/litegraph-pr8/deps/litegraph-gpu-host/.ores-otel.toml
+e4940cf9d47f61d4e2a6a0378c64ab098012b822	carrier/litegraph-pr8/deps/litegraph-gpu-host/AGENTS.md
+e56cc0da32b040f03bd4eb27c35e94d8ed894e58	carrier/litegraph-pr8/deps/litegraph-gpu-host/Cargo.toml
+88899ba0c76cf2902fd1261509de21fcc41af624	carrier/litegraph-pr8/deps/litegraph-gpu-host/README.md
+e63004962e17190630f40b06399238fcb1bb5517	carrier/litegraph-pr8/deps/litegraph-gpu-host/rust-toolchain.toml
+6a64310d4f57cd3fbd212a7a5f8dd583490bf980	carrier/litegraph-pr8/deps/litegraph-gpu-host/src/lib.rs
+# modeld 07dc685521cb1edaf36abea85491c7e9a2a00fb5
+93b16988f069bdc6f6bebf96018e27ea52cb16cd	carrier/litegraph-pr8/deps/litegraph-modeld/.github/workflows/ci.yml
+3e2da82cbd670fb822ae3c29eae4267e5102dce0	carrier/litegraph-pr8/deps/litegraph-modeld/.gitignore
+ddb473883498c51b780b791ef25c3da0391a547f	carrier/litegraph-pr8/deps/litegraph-modeld/.ores-otel.toml
+a347a3619a0bc02e3efa498a2ba05123de4c65dc	carrier/litegraph-pr8/deps/litegraph-modeld/AGENTS.md
+ba54e64ff5b6deeade11821375f2f734c30f5b99	carrier/litegraph-pr8/deps/litegraph-modeld/Cargo.toml
+9c0c9dd93da475348c792778a36f88997670d334	carrier/litegraph-pr8/deps/litegraph-modeld/README.md
+e63004962e17190630f40b06399238fcb1bb5517	carrier/litegraph-pr8/deps/litegraph-modeld/rust-toolchain.toml
+d1b0413ee7e3cb7c4789fb000bc8631f40f0b271	carrier/litegraph-pr8/deps/litegraph-modeld/src/lib.rs
+# runtime f16c6e95bcc66c84bcbb49a524ee3fbd7087fdcd
+93b16988f069bdc6f6bebf96018e27ea52cb16cd	carrier/litegraph-pr8/deps/litegraph-runtime/.github/workflows/ci.yml
+3e2da82cbd670fb822ae3c29eae4267e5102dce0	carrier/litegraph-pr8/deps/litegraph-runtime/.gitignore
+08eeb9d5a874528d885d5323ea51d4d45094f761	carrier/litegraph-pr8/deps/litegraph-runtime/.ores-otel.toml
+a347a3619a0bc02e3efa498a2ba05123de4c65dc	carrier/litegraph-pr8/deps/litegraph-runtime/AGENTS.md
+030e89d206500c13d3cfa047acaa574370c04a26	carrier/litegraph-pr8/deps/litegraph-runtime/Cargo.toml
+e5b018231dceb197a0db56988ac6e7f907620f77	carrier/litegraph-pr8/deps/litegraph-runtime/README.md
+e63004962e17190630f40b06399238fcb1bb5517	carrier/litegraph-pr8/deps/litegraph-runtime/rust-toolchain.toml
+c6919721b913c542e2e5611697a4b25df5f05d5b	carrier/litegraph-pr8/deps/litegraph-runtime/src/lib.rs
