@@ -14,6 +14,24 @@ import static org.junit.jupiter.api.Assertions.*;
 final class OwnershipAndClosureTest {
 
     @Test
+    void canonicalTupleDestructurePreservesPerSlotCopyOwnership() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc pair(): Tuple[string, int] {
+                  return ("copy-me", 5);
+                }
+
+                pub fnc main(): void {
+                  const (text, number) = pair();
+                  stdio.println(text);
+                  stdio.println(text);
+                  val total: int = number + number;
+                  stdio.println(total);
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void lexicalClosureEscapesAndRetainsMutableCapturedState() throws Exception {
         String output = run("""
                 fnc makeCounter(): (() => int) {

@@ -172,7 +172,9 @@ public final class OwnershipChecker {
             for (int i = 0; i < destructure.bindings().size(); i++) {
                 Ast.DestructureBinding binding = destructure.bindings().get(i);
                 if (binding.isDiscard()) continue;
-                Ast.TypeRef bindingType = destructureBindingType(destructure, source.type, i, binding.name());
+                Ast.TypeRef bindingType = binding.declaredType() != null
+                        ? binding.declaredType()
+                        : destructureBindingType(destructure, source.type, i, binding.name());
                 ValueKind bindingKind = bindingType.name().equals("$infer$")
                         ? (source.kind == ValueKind.COPY ? ValueKind.COPY : ValueKind.MOVE_ONLY)
                         : kindOfType(bindingType);
@@ -410,7 +412,9 @@ public final class OwnershipChecker {
             for (int i = 0; i < loop.bindings().size(); i++) {
                 Ast.DestructureBinding binding = loop.bindings().get(i);
                 if (binding.isDiscard()) continue;
-                Ast.TypeRef bindingType = sequenceDestructureBindingType(elementType, i, binding.rest());
+                Ast.TypeRef bindingType = binding.declaredType() != null
+                        ? binding.declaredType()
+                        : sequenceDestructureBindingType(elementType, i, binding.rest());
                 loopScope.define(binding.name(), new VarState(
                         bindingType,
                         binding.kind() == Ast.BindingKind.LET,
@@ -2057,9 +2061,10 @@ public final class OwnershipChecker {
                 || concrete.name().equals("DynamicStruct")) && concrete.arguments().size() == 1) {
             return concrete.arguments().getFirst();
         }
-        if (concrete.isTupleType() && !concrete.arguments().isEmpty()) {
-            Ast.TypeRef first = concrete.arguments().getFirst();
-            boolean same = concrete.arguments().stream().allMatch(first::equals);
+        List<Ast.TypeRef> tupleElements = tupleElements(concrete);
+        if (tupleElements != null && !tupleElements.isEmpty()) {
+            Ast.TypeRef first = tupleElements.getFirst();
+            boolean same = tupleElements.stream().allMatch(first::equals);
             return same ? first : Ast.TypeRef.inferred();
         }
         return Ast.TypeRef.inferred();
@@ -2084,12 +2089,13 @@ public final class OwnershipChecker {
             return sequenceDestructureBindingType(iterableShape, index, rest);
         }
 
-        if (concrete.isTupleType()) {
+        List<Ast.TypeRef> tupleElements = tupleElements(concrete);
+        if (tupleElements != null) {
             if (rest) {
-                if (index > concrete.arguments().size()) return Ast.TypeRef.inferred();
-                return Ast.TypeRef.tupleType(concrete.arguments().subList(index, concrete.arguments().size()));
+                if (index > tupleElements.size()) return Ast.TypeRef.inferred();
+                return Ast.TypeRef.tupleType(tupleElements.subList(index, tupleElements.size()));
             }
-            if (index < concrete.arguments().size()) return concrete.arguments().get(index);
+            if (index < tupleElements.size()) return tupleElements.get(index);
             return Ast.TypeRef.inferred();
         }
 
@@ -2113,7 +2119,7 @@ public final class OwnershipChecker {
                 iterator.method().returnType(),
                 genericBindings(iterator.owner().genericParameters(), iterator.ownerType().arguments()));
         if (result == null) return Ast.TypeRef.inferred();
-        if (result.isTupleType()) return result;
+        if (tupleElements(result) != null) return result;
         if ((result.name().equals("Array") || result.name().equals("List"))
                 && result.arguments().size() == 1) {
             return result;
@@ -2239,9 +2245,44 @@ public final class OwnershipChecker {
         return isCopyType(type) ? ValueKind.COPY : ValueKind.MOVE_ONLY;
     }
 
+    /**
+     * Normalize both legacy finite tuple types ([T1, T2]) and canonical
+     * Tuple[...] sequence shapes to positional elements for ownership analysis.
+     * Unbounded repetitions intentionally return null until a finite size can
+     * be proven from metadata.
+     */
+    private List<Ast.TypeRef> tupleElements(Ast.TypeRef type) {
+        if (type == null) return null;
+        Ast.TypeRef concrete = type.isBorrow() ? type.borrowedTarget() : type;
+        if (concrete.isTupleType()) return concrete.arguments();
+        if (!concrete.name().equals("Tuple")) return null;
+
+        Ast.TypeRef shape = concrete.arguments().stream()
+                .filter(Ast.TypeRef::isSequenceShape)
+                .findFirst()
+                .orElse(null);
+        if (shape == null) return null;
+
+        List<Ast.TypeRef> elements = new ArrayList<>();
+        for (Ast.TypeRef pattern : shape.arguments()) {
+            if (pattern.isRepeatMany()) return null;
+            if (pattern.isRepeatExact()) {
+                long count = pattern.repeatExactCount();
+                if (count > 1_000_000L) return null;
+                Ast.TypeRef repeated = pattern.arguments().getFirst();
+                for (long i = 0; i < count; i++) elements.add(repeated);
+            } else {
+                elements.add(pattern);
+            }
+        }
+        return List.copyOf(elements);
+    }
+
     private boolean isCopyType(Ast.TypeRef type) {
         if (type == null || type.isBorrow()) return false;
         if (type.isUnion()) return type.arguments().stream().allMatch(this::isCopyType);
+        List<Ast.TypeRef> tupleElements = tupleElements(type);
+        if (tupleElements != null) return tupleElements.stream().allMatch(this::isCopyType);
         return switch (type.name()) {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",

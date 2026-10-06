@@ -3655,6 +3655,12 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.NewExpr created,
                 List<Object> args,
                 Env env) {
+            if (created.type().name().equals("Tuple")) {
+                if (args.isEmpty()) {
+                    throw new IllegalArgumentException("new Tuple(...) requires at least one element");
+                }
+                return List.copyOf(args);
+            }
             if (created.type().name().equals("DynamicStruct")) {
                 if (!args.isEmpty()) {
                     throw new IllegalArgumentException(

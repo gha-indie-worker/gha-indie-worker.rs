@@ -1125,6 +1125,7 @@ public final class TreeShaker {
                 } else if (statement instanceof Ast.DestructureStmt destructure) {
                     scanExpression(module, destructure.initializer(), locals);
                     for (Ast.DestructureBinding binding : destructure.bindings()) {
+                        scanType(binding.declaredType());
                         if (!binding.isDiscard()) locals.add(binding.name());
                     }
                 } else if (statement instanceof Ast.ReturnStmt returned) {
@@ -1182,6 +1183,7 @@ public final class TreeShaker {
                     scanExpression(module, loop.iterable(), locals);
                     LinkedHashSet<String> bodyLocals = new LinkedHashSet<>(locals);
                     for (Ast.DestructureBinding binding : loop.bindings()) {
+                        scanType(binding.declaredType());
                         if (!binding.isDiscard()) bodyLocals.add(binding.name());
                     }
                     scanStatements(module, loop.body(), bodyLocals);
