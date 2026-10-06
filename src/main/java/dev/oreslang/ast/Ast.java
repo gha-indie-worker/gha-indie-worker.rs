@@ -665,7 +665,7 @@ public final class Ast {
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
-            CallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ChannelOpExpr, DynamicSelectExpr,
+            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
@@ -707,6 +707,16 @@ public final class Ast {
         }
         public CallExpr(Expr callee, List<TypeRef> typeArguments, List<Expr> arguments) {
             this(callee, typeArguments, true, arguments);
+        }
+    }
+
+    /** Compiler-owned runtime namespace operation. The rt prefix cannot be rebound or shadowed. */
+    public record RuntimeCallExpr(String operation, List<Expr> arguments) implements Expr {
+        public RuntimeCallExpr {
+            if (operation == null || operation.isBlank()) {
+                throw new IllegalArgumentException("runtime operation cannot be blank");
+            }
+            arguments = List.copyOf(arguments);
         }
     }
 
@@ -811,6 +821,10 @@ public final class Ast {
         public LambdaExpr {
             parameters = List.copyOf(parameters);
             blockBody = blockBody == null ? null : List.copyOf(blockBody);
+            if ((expressionBody == null) == (blockBody == null)) {
+                throw new IllegalArgumentException(
+                        "lambda requires exactly one expression body or block body");
+            }
         }
         public LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody) {
             this(parameters, expressionBody, blockBody, false);

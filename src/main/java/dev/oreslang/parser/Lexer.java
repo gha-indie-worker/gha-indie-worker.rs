@@ -17,7 +17,7 @@ public final class Lexer {
         KEYWORDS.put("try", TRY); KEYWORDS.put("catch", CATCH); KEYWORDS.put("finally", FINALLY);
         KEYWORDS.put("end", END); KEYWORDS.put("fi", FI); KEYWORDS.put("if", IF); KEYWORDS.put("do", DO);
         KEYWORDS.put("else", ELSE); KEYWORDS.put("then", THEN); KEYWORDS.put("new", NEW); KEYWORDS.put("stop", STOP); KEYWORDS.put("done", DONE);
-        KEYWORDS.put("await", AWAIT); KEYWORDS.put("async", ASYNC); KEYWORDS.put("generator", GENERATOR); KEYWORDS.put("nlex", NLEX); KEYWORDS.put("trap", TRAP); KEYWORDS.put("actor", ACTOR); KEYWORDS.put("isoactor", ISOACTOR); KEYWORDS.put("def", DEF); KEYWORDS.put("fnc", FNC); KEYWORDS.put("routine", ROUTINE);
+        KEYWORDS.put("await", AWAIT); KEYWORDS.put("rt", RT); KEYWORDS.put("async", ASYNC); KEYWORDS.put("generator", GENERATOR); KEYWORDS.put("nlex", NLEX); KEYWORDS.put("trap", TRAP); KEYWORDS.put("actor", ACTOR); KEYWORDS.put("isoactor", ISOACTOR); KEYWORDS.put("def", DEF); KEYWORDS.put("fnc", FNC); KEYWORDS.put("routine", ROUTINE);
         KEYWORDS.put("for", FOR); KEYWORDS.put("of", OF); KEYWORDS.put("loop", LOOP); KEYWORDS.put("block", BLOCK); KEYWORDS.put("break", BREAK); KEYWORDS.put("continue", CONTINUE); KEYWORDS.put("yield", YIELD); KEYWORDS.put("super", SUPER); KEYWORDS.put("elseif", ELSEIF); KEYWORDS.put("elif", ELSEIF); KEYWORDS.put("switch", SWITCH); KEYWORDS.put("match", MATCH); KEYWORDS.put("matches", MATCHES); KEYWORDS.put("is", IS); KEYWORDS.put("when", WHEN); KEYWORDS.put("case", CASE); KEYWORDS.put("default", DEFAULT);
         KEYWORDS.put("eq", EQ); KEYWORDS.put("neq", NEQ);
         KEYWORDS.put("nb", NB); KEYWORDS.put("select", SELECT); KEYWORDS.put("readch", READCH); KEYWORDS.put("writech", WRITECH);

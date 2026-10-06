@@ -767,7 +767,7 @@ public final class Parser {
         if (type == null && initializer == null) {
             throw error(previous(), "inferred field '" + name + "' requires an initializer");
         }
-        consumeStatementTerminator("field declaration should end with ';'");
+        consumeExpressionStatementTerminator(initializer, "field declaration should end with ';'");
         if (type != null) type = applyTypeMetadataAnnotations(type, annotations, false);
         return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer);
     }
@@ -780,7 +780,7 @@ public final class Parser {
         Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
         Ast.BindingKind kind = hasAnnotation(annotations, "FromJson") ? Ast.BindingKind.LET : Ast.BindingKind.VAL;
         type = applyTypeMetadataAnnotations(type, annotations, false);
-        consumeClassFieldTerminator("field declaration should end with ';'");
+        consumeExpressionClassFieldTerminator(initializer, "field declaration should end with ';'");
         return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer);
     }
 
@@ -797,7 +797,7 @@ public final class Parser {
         if (type != null) type = applyTypeMetadataAnnotations(type, annotations, false);
         consume(EQUAL, "module bindings require an initializer");
         Ast.Expr initializer = parseExpression();
-        consumeStatementTerminator("module binding should end with ';'");
+        consumeExpressionStatementTerminator(initializer, "module binding should end with ';'");
         return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer);
     }
 
@@ -1422,18 +1422,18 @@ public final class Parser {
         if (check(LBRACE) && looksLikeDestructure()) return parseDestructure(Ast.DestructureKind.OBJECT, null);
         if (match(RETURN)) {
             Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary() ? null : parseExpression();
-            consumeStatementTerminator("return statement should end with ';'");
+            consumeExpressionStatementTerminator(value, "return statement should end with ';'");
             return new Ast.ReturnStmt(value);
         }
         if (match(YIELD)) {
             if (check(SEMICOLON) || isSafeStatementBoundary()) throw error(previous(), "yield requires a value");
             Ast.Expr value = parseExpression();
-            consumeStatementTerminator("yield statement should end with ';'");
+            consumeExpressionStatementTerminator(value, "yield statement should end with ';'");
             return new Ast.YieldStmt(value);
         }
         if (match(DEFER)) {
             Ast.Expr expression = parseExpression();
-            consumeStatementTerminator("defer statement should end with ';'");
+            consumeExpressionStatementTerminator(expression, "defer statement should end with ';'");
             return new Ast.DeferStmt(expression);
         }
         if (check(BLOCK) && checkNext(LBRACE)) {
@@ -1462,7 +1462,7 @@ public final class Parser {
         }
 
         Ast.Expr expression = parseExpression();
-        consumeStatementTerminator("expression statement should end with ';'");
+        consumeExpressionStatementTerminator(expression, "expression statement should end with ';'");
         return new Ast.ExprStmt(expression);
     }
 
@@ -1913,7 +1913,7 @@ public final class Parser {
         }
         consume(EQUAL, "binding requires initializer");
         Ast.Expr initializer = parseExpression();
-        consumeStatementTerminator("binding should end with ';'");
+        consumeExpressionStatementTerminator(initializer, "binding should end with ';'");
         return new Ast.BindingStmt(kind, type, name, initializer);
     }
 
@@ -2033,7 +2033,7 @@ public final class Parser {
         consume(close, kind == Ast.DestructureKind.SEQUENCE ? "expected ']'" : "expected '}'");
         consume(EQUAL, "expected '=' after destructure pattern");
         Ast.Expr initializer = parseExpression();
-        consumeStatementTerminator("destructure should end with ';'");
+        consumeExpressionStatementTerminator(initializer, "destructure should end with ';'");
         return new Ast.DestructureStmt(kind, bindings, initializer);
     }
 
@@ -2436,6 +2436,7 @@ public final class Parser {
             return new Ast.UnaryExpr(mutable ? "&mut" : "&", parseUnary());
         }
         if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
+        if (match(RT)) return parseRuntimeExpression();
 
         if (match(NB)) {
             if (match(CB)) {
@@ -2478,6 +2479,27 @@ public final class Parser {
         if (match(SELECT)) return parseDynamicSelect(Ast.WaitMode.BLOCKING);
 
         return parsePostfix();
+    }
+
+    private Ast.Expr parseRuntimeExpression() {
+        Token operation = consume(IDENT, "expected runtime operation after 'rt'");
+        String name = operation.lexeme();
+        if (!name.equals("copy") && !name.equals("take")
+                && !name.equals("borrow") && !name.equals("share")) {
+            throw error(operation,
+                    "unknown rt operation '" + name
+                            + "'; supported ownership operations are copy, take, borrow, and share");
+        }
+
+        Ast.Expr argument;
+        if (match(LPAREN)) {
+            argument = parseExpression();
+            consume(RPAREN, "expected ')' after rt " + name + " argument");
+        } else {
+            // Command form has unary precedence: rt borrow value.member
+            argument = parseUnary();
+        }
+        return new Ast.RuntimeCallExpr(name, List.of(argument));
     }
 
     private Ast.Expr parseChannelOperation(
@@ -2740,8 +2762,7 @@ public final class Parser {
         List<Ast.Param> params = parseParametersUntil(RPAREN);
         consume(RPAREN, "expected ')' after lambda parameters");
         consume(ARROW, "expected '->' after lambda parameters");
-        if (!check(LBRACE)) throw error(peek(), "lambdas always require a block body; use '-> { ... }'");
-        return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical);
+        return parseLambdaBody(params, nonLexical);
     }
 
     private Ast.LambdaExpr parsePipeLambda(boolean nonLexical) {
@@ -2762,8 +2783,18 @@ public final class Parser {
         }
         consume(PIPE, "expected closing '|' after lambda parameters");
         consume(ARROW, "lambdas use the slim arrow '->'");
-        if (!check(LBRACE)) throw error(peek(), "lambdas always require a block body; use '|args| -> { ... }'");
-        return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical);
+        return parseLambdaBody(params, nonLexical);
+    }
+
+    private Ast.LambdaExpr parseLambdaBody(List<Ast.Param> params, boolean nonLexical) {
+        // Only an immediate '{' denotes the statement-block form. Everything
+        // else starts a normal expression body. This is intentionally lexical:
+        // future prefix expressions such as `struct{...}{...}` must remain
+        // expression bodies rather than being confused with a lambda block.
+        if (check(LBRACE)) {
+            return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical);
+        }
+        return new Ast.LambdaExpr(params, parseExpression(), null, nonLexical);
     }
 
     private boolean looksLikeLambda() {
@@ -2851,6 +2882,94 @@ public final class Parser {
                 throw error(previous(), "@structural is compile-time callable metadata and is not valid on " + target);
             }
         }
+    }
+
+    private void consumeExpressionStatementTerminator(Ast.Expr expression, String message) {
+        if (containsExpressionBodyLambda(expression)) {
+            consume(SEMICOLON, "expression-bodied lambda statements require an explicit ';'");
+            return;
+        }
+        consumeStatementTerminator(message);
+    }
+
+    private void consumeExpressionClassFieldTerminator(Ast.Expr expression, String message) {
+        if (containsExpressionBodyLambda(expression)) {
+            consume(SEMICOLON, "expression-bodied lambda statements require an explicit ';'");
+            return;
+        }
+        consumeClassFieldTerminator(message);
+    }
+
+    private boolean containsExpressionBodyLambda(Ast.Expr expression) {
+        if (expression == null) return false;
+        if (expression instanceof Ast.LambdaExpr lambda) {
+            return lambda.expressionBody() != null;
+        }
+        if (expression instanceof Ast.BinaryExpr binary) {
+            return containsExpressionBodyLambda(binary.left()) || containsExpressionBodyLambda(binary.right());
+        }
+        if (expression instanceof Ast.UnaryExpr unary) {
+            return containsExpressionBodyLambda(unary.operand());
+        }
+        if (expression instanceof Ast.AssignExpr assign) {
+            return containsExpressionBodyLambda(assign.target()) || containsExpressionBodyLambda(assign.value());
+        }
+        if (expression instanceof Ast.ConditionalExpr conditional) {
+            return containsExpressionBodyLambda(conditional.condition())
+                    || containsExpressionBodyLambda(conditional.whenTrue())
+                    || containsExpressionBodyLambda(conditional.whenFalse());
+        }
+        if (expression instanceof Ast.TypeTestExpr typeTest) {
+            return containsExpressionBodyLambda(typeTest.value());
+        }
+        if (expression instanceof Ast.PatternTestExpr patternTest) {
+            return containsExpressionBodyLambda(patternTest.value());
+        }
+        if (expression instanceof Ast.CastExpr cast) {
+            return containsExpressionBodyLambda(cast.value());
+        }
+        if (expression instanceof Ast.SpreadExpr spread) {
+            return containsExpressionBodyLambda(spread.expression());
+        }
+        if (expression instanceof Ast.CallExpr call) {
+            if (containsExpressionBodyLambda(call.callee())) return true;
+            return call.arguments().stream().anyMatch(this::containsExpressionBodyLambda);
+        }
+        if (expression instanceof Ast.RuntimeCallExpr runtime) {
+            return runtime.arguments().stream().anyMatch(this::containsExpressionBodyLambda);
+        }
+        if (expression instanceof Ast.MemberExpr member) {
+            return containsExpressionBodyLambda(member.receiver());
+        }
+        if (expression instanceof Ast.IndexExpr index) {
+            return containsExpressionBodyLambda(index.receiver()) || containsExpressionBodyLambda(index.index());
+        }
+        if (expression instanceof Ast.NewExpr created) {
+            return created.arguments().stream().anyMatch(this::containsExpressionBodyLambda);
+        }
+        if (expression instanceof Ast.AwaitExpr awaited) {
+            return containsExpressionBodyLambda(awaited.expression());
+        }
+        if (expression instanceof Ast.ChannelOpExpr channel) {
+            return containsExpressionBodyLambda(channel.channel())
+                    || containsExpressionBodyLambda(channel.value());
+        }
+        if (expression instanceof Ast.DynamicSelectExpr select) {
+            return containsExpressionBodyLambda(select.cases());
+        }
+        if (expression instanceof Ast.ListExpr list) {
+            return list.elements().stream().anyMatch(this::containsExpressionBodyLambda);
+        }
+        if (expression instanceof Ast.TupleExpr tuple) {
+            return tuple.elements().stream().anyMatch(this::containsExpressionBodyLambda);
+        }
+        if (expression instanceof Ast.ObjectExpr object) {
+            for (Ast.ObjectField field : object.fields()) {
+                if (field.isDynamic() && containsExpressionBodyLambda(field.dynamicName())) return true;
+                if (containsExpressionBodyLambda(field.value())) return true;
+            }
+        }
+        return false;
     }
 
     private void consumeStatementTerminator(String message) {

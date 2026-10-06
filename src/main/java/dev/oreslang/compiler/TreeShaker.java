@@ -203,6 +203,9 @@ public final class TreeShaker {
                         || containsLambda(conditional.whenTrue())
                         || containsLambda(conditional.whenFalse());
             }
+            if (expression instanceof Ast.RuntimeCallExpr runtime) {
+                return runtime.arguments().stream().anyMatch(this::containsLambda);
+            }
             if (expression instanceof Ast.CallExpr call) {
                 if (containsLambda(call.callee())) return true;
                 return call.arguments().stream().anyMatch(this::containsLambda);
@@ -301,6 +304,13 @@ public final class TreeShaker {
                         substitute(conditional.condition(), substitutions, shadowed),
                         substitute(conditional.whenTrue(), substitutions, shadowed),
                         substitute(conditional.whenFalse(), substitutions, shadowed));
+            }
+            if (expression instanceof Ast.RuntimeCallExpr runtime) {
+                List<Ast.Expr> arguments = new ArrayList<>();
+                for (Ast.Expr argument : runtime.arguments()) {
+                    arguments.add(substitute(argument, substitutions, shadowed));
+                }
+                return new Ast.RuntimeCallExpr(runtime.operation(), arguments);
             }
             if (expression instanceof Ast.CallExpr call) {
                 List<Ast.Expr> arguments = new ArrayList<>();
@@ -850,6 +860,13 @@ public final class TreeShaker {
                         rewriteExpression(conditional.whenTrue(), module, locals),
                         rewriteExpression(conditional.whenFalse(), module, locals));
             }
+            if (expression instanceof Ast.RuntimeCallExpr runtime) {
+                List<Ast.Expr> arguments = new ArrayList<>();
+                for (Ast.Expr argument : runtime.arguments()) {
+                    arguments.add(rewriteExpression(argument, module, locals));
+                }
+                return new Ast.RuntimeCallExpr(runtime.operation(), arguments);
+            }
             if (expression instanceof Ast.CallExpr call) {
                 Ast.Expr callee = rewriteExpression(call.callee(), module, locals);
                 List<Ast.Expr> arguments = new ArrayList<>();
@@ -1248,6 +1265,8 @@ public final class TreeShaker {
                 scanExpression(module, conditional.condition(), locals);
                 scanExpression(module, conditional.whenTrue(), locals);
                 scanExpression(module, conditional.whenFalse(), locals);
+            } else if (expression instanceof Ast.RuntimeCallExpr runtime) {
+                for (Ast.Expr argument : runtime.arguments()) scanExpression(module, argument, locals);
             } else if (expression instanceof Ast.CallExpr call) {
                 scanExpression(module, call.callee(), locals);
                 for (Ast.TypeRef type : call.typeArguments()) scanType(type);

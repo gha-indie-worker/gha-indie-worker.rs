@@ -10,13 +10,13 @@ This directory documents the executable formal-methods layer for Oreslang runtim
 
 `FormalChannelRendezvousModelCheckTest` models a zero-capacity channel's read/write waiter lifecycle: second-arrival atomic handoff, cancellation withdrawal, and close-time waiter failure.
 
-`FormalBufferedChannelModelCheckTest` exhaustively explores a capacity-two buffer with three distinct messages, proving capacity, FIFO conservation, nonblocking full-buffer rejection, successful retry after a read frees capacity, and one-way close fencing.
+`FormalBufferedChannelModelCheckTest` exhaustively explores a capacity-two buffer with three distinct messages, proving capacity, FIFO conservation, nonblocking full-buffer rejection, successful retry after a read frees capacity, one-way write fencing on close, and FIFO draining of values buffered before close.
 
 `FormalControlPlaneLivenessModelCheckTest` models the ActorGroup Mailman/CONTROL-carrier boundary in both the known blocking design and the required cooperative design. It keeps the blocking model as an executable counterexample oracle: a callback that waits while retaining its carrier strands already-queued CONTROL work. The cooperative model proves that suspension returns the carrier and queues the Mailman continuation behind work that was already ready.
 
 `FormalOwnershipDomainModelCheckTest` exhaustively checks the ownership/provenance algebra across root, SHARED, PRIVATE, and UNTRUSTED contexts for primitive, struct, and class values. It is a refinement target for the in-flight allocator/ownership work rather than a claim that every lowering is already on `main`.
 
-`FormalGarbageCollectorLifecycleModelCheckTest` models explicit cleanup, ReferenceQueue notification consumption, retry after cleanup failure, actor-domain retirement, and best-effort context shutdown.
+`FormalGarbageCollectorLifecycleModelCheckTest` models explicit cleanup, ReferenceQueue notification consumption, retry after cleanup failure, actor-domain retirement, and best-effort context shutdown.\n\n`FormalGcSweepQuantaModelCheckTest` models incremental bounded sweeping with a stable cursor and per-slot cleanup ownership. It proves one sweep quantum claims at most one retired slot, repeated quanta visit every retired slot, cleanup success is terminal, and cleanup failure returns the slot to a retryable state.
 
 `FormalStructuredCancellationModelCheckTest` models a three-level structured actor tree and proves downward-only lifecycle authority, cancellation cascade, bottom-up termination, and atomic whole-subtree force kill.
 
@@ -66,11 +66,11 @@ No additional model-checking dependency is required; the finite-state explorer i
 
 The next models should cover:
 
-- Runtime trace refinement for the buffered-channel capacity/FIFO model across retry-after-full and close behavior.
+- Keep `BufferedChannelRefinementTest` aligned with the buffered-channel model whenever concrete close/backpressure semantics change.
 - Concrete runtime refinement for cooperative proxy-lock acquisition against `FormalProxyLockLivenessModelCheckTest`.
 - Concrete runtime refinement for the cooperative Mailman/CONTROL suspension model tracked in #358.
 - Concrete trace refinement for allocation-domain/ownership lowering once the #309/#328/#329/#332 stack is reconciled onto current `main`.
-- GC refinement for bounded actor-local sweep quanta and concurrent cleanup-slot ownership.
+- Concrete GC runtime refinement for the now-modeled bounded sweep cursor and cleanup-slot ownership.
 - Structured actor failure propagation/restart policy beyond the already-modeled cancellation tree.
 
 For unbounded properties we should add a second tier using an external prover/model checker once its toolchain is pinned reproducibly; this bounded executable layer remains useful as the fast CI gate.

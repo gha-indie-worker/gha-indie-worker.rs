@@ -472,7 +472,19 @@ public final class OwnershipChecker {
         }
 
         ValueInfo value;
-        if (binding.initializer() instanceof Ast.UnaryExpr unary && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
+        if (binding.initializer() instanceof Ast.RuntimeCallExpr runtime
+                && runtime.operation().equals("borrow")) {
+            if (runtime.arguments().size() != 1) {
+                throw error("rt borrow expects exactly one argument");
+            }
+            VarState owner = borrowOwner(runtime.arguments().getFirst(), scope);
+            beginPersistentBorrow(owner, false);
+            value = new ValueInfo(
+                    Ast.TypeRef.borrowed(owner.type, false),
+                    ValueKind.IMM_BORROW,
+                    ownershipRoot(owner));
+        } else if (binding.initializer() instanceof Ast.UnaryExpr unary && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
+            // Legacy compatibility only. Canonical source uses rt borrow.
             boolean mutableBorrow = unary.operator().equals("&mut");
             VarState owner = borrowOwner(unary.operand(), scope);
             beginPersistentBorrow(owner, mutableBorrow);
@@ -538,6 +550,49 @@ public final class OwnershipChecker {
                 return new ValueInfo(Ast.TypeRef.borrowed(owner.type, mutable), mutable ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW, ownershipRoot(owner));
             }
             return checkExpr(unary.operand(), scope, false);
+        }
+        if (expr instanceof Ast.RuntimeCallExpr runtime) {
+            if (runtime.arguments().size() != 1) {
+                throw error("rt " + runtime.operation() + " expects exactly one argument");
+            }
+            Ast.Expr argument = runtime.arguments().getFirst();
+            return switch (runtime.operation()) {
+                case "borrow" -> {
+                    VarState owner = borrowOwner(argument, scope);
+                    validateBorrow(owner, false);
+                    yield new ValueInfo(
+                            Ast.TypeRef.borrowed(owner.type, false),
+                            ValueKind.IMM_BORROW,
+                            ownershipRoot(owner));
+                }
+                case "take" -> {
+                    ValueInfo taken = checkExpr(argument, scope, true);
+                    if (taken.kind == ValueKind.IMM_BORROW || taken.kind == ValueKind.MUT_BORROW
+                            || (taken.type != null && taken.type.isBorrow())) {
+                        throw error("rt take requires owned data; a borrow cannot regain ownership");
+                    }
+                    yield taken;
+                }
+                case "copy" -> {
+                    ValueInfo source = checkExpr(argument, scope, false);
+                    if (source.kind != ValueKind.COPY) {
+                        throw error(
+                                "rt copy of move-only values requires the Symbol.rtCopy copy-contract lowering; "
+                                        + "this current-main convergence patch fails closed instead of aliasing");
+                    }
+                    yield source;
+                }
+                case "share" -> {
+                    ValueInfo source = checkExpr(argument, scope, false);
+                    if (source.kind != ValueKind.COPY) {
+                        throw error(
+                                "rt share of move-only values requires the owning Shared<T> convergence; "
+                                        + "this current-main patch fails closed instead of manufacturing shared mutable aliasing");
+                    }
+                    yield source;
+                }
+                default -> throw error("unknown runtime ownership operation 'rt " + runtime.operation() + "'");
+            };
         }
         if (expr instanceof Ast.AssignExpr assignment) {
             checkAssignmentTarget(assignment.target(), scope);
@@ -991,7 +1046,29 @@ public final class OwnershipChecker {
             }
         }
 
-        checkExpr(call.callee(), scope, false);
+        ValueInfo callee = checkExpr(call.callee(), scope, false);
+        Ast.TypeRef callableType = callee.type;
+        if (callableType != null
+                && !callableType.isBorrow()
+                && (callableType.name().equals("Fnc") || callableType.name().equals("Function"))
+                && !callableType.arguments().isEmpty()) {
+            int parameterCount = callableType.arguments().size() - 1;
+            if (parameterCount == call.arguments().size()) {
+                for (int i = 0; i < call.arguments().size(); i++) {
+                    ValueInfo argument = checkExpr(call.arguments().get(i), scope, false);
+                    if (containsMutexGuardType(argument.type)) {
+                        throw error("guard-bearing values cannot cross a first-class Fnc call boundary");
+                    }
+                    if (argument.kind == ValueKind.MUT_BORROW) {
+                        throw error("ordinary Fnc<T,...> parameters are read-only call borrows; use an explicit mutable callable contract when that surface lands");
+                    }
+                }
+                Ast.TypeRef result = callableType.arguments().getLast();
+                return new ValueInfo(result, kindOfType(result), null);
+            }
+        }
+
+        // Unknown host/dynamic callables remain conservative and consuming.
         for (Ast.Expr arg : call.arguments()) {
             ValueInfo argument = checkExpr(arg, scope, true);
             if (containsMutexGuardType(argument.type)) {
@@ -1248,7 +1325,18 @@ public final class OwnershipChecker {
         int previousLoopDepth = loopDepth;
         loopDepth = 0;
         try {
-            for (Ast.Stmt stmt : lambda.blockBody()) checkStatement(stmt, closure, Ast.TypeRef.inferred());
+            if (lambda.expressionBody() != null) {
+                // An expression body has return-value ownership semantics even
+                // though it has no explicit return statement in source.
+                ValueInfo returned = checkExpr(lambda.expressionBody(), closure, true);
+                if (containsMutexGuardType(returned.type)) {
+                    throw error("MutexGuard values are lexical and cannot be returned from a lambda");
+                }
+            } else {
+                for (Ast.Stmt stmt : lambda.blockBody()) {
+                    checkStatement(stmt, closure, Ast.TypeRef.inferred());
+                }
+            }
         } finally {
             loopDepth = previousLoopDepth;
             closure.close();
@@ -1260,7 +1348,11 @@ public final class OwnershipChecker {
         CaptureSet captures = new CaptureSet();
         Set<String> locals = new HashSet<>();
         for (Ast.Param param : lambda.parameters()) locals.add(param.name());
-        scanStatements(lambda.blockBody(), locals, outer, recursiveBinding, captures);
+        if (lambda.expressionBody() != null) {
+            scanExpr(lambda.expressionBody(), locals, outer, recursiveBinding, captures, false);
+        } else {
+            scanStatements(lambda.blockBody(), locals, outer, recursiveBinding, captures);
+        }
         return captures;
     }
 
@@ -1392,6 +1484,10 @@ public final class OwnershipChecker {
             scanExpr(e.condition(), locals, outer, recursiveBinding, captures, false);
             scanExpr(e.whenTrue(), locals, outer, recursiveBinding, captures, false);
             scanExpr(e.whenFalse(), locals, outer, recursiveBinding, captures, false);
+        } else if (expr instanceof Ast.RuntimeCallExpr e) {
+            for (Ast.Expr arg : e.arguments()) {
+                scanExpr(arg, locals, outer, recursiveBinding, captures, false);
+            }
         } else if (expr instanceof Ast.CallExpr e) {
             scanExpr(e.callee(), locals, outer, recursiveBinding, captures, false);
             for (Ast.Expr arg : e.arguments()) scanExpr(arg, locals, outer, recursiveBinding, captures, false);

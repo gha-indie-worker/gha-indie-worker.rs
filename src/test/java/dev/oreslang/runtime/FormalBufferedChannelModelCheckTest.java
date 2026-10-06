@@ -16,8 +16,8 @@ import org.junit.jupiter.api.Test;
  * Explicit-state model for a capacity-two buffered Channel.
  *
  * <p>Three distinct messages are enough to exhaustively prove bounded capacity,
- * nonblocking write rejection, retry after capacity becomes available, and FIFO
- * preservation across every legal write/read interleaving.</p>
+ * nonblocking write rejection, retry after capacity becomes available, FIFO
+ * preservation, and post-close draining of already-buffered values.</p>
  */
 final class FormalBufferedChannelModelCheckTest {
     private enum Message {
@@ -73,9 +73,9 @@ final class FormalBufferedChannelModelCheckTest {
         for (State state : states) {
             assertSafety(state);
 
-            if (!state.closed() && !state.buffer().isEmpty()) {
+            if (!state.buffer().isEmpty()) {
                 assertTrue(step(state, Action.read()).isPresent(),
-                        "a non-empty open buffer must always permit its FIFO head to be read");
+                        "buffered data must remain FIFO-readable before and after close");
             }
 
             if (!state.closed()
@@ -112,17 +112,23 @@ final class FormalBufferedChannelModelCheckTest {
     }
 
     @Test
-    void closeIsAOneWayAdmissionFence() {
+    void closeFencesWritesButPreservesBufferedFifoDrain() {
         State buffered =
                 step(State.initial(), Action.write(Message.A)).orElseThrow();
         State closed = step(buffered, Action.close()).orElseThrow();
 
         assertTrue(closed.closed());
-        assertTrue(step(closed, Action.write(Message.B)).isEmpty());
-        assertTrue(step(closed, Action.read()).isEmpty(),
-                "public channel operations are fenced after close in this model");
+        assertTrue(step(closed, Action.write(Message.B)).isEmpty(),
+                "close is a one-way write/admission fence");
         assertEquals(List.of(Message.A), closed.buffer(),
                 "close itself does not fabricate consumption");
+
+        State drained = step(closed, Action.read()).orElseThrow();
+        assertEquals(List.of(Message.A), drained.delivered());
+        assertTrue(drained.buffer().isEmpty());
+        assertTrue(drained.closed());
+        assertTrue(step(drained, Action.read()).isEmpty(),
+                "closed-empty read is terminal after preserved buffered data drains");
     }
 
     private static Set<State> explore() {
@@ -172,7 +178,7 @@ final class FormalBufferedChannelModelCheckTest {
             }
 
             case READ -> {
-                if (s.closed() || s.buffer().isEmpty()) {
+                if (s.buffer().isEmpty()) {
                     yield Optional.empty();
                 }
 
@@ -185,7 +191,7 @@ final class FormalBufferedChannelModelCheckTest {
                         s.admitted(),
                         buffer,
                         delivered,
-                        false));
+                        s.closed()));
             }
 
             case CLOSE -> {
@@ -221,7 +227,10 @@ final class FormalBufferedChannelModelCheckTest {
             for (Message message : Message.values()) {
                 assertFalse(step(state, Action.write(message)).isPresent());
             }
-            assertFalse(step(state, Action.read()).isPresent());
+            assertEquals(
+                    !state.buffer().isEmpty(),
+                    step(state, Action.read()).isPresent(),
+                    "closed channels drain buffered data and reject only once empty");
         }
     }
 }

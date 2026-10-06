@@ -1086,6 +1086,10 @@ public final class OresEvalRootNode extends RootNode {
                         && selected.mode() == Ast.WaitMode.BLOCKING) {
                 return true;
             }
+            if (expr instanceof Ast.RuntimeCallExpr runtime) {
+                return runtime.arguments().stream()
+                        .anyMatch(argument -> expressionContainsPotentialSuspension(argument, seen));
+            }
             if (expr instanceof Ast.CallExpr call) {
                 for (Ast.Expr argument : call.arguments()) {
                     if (expressionContainsPotentialSuspension(argument, seen)) return true;
@@ -2796,6 +2800,11 @@ public final class OresEvalRootNode extends RootNode {
                     return;
                 }
 
+                if (expr instanceof Ast.RuntimeCallExpr runtime) {
+                    evalSuspendableRuntimeOwnership(task, runtime, env, continuation);
+                    return;
+                }
+
                 if (expr instanceof Ast.MemberExpr member) {
                     evalSuspendableExpr(
                             task,
@@ -3351,6 +3360,39 @@ public final class OresEvalRootNode extends RootNode {
                                                                 failure));
                                     }
                                 });
+                    });
+        }
+
+        private void evalSuspendableRuntimeOwnership(
+                SourceTask task,
+                Ast.RuntimeCallExpr runtime,
+                Env env,
+                SourceValueCont continuation) {
+            if (runtime.arguments().size() != 1) {
+                continuation.accept(
+                        task,
+                        null,
+                        new IllegalArgumentException(
+                                "rt " + runtime.operation() + " expects exactly one argument"));
+                return;
+            }
+            evalSuspendableExpr(
+                    task,
+                    runtime.arguments().getFirst(),
+                    env,
+                    (t, value, failure) -> {
+                        if (failure != null) {
+                            continuation.accept(t, null, failure);
+                            return;
+                        }
+                        try {
+                            continuation.accept(
+                                    t,
+                                    applyRuntimeOwnership(runtime.operation(), value),
+                                    null);
+                        } catch (RuntimeException | Error ownershipFailure) {
+                            continuation.accept(t, null, ownershipFailure);
+                        }
                     });
         }
 
@@ -4945,6 +4987,19 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException(name + " operands must be bool");
         }
 
+        private Object applyRuntimeOwnership(String operation, Object value) {
+            return switch (operation) {
+                // Borrow/take/share alter compiler ownership state, not the JVM handle.
+                case "borrow", "take", "share" -> value;
+                // Static ownership checking currently admits rt copy only for proven
+                // Copy values on this convergence branch, so returning the immutable
+                // scalar/value representation is an independent language-level copy.
+                case "copy" -> value;
+                default -> throw new IllegalArgumentException(
+                        "unknown runtime ownership operation 'rt " + operation + "'");
+            };
+        }
+
         private Object eval(Ast.Expr expr, Env env) {
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
@@ -5142,6 +5197,14 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.SpreadExpr) {
                 throw new IllegalArgumentException("spread expressions are only valid inside call argument lists");
+            }
+            if (expr instanceof Ast.RuntimeCallExpr runtime) {
+                if (runtime.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "rt " + runtime.operation() + " expects exactly one argument");
+                }
+                Object value = eval(runtime.arguments().getFirst(), env);
+                return applyRuntimeOwnership(runtime.operation(), value);
             }
             if (expr instanceof Ast.CallExpr call) {
                 if (isBooleanIntrinsicCall(call, env)) return evalBooleanIntrinsic(call, env);

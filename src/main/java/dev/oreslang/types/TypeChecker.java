@@ -1437,6 +1437,19 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "spread expressions are only valid as arguments to a variadic callable");
         }
+        if (expr instanceof Ast.RuntimeCallExpr runtime) {
+            if (runtime.arguments().size() != 1) {
+                throw new IllegalArgumentException(
+                        "rt " + runtime.operation() + " expects exactly one argument");
+            }
+            Type operand = typeOf(runtime.arguments().getFirst(), env, generics, self);
+            return switch (runtime.operation()) {
+                case "borrow" -> new Borrow(operand, false);
+                case "copy", "take", "share" -> operand;
+                default -> throw new IllegalArgumentException(
+                        "unknown runtime ownership operation 'rt " + runtime.operation() + "'");
+            };
+        }
         if (expr instanceof Ast.CallExpr call) {
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
@@ -2330,17 +2343,20 @@ public final class TypeChecker {
                 parameters.add(type);
                 lambdaEnv.define(param.name(), type, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
-            if (lambda.expressionBody() != null) {
-                throw new IllegalArgumentException("expression-body lambdas are not supported; lambdas require braces and explicit return");
-            }
             Ast.ClassDecl previousClassOwner = currentClassOwner;
             if (nonLexical) currentClassOwner = null;
+            Type result;
             try {
-                checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
+                if (lambda.expressionBody() != null) {
+                    result = typeOf(lambda.expressionBody(), lambdaEnv, generics, self);
+                } else {
+                    checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
+                    result = Unknown.INSTANCE;
+                }
             } finally {
                 currentClassOwner = previousClassOwner;
             }
-            return new Function(parameters, Unknown.INSTANCE);
+            return new Function(parameters, result);
         }
         return Unknown.INSTANCE;
     }
@@ -2720,9 +2736,6 @@ public final class TypeChecker {
     }
 
     private void validateLambdaAgainstExpected(Ast.LambdaExpr lambda, Function expected, Env parent, Set<String> generics, Type self) {
-        if (lambda.expressionBody() != null) {
-            throw new IllegalArgumentException("lambdas always require a block body and explicit return for non-void results");
-        }
         if (lambda.parameters().size() != expected.parameters().size()) {
             throw new IllegalArgumentException("lambda arity " + lambda.parameters().size() + " does not match expected function arity " + expected.parameters().size());
         }
@@ -2744,12 +2757,20 @@ public final class TypeChecker {
         Ast.ClassDecl previousClassOwner = currentClassOwner;
         if (nonLexical) currentClassOwner = null;
         try {
-            checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, expected.result(), self);
+            if (lambda.expressionBody() != null) {
+                Type actual = typeOfAgainstExpected(
+                        lambda.expressionBody(), expected.result(), lambdaEnv, generics, self);
+                requireAssignable(actual, expected.result(), "lambda expression body");
+            } else {
+                checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, expected.result(), self);
+            }
         } finally {
             currentClassOwner = previousClassOwner;
         }
-        if (expected.result() != Primitive.VOID && !definitelyReturns(lambda.blockBody())) {
-            throw new IllegalArgumentException("non-void lambda must explicitly return on every path");
+        if (lambda.blockBody() != null
+                && expected.result() != Primitive.VOID
+                && !definitelyReturns(lambda.blockBody())) {
+            throw new IllegalArgumentException("non-void block lambda must explicitly return on every path");
         }
     }
 
@@ -4419,6 +4440,10 @@ public final class TypeChecker {
             rejectStaticClassGenericReferences(conditional.whenFalse(), classGenerics, klass, method);
         } else if (expression instanceof Ast.SpreadExpr spread) {
             rejectStaticClassGenericReferences(spread.expression(), classGenerics, klass, method);
+        } else if (expression instanceof Ast.RuntimeCallExpr runtime) {
+            for (Ast.Expr argument : runtime.arguments()) {
+                rejectStaticClassGenericReferences(argument, classGenerics, klass, method);
+            }
         } else if (expression instanceof Ast.CallExpr call) {
             for (Ast.TypeRef argument : call.typeArguments()) {
                 rejectStaticClassGenericReference(argument, classGenerics, klass, method);
