@@ -1,0 +1,30 @@
+import fnc * as nio from "./native.ores";
+
+// HTTP belongs to Oreslang, not Java.
+//
+// Keep this module deliberately within syntax/runtime features already
+// implemented by the compiler. Rich String parsing helpers can be layered in
+// Oreslang as the stdlib grows; they must not migrate back into Java.
+
+define module http_wire
+  pub fnc is_redirect(Int status) => Bool {
+    return status == 301 || status == 302 || status == 303
+        || status == 307 || status == 308;
+  }
+
+  pub fnc default_port(String scheme) => Int {
+    if scheme == "http"
+      return 80;
+    fi
+    if scheme == "https"
+      return 443;
+    fi
+    raise "unsupported URI scheme";
+  }
+
+  pub fnc framing_is_ambiguous(
+      String transfer_encoding,
+      Array<String> content_lengths) => Bool {
+    return transfer_encoding != "" && content_lengths.length > 0;
+  }
+end

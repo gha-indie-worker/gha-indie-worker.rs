@@ -1,0 +1,36 @@
+// Privileged Oreslang networking primitives.
+//
+// This module is intentionally protocol-free. The runtime supplies the
+// `native_net` builtin namespace after NETWORK capability admission.
+// No Java networking/protocol implementation is permitted behind this module.
+
+define module native_net_api
+  pub fnc connect(String host, Int port, Int timeout_ms) => Int {
+    return native_net.connect(host, port, timeout_ms);
+  }
+
+  pub fnc listen(String host, Int port, Int backlog, Bool reuse_address) => Int {
+    return native_net.listen(host, port, backlog, reuse_address);
+  }
+
+  pub fnc accept(Int fd) => Int {
+    return native_net.accept(fd);
+  }
+
+  pub fnc read(Int fd, Array<Int> bytes, Int offset, Int length) => Int {
+    return native_net.read(fd, bytes, offset, length);
+  }
+
+  pub fnc write(Int fd, Array<Int> bytes, Int offset, Int length) => Int {
+    return native_net.write(fd, bytes, offset, length);
+  }
+
+  pub fnc close(Int fd) => void {
+    native_net.close(fd);
+    return;
+  }
+
+  pub fnc resolve_all(String host) => Array<String> {
+    return native_net.resolve_all(host);
+  }
+end
