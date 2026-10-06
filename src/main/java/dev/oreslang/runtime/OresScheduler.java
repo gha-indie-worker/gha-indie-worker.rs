@@ -54,12 +54,7 @@ public final class OresScheduler implements AutoCloseable {
         Step<T> resume(Resume resume) throws Exception;
     }
 
-    /**
-     * Result of one resumable task turn.
-     *
-     * <p>A task may only release its carrier at one of these explicit VM
-     * boundaries. Source-line boundaries have no scheduling meaning.</p>
-     */
+    /** Result of one resumable task turn. */
     public sealed interface Step<T> permits Done, Await, Cooperate { }
 
     /** The async task has produced its final value. */
@@ -76,12 +71,8 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     /**
-     * Stackless scheduler preemption/cooperation point.
-     *
-     * <p>The current dispatch must fully unwind before this same logical task
-     * becomes runnable again. The compiler-generated Task owns the continuation
-     * (program counter, locals and control state); the scheduler never restarts
-     * the callable or guesses from a source line.</p>
+     * Cooperative scheduler handoff. This produces no language value and
+     * resumes the same task only after the current carrier turn has unwound.
      */
     public record Cooperate<T>() implements Step<T> { }
 
@@ -283,10 +274,7 @@ public final class OresScheduler implements AutoCloseable {
         return new Await<>(Objects.requireNonNull(future, "future"));
     }
 
-    /**
-     * Release the current physical carrier and requeue the same logical task
-     * after this dispatch has fully unwound.
-     */
+    /** Lowering target for source-level `rt cooperate`. */
     public static <T> Step<T> cooperate() {
         return new Cooperate<>();
     }
@@ -538,12 +526,6 @@ public final class OresScheduler implements AutoCloseable {
             scheduleReadyResume();
         }
 
-        /**
-         * Publish a continuation-only resume. Requeueing deliberately belongs
-         * to afterCarrierTurn(): this prevents a second carrier from entering
-         * the same logical task while the old Truffle/guest turn is still
-         * unwinding.
-         */
         private void armCooperate() {
             Resume resume = Resume.completed(null, null);
             if (!pendingResume.compareAndSet(null, resume)) {
@@ -554,6 +536,8 @@ public final class OresScheduler implements AutoCloseable {
             if (!phase.compareAndSet(RUNNING, WAITING)) {
                 pendingResume.compareAndSet(resume, null);
             }
+            // afterCarrierTurn() owns requeueing so this dispatch fully
+            // unwinds before the continuation becomes runnable again.
         }
 
         private void armAwait(OresFuture<?> awaited) {

@@ -645,7 +645,8 @@ public final class TreeShaker {
             }
             if (statement instanceof Ast.YieldStmt yielded) {
                 return List.of(new Ast.YieldStmt(
-                        rewriteExpression(yielded.value(), module, locals)));
+                        rewriteExpression(yielded.value(), module, locals),
+                        yielded.delegated()));
             }
             if (statement instanceof Ast.ExprStmt expression) {
                 return List.of(new Ast.ExprStmt(

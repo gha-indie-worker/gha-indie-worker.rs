@@ -491,10 +491,14 @@ public final class TypeChecker {
                     param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         }
 
-        // For a generator declaration the source return annotation is the
-        // yielded element type. The call result is Generator<T> or
-        // AsyncGenerator<T>; bare return only terminates the sequence.
-        Type returns = resolve(fn.returnType(), generics, null);
+        // Generator declarations may spell either the yielded element type
+        // (: int) or the public iterator protocol (: Iterator<int> /
+        // : AsyncIterator<int>). The body always checks yields against the
+        // element type and calls expose exactly one iterator wrapper.
+        Type declaredReturn = resolve(fn.returnType(), generics, null);
+        Type returns = fn.generator()
+                ? generatorYieldType(fn.async(), declaredReturn)
+                : declaredReturn;
         if (returns == Primitive.VOID && fn.generator()) {
             throw new IllegalArgumentException(
                     "generator '" + module + "." + fn.name() + "' must declare a non-void yielded element type");
@@ -1120,8 +1124,16 @@ public final class TypeChecker {
             if (!currentGenerator) {
                 throw new IllegalArgumentException("'yield' may only appear inside a generator fnc or routine");
             }
-            Type actual = typeOfAgainstExpected(yielded.value(), expectedReturn, env, generics, self);
-            requireAssignable(actual, expectedReturn, "yield value");
+            if (yielded.delegated()) {
+                Type iterable = typeOf(yielded.value(), env, generics, self);
+                Type element = currentAsyncCallable
+                        ? asyncIterableElementType(iterable)
+                        : iterableElementType(iterable);
+                requireAssignable(element, expectedReturn, "yield* element");
+            } else {
+                Type actual = typeOfAgainstExpected(yielded.value(), expectedReturn, env, generics, self);
+                requireAssignable(actual, expectedReturn, "yield value");
+            }
             return;
         }
         if (stmt instanceof Ast.ExprStmt expression) { typeOf(expression.expression(), env, generics, self); return; }
@@ -1438,6 +1450,16 @@ public final class TypeChecker {
                     "spread expressions are only valid as arguments to a variadic callable");
         }
         if (expr instanceof Ast.RuntimeCallExpr runtime) {
+            if (runtime.operation().equals("cooperate")) {
+                if (!runtime.arguments().isEmpty()) {
+                    throw new IllegalArgumentException("rt cooperate takes no arguments");
+                }
+                if (currentActorKind == Ast.ActorKind.UNTRUSTED) {
+                    throw new IllegalArgumentException(
+                            "rt cooperate is not enabled for untrusted actors until continuation quotas preserve fuel/deadline state across scheduler handoffs");
+                }
+                return Primitive.VOID;
+            }
             if (runtime.arguments().size() != 1) {
                 throw new IllegalArgumentException(
                         "rt " + runtime.operation() + " expects exactly one argument");
@@ -2343,17 +2365,20 @@ public final class TypeChecker {
                 parameters.add(type);
                 lambdaEnv.define(param.name(), type, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
-            if (lambda.expressionBody() != null) {
-                throw new IllegalArgumentException("expression-body lambdas are not supported; lambdas require braces and explicit return");
-            }
             Ast.ClassDecl previousClassOwner = currentClassOwner;
             if (nonLexical) currentClassOwner = null;
+            Type result;
             try {
-                checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
+                if (lambda.expressionBody() != null) {
+                    result = typeOf(lambda.expressionBody(), lambdaEnv, generics, self);
+                } else {
+                    checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
+                    result = Unknown.INSTANCE;
+                }
             } finally {
                 currentClassOwner = previousClassOwner;
             }
-            return new Function(parameters, Unknown.INSTANCE);
+            return new Function(parameters, result);
         }
         return Unknown.INSTANCE;
     }
@@ -2733,9 +2758,6 @@ public final class TypeChecker {
     }
 
     private void validateLambdaAgainstExpected(Ast.LambdaExpr lambda, Function expected, Env parent, Set<String> generics, Type self) {
-        if (lambda.expressionBody() != null) {
-            throw new IllegalArgumentException("lambdas always require a block body and explicit return for non-void results");
-        }
         if (lambda.parameters().size() != expected.parameters().size()) {
             throw new IllegalArgumentException("lambda arity " + lambda.parameters().size() + " does not match expected function arity " + expected.parameters().size());
         }
@@ -2757,12 +2779,20 @@ public final class TypeChecker {
         Ast.ClassDecl previousClassOwner = currentClassOwner;
         if (nonLexical) currentClassOwner = null;
         try {
-            checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, expected.result(), self);
+            if (lambda.expressionBody() != null) {
+                Type actual = typeOfAgainstExpected(
+                        lambda.expressionBody(), expected.result(), lambdaEnv, generics, self);
+                requireAssignable(actual, expected.result(), "lambda expression body");
+            } else {
+                checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, expected.result(), self);
+            }
         } finally {
             currentClassOwner = previousClassOwner;
         }
-        if (expected.result() != Primitive.VOID && !definitelyReturns(lambda.blockBody())) {
-            throw new IllegalArgumentException("non-void lambda must explicitly return on every path");
+        if (lambda.blockBody() != null
+                && expected.result() != Primitive.VOID
+                && !definitelyReturns(lambda.blockBody())) {
+            throw new IllegalArgumentException("non-void block lambda must explicitly return on every path");
         }
     }
 
@@ -4242,9 +4272,32 @@ public final class TypeChecker {
                 trapResult(true, raw.result()));
     }
 
+    private Type generatorYieldType(boolean async, Type declared) {
+        if (!(declared instanceof Named named) || named.arguments().size() != 1) {
+            return declared;
+        }
+
+        String name = named.name();
+        boolean syncProtocol = name.equals("Iterator") || name.equals("Generator");
+        boolean asyncProtocol = name.equals("AsyncIterator") || name.equals("AsyncGenerator");
+
+        if (async && asyncProtocol) return named.arguments().getFirst();
+        if (!async && syncProtocol) return named.arguments().getFirst();
+
+        if (syncProtocol || asyncProtocol) {
+            throw new IllegalArgumentException(
+                    (async ? "async " : "")
+                            + "generator return protocol must be "
+                            + (async ? "AsyncIterator<T>" : "Iterator<T>")
+                            + ", not " + declared);
+        }
+        return declared;
+    }
+
     private Type callableResult(boolean async, boolean generator, Type result) {
         if (generator) {
-            return new Named(async ? "AsyncIterator" : "Iterator", List.of(result));
+            Type element = generatorYieldType(async, result);
+            return new Named(async ? "AsyncIterator" : "Iterator", List.of(element));
         }
         return async ? new Named("Future", List.of(result)) : result;
     }

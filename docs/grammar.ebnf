@@ -288,10 +288,11 @@ primary         = literal
                 | "(" expression ")" ;
 
 lambda          = [ "nlex" ] ( pipe_lambda | typed_legacy_lambda ) ;
-pipe_lambda     = "|" [ lambda_param { "," lambda_param } ] "|" "->" block ;
+pipe_lambda     = "|" [ lambda_param { "," lambda_param } ] "|" "->" lambda_body ;
 lambda_param    = IDENT | type_ref IDENT ;
 typed_legacy_lambda
-                = "(" [ param_list ] ")" "->" block ;
+                = "(" [ param_list ] ")" "->" lambda_body ;
+lambda_body     = block | expression ;
 
 tuple_literal   = "(" expression "," expression { "," expression } ")" ;
 array_literal   = "arr" "[" [ expression { "," expression } ] "]" ;
@@ -552,8 +553,14 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      and statically typed iterable classes; object destructuring targets returned
      record/map-like values.
    - Destructuring is not currently permitted in callable parameter lists.
-   - Lambdas always have braces. Non-void lambdas must use explicit return and
-     return on every path when a contextual function result type is known.
+   - Lambdas may use either a braced block or a single expression body. A braced
+     lambda never implicitly returns its final statement: non-void block lambdas
+     must use explicit return and return on every path when a contextual result
+     type is known. An expression-bodied lambda returns its sole expression.
+   - A statement/declaration containing an expression-bodied lambda requires an
+     explicit ';' terminator; a newline is not an implicit terminator in that
+     case. Only an immediate '{' after '->' starts a lambda block, so prefixed
+     expressions such as future struct{...}{...} literals remain unambiguous.
    - named class/interface types are nominal by default.
    - structural Type name is the canonical opt-in for structural parameter
      typing. @Structural, name structural Type, and @AllowStructural(name) remain

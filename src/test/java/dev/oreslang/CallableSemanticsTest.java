@@ -328,6 +328,94 @@ final class CallableSemanticsTest {
         assertEquals("7", output);
     }
 
+    @Test
+    void expressionBodyLambdasSupportSingleLineMultilineAndLexicalCapture() throws Exception {
+        String output = run("""
+                pub routine main(): void {
+                  val int bias = 1;
+                  val Fnc<int, int> twice = |value| -> value * 2;
+                  val Fnc<int, int> shifted = |value| ->
+                    value * 2 + bias;
+
+                  stdio.stdout.write(twice(4));
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(shifted(4));
+                  return;
+                }
+                """);
+
+        assertEquals("8:9", output);
+    }
+
+    @Test
+    void blockLambdaNeverImplicitlyReturnsItsLastExpression() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub routine main(): void {
+                          val Fnc<int, int> bad = |value| -> {
+                            value * 2;
+                          };
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("explicitly return"));
+    }
+
+    @Test
+    void expressionBodyLambdaRequiresExplicitStatementSemicolon() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        pub routine main(): void {
+                          val Fnc<int, int> twice = |value| -> value * 2
+                          stdio.stdout.write(twice(4));
+                          return;
+                        }
+                        """));
+
+        assertTrue(error.getMessage().contains("expression-bodied lambda"));
+        assertTrue(error.getMessage().contains("explicit ';'"));
+    }
+
+    @Test
+    void expressionBodyLambdaChecksItsContextualReturnType() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub routine main(): void {
+                          val Fnc<int, int> bad = |value| -> "not-an-int";
+                          return;
+                        }
+                        """)));
+    }
+
+    @Test
+    void onlyImmediateBraceAfterArrowStartsLambdaBlock() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                pub routine main(): void {
+                  val make = |value| -> obj{return: value};
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void nlexExpressionBodyCannotCaptureOuterActivation() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub routine main(): void {
+                          val int outer = 7;
+                          val Fnc<int, int> bad = nlex |value| -> value + outer;
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("outer") || error.getMessage().contains("unknown name"));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "callables.ores")

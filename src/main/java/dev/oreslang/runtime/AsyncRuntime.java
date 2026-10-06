@@ -76,6 +76,22 @@ public final class AsyncRuntime implements AutoCloseable {
         return Boolean.TRUE.equals(ASYNC_CARRIER.get());
     }
 
+    /**
+     * Cooperatively return the current runtime-owned async/generator virtual
+     * thread to its scheduler without changing the source-level return type.
+     *
+     * <p>Ordinary source tasks lower `rt cooperate` to OresScheduler.Cooperate.
+     * Generator activations use this bridge because their compatibility
+     * lowering is currently a runtime-owned virtual-thread producer.</p>
+     */
+    public static void cooperateCurrentCarrier() {
+        if (!isAsyncCarrierThread()) {
+            throw new IllegalStateException(
+                    "rt cooperate requires a runtime-owned async/generator carrier");
+        }
+        Thread.yield();
+    }
+
     public boolean isClosed() {
         return closed.get();
     }

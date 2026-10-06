@@ -477,7 +477,11 @@ public final class Ast {
     }
 
     public record ReturnStmt(Expr value) implements Stmt { }
-    public record YieldStmt(Expr value) implements Stmt {
+    public record YieldStmt(Expr value, boolean delegated) implements Stmt {
+        public YieldStmt(Expr value) {
+            this(value, false);
+        }
+
         public YieldStmt {
             if (value == null) throw new IllegalArgumentException("yield requires a value");
         }
@@ -821,6 +825,10 @@ public final class Ast {
         public LambdaExpr {
             parameters = List.copyOf(parameters);
             blockBody = blockBody == null ? null : List.copyOf(blockBody);
+            if ((expressionBody == null) == (blockBody == null)) {
+                throw new IllegalArgumentException(
+                        "lambda requires exactly one expression body or block body");
+            }
         }
         public LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody) {
             this(parameters, expressionBody, blockBody, false);

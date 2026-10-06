@@ -242,6 +242,180 @@ final class GeneratorLanguageTest {
     }
 
     @Test
+    void generatorStarSugarAndCooperateComposeAcrossSyncAndAsyncIteration() throws Exception {
+        assertEquals("1234", run("""
+                async fnc later(int value): int {
+                  return value;
+                }
+
+                fnc gen* sync_values(): Iterator<int> {
+                  rt cooperate;
+                  yield 1;
+                  rt yield;
+                  yield 2;
+                  return;
+                }
+
+                async fnc generator* async_values(): AsyncIterator<int> {
+                  rt cooperate;
+                  yield await later(3);
+                  rt yield;
+                  yield await later(4);
+                  return;
+                }
+
+                pub async fnc main(): void {
+                  val Iterator<int> sync = sync_values();
+                  for const value of sync {
+                    stdio.stdout.write(value);
+                  }
+
+                  val AsyncIterator<int> asynchronous = async_values();
+                  for await const value of asynchronous {
+                    stdio.stdout.write(value);
+                  }
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void yieldStarDelegatesSyncAsyncAndSynchronousSources() throws Exception {
+        assertEquals("12345|67812345", run("""
+                fnc gen* inner(): Iterator<int> {
+                  yield 2;
+                  rt cooperate;
+                  yield 3;
+                  return;
+                }
+
+                fnc gen* outer(): Iterator<int> {
+                  yield 1;
+                  yield* inner();
+                  yield* [4, 5];
+                  return;
+                }
+
+                async fnc gen* async_inner(): AsyncIterator<int> {
+                  yield 7;
+                  rt cooperate;
+                  yield 8;
+                  return;
+                }
+
+                async fnc gen* async_outer(): AsyncIterator<int> {
+                  yield 6;
+                  yield* async_inner();
+                  yield* outer();
+                  return;
+                }
+
+                pub async fnc main(): void {
+                  for const value of outer() {
+                    stdio.stdout.write(value);
+                  }
+                  stdio.stdout.write("|");
+                  for await const value of async_outer() {
+                    stdio.stdout.write(value);
+                  }
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void yieldStarClosesDelegatedGeneratorWhenOuterIteratorCloses() throws Exception {
+        assertEquals("1:inner-closed", run("""
+                fnc gen* inner(): Iterator<int> {
+                  try {
+                    yield 1;
+                    yield 2;
+                  } catch (err) {
+                  } finally {
+                    stdio.stdout.write(":inner-closed");
+                  }
+                  return;
+                }
+
+                fnc gen* outer(): Iterator<int> {
+                  yield* inner();
+                  return;
+                }
+
+                pub fnc main(): void {
+                  val Iterator<int> iterator = outer();
+                  val IteratorResult<int> first = iterator.next();
+                  stdio.stdout.write(first.value.unwrap());
+                  iterator.close();
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void yieldStarRejectsAsyncDelegationFromSyncGeneratorAndElementMismatch() {
+        IllegalArgumentException asyncIntoSync = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        async fnc gen* async_values(): AsyncIterator<int> {
+                          yield 1;
+                          return;
+                        }
+                        fnc gen* bad(): Iterator<int> {
+                          yield* async_values();
+                          return;
+                        }
+                        """));
+        assertTrue(asyncIntoSync.getMessage().contains("for await")
+                        || asyncIntoSync.getMessage().contains("Async"),
+                asyncIntoSync::getMessage);
+
+        IllegalArgumentException wrongElement = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        fnc gen* bad(): Iterator<int> {
+                          yield* ["wrong"];
+                          return;
+                        }
+                        """));
+        assertTrue(wrongElement.getMessage().contains("yield* element"), wrongElement::getMessage);
+    }
+
+    @Test
+    void explicitGeneratorProtocolAnnotationsRejectSyncAsyncMismatches() {
+        IllegalArgumentException sync = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        fnc gen* bad(): AsyncIterator<int> {
+                          yield 1;
+                          return;
+                        }
+                        """));
+        assertTrue(sync.getMessage().contains("Iterator<T>"), sync::getMessage);
+
+        IllegalArgumentException asynchronous = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        async fnc gen* bad(): Iterator<int> {
+                          yield 1;
+                          return;
+                        }
+                        """));
+        assertTrue(asynchronous.getMessage().contains("AsyncIterator<T>"), asynchronous::getMessage);
+    }
+
+    @Test
+    void generatorStarSugarDoesNotStealOrdinaryFunctionNamedGen() throws Exception {
+        assertEquals("9", run("""
+                fnc gen(): int { return 9; }
+                pub fnc main(): void {
+                  stdio.stdout.write(gen());
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void yieldAndGeneratorReturnsAreCheckedStatically() {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                 fnc ordinary(): int {

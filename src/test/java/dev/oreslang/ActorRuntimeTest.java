@@ -109,6 +109,66 @@ final class ActorRuntimeTest {
     }
 
     @Test
+    void schedulerSafepointDoesNotRelinquishOrReplayActorTurn() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 1, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            CountDownLatch firstAtCheckpoint = new CountDownLatch(1);
+            CountDownLatch releaseFirst = new CountDownLatch(1);
+            CountDownLatch secondDelivered = new CountDownLatch(1);
+            AtomicInteger firstSideEffects = new AtomicInteger();
+            AtomicInteger deliveries = new AtomicInteger();
+
+            var ref = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                int delivery = deliveries.incrementAndGet();
+                if (delivery == 1) {
+                    firstSideEffects.incrementAndGet();
+                    context.runtime().schedulerSafepoint();
+                    firstAtCheckpoint.countDown();
+                    try {
+                        if (!releaseFirst.await(2, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("test release timed out");
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException(interrupted);
+                    }
+                    context.runtime().schedulerSafepoint();
+                    assertEquals(
+                            1,
+                            firstSideEffects.get(),
+                            "checkpoint must not replay completed actor code");
+                } else if (delivery == 2) {
+                    secondDelivered.countDown();
+                    context.self().stop();
+                }
+            });
+
+            ref.send(1);
+            ref.send(2);
+
+            assertTrue(firstAtCheckpoint.await(2, TimeUnit.SECONDS));
+            try {
+                Thread.sleep(50);
+                assertEquals(
+                        1,
+                        deliveries.get(),
+                        "a checkpoint is not suspension and must not admit another turn");
+                assertEquals(
+                        1,
+                        firstSideEffects.get(),
+                        "completed work before a checkpoint must execute exactly once");
+            } finally {
+                releaseFirst.countDown();
+            }
+
+            assertTrue(secondDelivered.await(2, TimeUnit.SECONDS));
+            assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
+            assertEquals(2, deliveries.get());
+            assertEquals(1, firstSideEffects.get());
+        }
+    }
+
+    @Test
     void carrierHandoffAndTerminationWaitForTurnExecutorExit() throws Exception {
         CountDownLatch firstTurnReturnedToExecutor = new CountDownLatch(1);
         CountDownLatch releaseFirstExecutor = new CountDownLatch(1);

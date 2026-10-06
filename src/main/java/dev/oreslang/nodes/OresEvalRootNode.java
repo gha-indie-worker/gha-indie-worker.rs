@@ -143,6 +143,7 @@ public final class OresEvalRootNode extends RootNode {
                 new IdentityHashMap<>();
         private StartupPhase startupPhase = StartupPhase.CREATED;
         private final ThreadLocal<GeneratorRuntime.Emitter<Object>> activeGeneratorEmitter = new ThreadLocal<>();
+        private final ThreadLocal<Boolean> activeGeneratorAsync = new ThreadLocal<>();
         private static final int TAIL_SAFEPOINT_INTERVAL = 64;
         private static final Object UNINITIALIZED_FIELD = new Object();
 
@@ -713,6 +714,16 @@ public final class OresEvalRootNode extends RootNode {
                 nextStep = OresScheduler.await(future);
             }
 
+            private void cooperate(SourceValueCont continuation) {
+                Objects.requireNonNull(continuation, "continuation");
+                if (nextStep != null) {
+                    throw new IllegalStateException(
+                            "source continuation attempted two terminal steps in one turn");
+                }
+                awaitingContinuation = continuation;
+                nextStep = OresScheduler.cooperate();
+            }
+
             private void done(Object value) {
                 if (nextStep != null) {
                     throw new IllegalStateException(
@@ -1087,6 +1098,7 @@ public final class OresEvalRootNode extends RootNode {
                 return true;
             }
             if (expr instanceof Ast.RuntimeCallExpr runtime) {
+                if (runtime.operation().equals("cooperate")) return true;
                 return runtime.arguments().stream()
                         .anyMatch(argument -> expressionContainsPotentialSuspension(argument, seen));
             }
@@ -2801,7 +2813,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (expr instanceof Ast.RuntimeCallExpr runtime) {
-                    evalSuspendableRuntimeOwnership(task, runtime, env, continuation);
+                    evalSuspendableRuntimeCall(task, runtime, env, continuation);
                     return;
                 }
 
@@ -3363,11 +3375,32 @@ public final class OresEvalRootNode extends RootNode {
                     });
         }
 
-        private void evalSuspendableRuntimeOwnership(
+        private void evalSuspendableRuntimeCall(
                 SourceTask task,
                 Ast.RuntimeCallExpr runtime,
                 Env env,
                 SourceValueCont continuation) {
+            if (runtime.operation().equals("cooperate")) {
+                if (!runtime.arguments().isEmpty()) {
+                    continuation.accept(
+                            task,
+                            null,
+                            new IllegalArgumentException("rt cooperate takes no arguments"));
+                    return;
+                }
+                if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
+                    continuation.accept(
+                            task,
+                            null,
+                            new SecurityException(
+                                    "rt cooperate is disabled for untrusted actors until continuation quota state survives scheduler handoffs"));
+                    return;
+                }
+                task.cooperate((t, ignored, failure) ->
+                        continuation.accept(t, null, failure));
+                return;
+            }
+
             if (runtime.arguments().size() != 1) {
                 continuation.accept(
                         task,
@@ -4064,7 +4097,9 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             GeneratorRuntime.Emitter<Object> previous = activeGeneratorEmitter.get();
+            Boolean previousAsync = activeGeneratorAsync.get();
             activeGeneratorEmitter.set(emitter);
+            activeGeneratorAsync.set(fn.async());
             try {
                 executeBlock(fn.body(), env);
             } catch (ReturnSignal signal) {
@@ -4081,6 +4116,8 @@ public final class OresEvalRootNode extends RootNode {
             } finally {
                 if (previous == null) activeGeneratorEmitter.remove();
                 else activeGeneratorEmitter.set(previous);
+                if (previousAsync == null) activeGeneratorAsync.remove();
+                else activeGeneratorAsync.set(previousAsync);
             }
         }
 
@@ -4202,6 +4239,20 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalStateException("yield executed outside a generator activation");
                 }
                 Object value = eval(yielded.value(), env);
+                if (yielded.delegated()) {
+                    Iterable<?> delegated = Boolean.TRUE.equals(activeGeneratorAsync.get())
+                            ? asyncIterableValues(value, env)
+                            : iterableValues(value, env);
+                    try {
+                        for (Object item : delegated) {
+                            context.schedulerSafepoint();
+                            emitter.emit(item);
+                        }
+                    } finally {
+                        closeIterable(delegated);
+                    }
+                    return;
+                }
                 context.schedulerSafepoint();
                 emitter.emit(value);
                 return;
@@ -5199,6 +5250,17 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("spread expressions are only valid inside call argument lists");
             }
             if (expr instanceof Ast.RuntimeCallExpr runtime) {
+                if (runtime.operation().equals("cooperate")) {
+                    if (!runtime.arguments().isEmpty()) {
+                        throw new IllegalArgumentException("rt cooperate takes no arguments");
+                    }
+                    if (activeGeneratorEmitter.get() != null) {
+                        AsyncRuntime.cooperateCurrentCarrier();
+                        return null;
+                    }
+                    throw new IllegalStateException(
+                            "rt cooperate reached synchronous evaluation; source suspension lowering was not applied");
+                }
                 if (runtime.arguments().size() != 1) {
                     throw new IllegalArgumentException(
                             "rt " + runtime.operation() + " expects exactly one argument");
