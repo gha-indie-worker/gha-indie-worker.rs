@@ -702,8 +702,7 @@ fn canonicalize_forever_loop_line(line: &str, initial: LexState) -> String {
     }
     let rest = trimmed["for".len()..].trim_start();
     let bare_braced = rest.starts_with('{');
-    let bare_keyword = starts_word(rest, "do")
-        && rest["do".len()..].trim().is_empty();
+    let bare_keyword = starts_word(rest, "do") && rest["do".len()..].trim().is_empty();
     if !bare_braced && !bare_keyword {
         return line.to_string();
     }

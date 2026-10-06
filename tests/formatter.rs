@@ -677,7 +677,6 @@ fn select_header_separator_ignores_ternary_colons_and_optional_casts() {
     assert!(is_formatted(&cast).unwrap());
 }
 
-
 #[test]
 fn canonicalizes_bare_for_forever_aliases_to_loop() {
     let source = r#"fnc spin() => void {
