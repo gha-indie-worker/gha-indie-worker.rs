@@ -430,9 +430,18 @@ public final class Ast {
             ForOfStmt, ForOfDestructureStmt, ForStmt, LoopStmt, SelectStmt { }
 
     public record BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer) implements Stmt { }
-    public record DestructureBinding(BindingKind kind, String name, boolean rest) {
+    public record DestructureBinding(BindingKind kind, String name, TypeRef declaredType, boolean rest) {
         public DestructureBinding(BindingKind kind, String name) {
-            this(kind, name, false);
+            this(kind, name, null, false);
+        }
+
+        /** Compatibility constructor for untyped sequence/object destructuring. */
+        public DestructureBinding(BindingKind kind, String name, boolean rest) {
+            this(kind, name, null, rest);
+        }
+
+        public DestructureBinding(BindingKind kind, String name, TypeRef declaredType) {
+            this(kind, name, declaredType, false);
         }
 
         public DestructureBinding {
@@ -445,7 +454,7 @@ public final class Ast {
         }
 
         public static DestructureBinding discard() {
-            return new DestructureBinding(BindingKind.VAL, "_", false);
+            return new DestructureBinding(BindingKind.VAL, "_", null, false);
         }
 
         public boolean isDiscard() {
