@@ -328,6 +328,116 @@ final class BlockLoopControlFlowTest {
         assertEquals("ok", output);
     }
 
+    @Test
+    void whileSupportsKeywordBracedAndPostTestForms() throws Exception {
+        String output = run("""
+                pub routine main(): void {
+                  let a = 0;
+                  while a < 2 do
+                    a = a + 1;
+                    stdio.stdout.write(a);
+                  done
+
+                  let b = 0;
+                  while b < 2 {
+                    b = b + 1;
+                    stdio.stdout.write(b + 2);
+                  }
+
+                  let c = 0;
+                  do {
+                    c = c + 1;
+                    if c == 1 {
+                      continue;
+                    } fi
+                    stdio.stdout.write(c + 4);
+                  } while (c < 2);
+                }
+                """);
+
+        assertEquals("12346", output);
+    }
+
+    @Test
+    void bareForIsACompilerAliasForTheForeverLoop() throws Exception {
+        String output = run("""
+                pub routine main(): void {
+                  let n = 0;
+                  for {
+                    n = n + 1;
+                    if n == 1 {
+                      continue;
+                    } fi
+                    stdio.stdout.write(n);
+                    if n == 3 {
+                      break;
+                    } fi
+                  }
+
+                  let m = 0;
+                  for do
+                    m = m + 1;
+                    if m == 2 {
+                      break;
+                    } fi
+                  done
+                  stdio.stdout.write(m);
+                }
+                """);
+
+        assertEquals("232", output);
+    }
+
+    @Test
+    void whileConditionsMustBeBoolean() {
+        IllegalArgumentException preTest = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub routine main(): void {
+                          while 1 {
+                            break;
+                          }
+                        }
+                        """)));
+        assertTrue(preTest.getMessage().contains("while condition"));
+
+        IllegalArgumentException postTest = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub routine main(): void {
+                          do {
+                            break;
+                          } while (1);
+                        }
+                        """)));
+        assertTrue(postTest.getMessage().contains("do-while condition"));
+    }
+
+    @Test
+    void doWhileRequiresAConditionAndTerminatingSemicolon() {
+        IllegalArgumentException empty = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        pub routine main(): void {
+                          do {
+                            return;
+                          } while ();
+                        }
+                        """));
+        assertTrue(empty.getMessage().contains("use 'loop { ... }'"));
+
+        IllegalArgumentException noTerminator = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        pub routine main(): void {
+                          do {
+                            return;
+                          } while (false)
+                        }
+                        """));
+        assertTrue(noTerminator.getMessage().contains("must end with ';'"));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "block-loop.ores")

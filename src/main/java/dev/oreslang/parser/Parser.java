@@ -1452,11 +1452,19 @@ public final class Parser {
         if (match(MATCH)) return parseMatch();
         if (match(SWITCH)) return parseSwitch();
         if (match(TRY)) return parseTry();
+        if (match(WHILE)) return parseWhile();
+        if (check(DO) && checkNext(LBRACE)) {
+            advance();
+            return parseDoWhile();
+        }
         if (check(LOOP) && (checkNext(LBRACE) || checkNext(DO))) {
             advance();
             return new Ast.LoopStmt(parseLoopBody());
         }
         if (match(FOR)) {
+            if (check(LBRACE) || check(DO)) {
+                return new Ast.LoopStmt(parseLoopBody());
+            }
             boolean asyncIteration = match(AWAIT);
             return parseFor(asyncIteration);
         }
@@ -1584,6 +1592,24 @@ public final class Parser {
             return Ast.SelectPolicy.RANDOM;
         }
         return Ast.SelectPolicy.FAIR;
+    }
+
+    private Ast.Stmt parseWhile() {
+        Ast.Expr condition = parseCondition();
+        return new Ast.WhileStmt(condition, parseLoopBody());
+    }
+
+    private Ast.Stmt parseDoWhile() {
+        List<Ast.Stmt> body = parseBlock();
+        consume(WHILE, "expected 'while' after do-while body");
+        consume(LPAREN, "post-test do-while requires 'while (<condition>);'");
+        if (check(RPAREN)) {
+            throw error(peek(), "do-while requires a condition; use 'loop { ... }' for an unconditional loop");
+        }
+        Ast.Expr condition = parseExpression();
+        consume(RPAREN, "expected ')' after do-while condition");
+        consume(SEMICOLON, "do-while must end with ';'");
+        return new Ast.DoWhileStmt(body, condition);
     }
 
     private Ast.Stmt parseFor(boolean asyncIteration) {
@@ -2657,7 +2683,7 @@ public final class Parser {
             case IDENT,
                     DEFINE, CLASS, MODULE, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
                     TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN,
-                    NEW, STOP, DONE, AWAIT, ASYNC, NLEX, TRAP, NB, SELECT, READCH, WRITECH, ACTOR, ISOACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, LOOP, BLOCK, BREAK, CONTINUE, YIELD, SUPER, ELSEIF, SWITCH, MATCH, MATCHES, EQ, NEQ, IS, WHEN, CASE, DEFAULT, FIRST, CB, UNTRUSTED, TYPE, TYPES, TYPEOF,
+                    NEW, STOP, DONE, AWAIT, ASYNC, NLEX, TRAP, NB, SELECT, READCH, WRITECH, ACTOR, ISOACTOR, SHARED, DEF, FNC, ROUTINE, WHILE, FOR, OF, LOOP, BLOCK, BREAK, CONTINUE, YIELD, SUPER, ELSEIF, SWITCH, MATCH, MATCHES, EQ, NEQ, IS, WHEN, CASE, DEFAULT, FIRST, CB, UNTRUSTED, TYPE, TYPES, TYPEOF,
                     INTERFACE, TRAIT, STRUCT, IMPL, ABSTRACT, VOID, STATIC, PUB, PRIVATE, STRUCTURAL, RETURN, DEFER,
                     VAL, CONST, LET, MUT, SELF, TRUE, FALSE, NULL, OBJ, ARR -> true;
             default -> false;

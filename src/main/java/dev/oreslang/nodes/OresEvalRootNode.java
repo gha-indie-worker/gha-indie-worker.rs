@@ -1067,6 +1067,18 @@ public final class OresEvalRootNode extends RootNode {
                                         statementContainsPotentialSuspension(
                                                 nested, seen));
             }
+            if (stmt instanceof Ast.WhileStmt loop) {
+                return expressionContainsPotentialSuspension(loop.condition(), seen)
+                        || loop.body().stream().anyMatch(
+                                nested ->
+                                        statementContainsPotentialSuspension(nested, seen));
+            }
+            if (stmt instanceof Ast.DoWhileStmt loop) {
+                return loop.body().stream().anyMatch(
+                                nested ->
+                                        statementContainsPotentialSuspension(nested, seen))
+                        || expressionContainsPotentialSuspension(loop.condition(), seen);
+            }
             if (stmt instanceof Ast.LoopStmt loop) {
                 return loop.body().stream().anyMatch(
                         nested ->
@@ -1663,6 +1675,24 @@ public final class OresEvalRootNode extends RootNode {
                     return;
                 }
 
+                if (stmt instanceof Ast.WhileStmt loop) {
+                    runWhileSuspendable(
+                            task,
+                            loop,
+                            env,
+                            continuation);
+                    return;
+                }
+
+                if (stmt instanceof Ast.DoWhileStmt loop) {
+                    runDoWhileSuspendable(
+                            task,
+                            loop,
+                            env,
+                            continuation);
+                    return;
+                }
+
                 if (stmt instanceof Ast.LoopStmt loop) {
                     runLoopSuspendable(
                             task,
@@ -2150,6 +2180,99 @@ public final class OresEvalRootNode extends RootNode {
                                         });
                             }
                         }
+                    });
+        }
+
+        private void runWhileSuspendable(
+                SourceTask task,
+                Ast.WhileStmt loop,
+                Env env,
+                SourceFlowCont continuation) {
+            evalSuspendableExpr(
+                    task,
+                    loop.condition(),
+                    env,
+                    (t, condition, failure) -> {
+                        if (failure != null) {
+                            continuation.accept(
+                                    t,
+                                    SourceFlow.throwing(failure));
+                            return;
+                        }
+                        if (!truth(condition)) {
+                            continuation.accept(
+                                    t,
+                                    SourceFlow.normal());
+                            return;
+                        }
+                        runBlock(
+                                t,
+                                loop.body(),
+                                env,
+                                (t2, flow) -> {
+                                    if (flow.kind() == SourceFlowKind.BREAK) {
+                                        continuation.accept(
+                                                t2,
+                                                SourceFlow.normal());
+                                    } else if (flow.kind() == SourceFlowKind.RETURN
+                                            || flow.kind() == SourceFlowKind.THROW) {
+                                        continuation.accept(t2, flow);
+                                    } else {
+                                        // NORMAL and CONTINUE both re-check the condition.
+                                        runWhileSuspendable(
+                                                t2,
+                                                loop,
+                                                env,
+                                                continuation);
+                                    }
+                                });
+                    });
+        }
+
+        private void runDoWhileSuspendable(
+                SourceTask task,
+                Ast.DoWhileStmt loop,
+                Env env,
+                SourceFlowCont continuation) {
+            runBlock(
+                    task,
+                    loop.body(),
+                    env,
+                    (t, flow) -> {
+                        if (flow.kind() == SourceFlowKind.BREAK) {
+                            continuation.accept(
+                                    t,
+                                    SourceFlow.normal());
+                            return;
+                        }
+                        if (flow.kind() == SourceFlowKind.RETURN
+                                || flow.kind() == SourceFlowKind.THROW) {
+                            continuation.accept(t, flow);
+                            return;
+                        }
+                        // A continue in a post-test loop jumps to the condition,
+                        // not directly to the next body iteration.
+                        evalSuspendableExpr(
+                                t,
+                                loop.condition(),
+                                env,
+                                (t2, condition, failure) -> {
+                                    if (failure != null) {
+                                        continuation.accept(
+                                                t2,
+                                                SourceFlow.throwing(failure));
+                                    } else if (truth(condition)) {
+                                        runDoWhileSuspendable(
+                                                t2,
+                                                loop,
+                                                env,
+                                                continuation);
+                                    } else {
+                                        continuation.accept(
+                                                t2,
+                                                SourceFlow.normal());
+                                    }
+                                });
                     });
         }
 
@@ -4418,6 +4541,38 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     if (loop.update() != null) eval(loop.update(), loopEnv);
                 }
+                return;
+            }
+            if (stmt instanceof Ast.WhileStmt loop) {
+                while (truth(eval(loop.condition(), env))) {
+                    context.schedulerSafepoint();
+                    try {
+                        executeBlock(
+                                loop.body(),
+                                env,
+                                inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                    } catch (ContinueSignal ignored) {
+                        continue;
+                    } catch (BreakSignal ignored) {
+                        break;
+                    }
+                }
+                return;
+            }
+            if (stmt instanceof Ast.DoWhileStmt loop) {
+                do {
+                    context.schedulerSafepoint();
+                    try {
+                        executeBlock(
+                                loop.body(),
+                                env,
+                                inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                    } catch (ContinueSignal ignored) {
+                        // Java's do/while continue edge reaches the condition.
+                    } catch (BreakSignal ignored) {
+                        break;
+                    }
+                } while (truth(eval(loop.condition(), env)));
                 return;
             }
             if (stmt instanceof Ast.LoopStmt loop) {

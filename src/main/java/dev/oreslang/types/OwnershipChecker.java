@@ -452,6 +452,20 @@ public final class OwnershipChecker {
             loopScope.close();
             return;
         }
+        if (stmt instanceof Ast.WhileStmt loop) {
+            checkExpr(loop.condition(), scope, false);
+            Map<VarState,Boolean> before = movedSnapshot(scope);
+            checkLoopBlock(loop.body(), scope, returnType);
+            rejectLoopMoves(before, scope);
+            return;
+        }
+        if (stmt instanceof Ast.DoWhileStmt loop) {
+            Map<VarState,Boolean> before = movedSnapshot(scope);
+            checkLoopBlock(loop.body(), scope, returnType);
+            checkExpr(loop.condition(), scope, false);
+            rejectLoopMoves(before, scope);
+            return;
+        }
         if (stmt instanceof Ast.LoopStmt loop) {
             Map<VarState,Boolean> before = movedSnapshot(scope);
             checkLoopBlock(loop.body(), scope, returnType);
@@ -1377,6 +1391,12 @@ public final class OwnershipChecker {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.LoopStmt s) {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
+            } else if (stmt instanceof Ast.WhileStmt s) {
+                scanExpr(s.condition(), blockLocals, outer, recursiveBinding, captures, false);
+                scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
+            } else if (stmt instanceof Ast.DoWhileStmt s) {
+                scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
+                scanExpr(s.condition(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.IfStmt s) {
                 for (Ast.IfBranch b : s.branches()) {
                     scanExpr(b.condition(), blockLocals, outer, recursiveBinding, captures, false);

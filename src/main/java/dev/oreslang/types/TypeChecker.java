@@ -1253,6 +1253,16 @@ public final class TypeChecker {
             checkLoopBlock(loop.body(), loopEnv, generics, expectedReturn, self);
             return;
         }
+        if (stmt instanceof Ast.WhileStmt loop) {
+            requireAssignable(typeOf(loop.condition(), env, generics, self), Primitive.BOOL, "while condition");
+            checkLoopBlock(loop.body(), env, generics, expectedReturn, self);
+            return;
+        }
+        if (stmt instanceof Ast.DoWhileStmt loop) {
+            checkLoopBlock(loop.body(), env, generics, expectedReturn, self);
+            requireAssignable(typeOf(loop.condition(), env, generics, self), Primitive.BOOL, "do-while condition");
+            return;
+        }
         if (stmt instanceof Ast.LoopStmt loop) {
             checkLoopBlock(loop.body(), env, generics, expectedReturn, self);
         }
@@ -4407,6 +4417,12 @@ public final class TypeChecker {
                 rejectStaticClassGenericReferences(loop.condition(), classGenerics, klass, method);
                 rejectStaticClassGenericReferences(loop.update(), classGenerics, klass, method);
                 rejectStaticClassGenericReferences(loop.body(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.WhileStmt loop) {
+                rejectStaticClassGenericReferences(loop.condition(), classGenerics, klass, method);
+                rejectStaticClassGenericReferences(loop.body(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.DoWhileStmt loop) {
+                rejectStaticClassGenericReferences(loop.body(), classGenerics, klass, method);
+                rejectStaticClassGenericReferences(loop.condition(), classGenerics, klass, method);
             }
         }
     }

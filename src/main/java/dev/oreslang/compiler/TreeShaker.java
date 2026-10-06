@@ -666,6 +666,16 @@ public final class TreeShaker {
                 return List.of(new Ast.LoopStmt(
                         rewriteStatements(loop.body(), module, new LinkedHashMap<>(locals))));
             }
+            if (statement instanceof Ast.WhileStmt loop) {
+                return List.of(new Ast.WhileStmt(
+                        rewriteExpression(loop.condition(), module, locals),
+                        rewriteStatements(loop.body(), module, new LinkedHashMap<>(locals))));
+            }
+            if (statement instanceof Ast.DoWhileStmt loop) {
+                return List.of(new Ast.DoWhileStmt(
+                        rewriteStatements(loop.body(), module, new LinkedHashMap<>(locals)),
+                        rewriteExpression(loop.condition(), module, locals)));
+            }
             if (statement instanceof Ast.IfStmt conditional) {
                 List<Ast.IfBranch> branches = new ArrayList<>();
                 List<Ast.Stmt> elseBody = rewriteStatements(
@@ -1145,6 +1155,12 @@ public final class TreeShaker {
                     scanStatements(module, block.body(), new LinkedHashSet<>(locals));
                 } else if (statement instanceof Ast.LoopStmt loop) {
                     scanStatements(module, loop.body(), new LinkedHashSet<>(locals));
+                } else if (statement instanceof Ast.WhileStmt loop) {
+                    scanExpression(module, loop.condition(), locals);
+                    scanStatements(module, loop.body(), new LinkedHashSet<>(locals));
+                } else if (statement instanceof Ast.DoWhileStmt loop) {
+                    scanStatements(module, loop.body(), new LinkedHashSet<>(locals));
+                    scanExpression(module, loop.condition(), locals);
                 } else if (statement instanceof Ast.IfStmt conditional) {
                     for (Ast.IfBranch branch : conditional.branches()) {
                         scanExpression(module, branch.condition(), locals);
