@@ -1,0 +1,41 @@
+import class TestCase, TestSuite, TestOptions, RunSummary, TestOutcome from '../stdlib/testing';
+import fnc pass, fail, run_suite, require_success from '../stdlib/testing';
+
+fnc passes(): TestOutcome {
+  return pass();
+}
+
+fnc expected_failure(): TestOutcome {
+  return fail("expected fail-fast sentinel");
+}
+
+fnc invariant_failure(String message): void {
+  val Result<bool, String> failure = Err(message);
+  failure.expect("native testing semantic regression");
+  return;
+}
+
+pub routine main(): void {
+  val TestSuite suite = new TestSuite(
+    "meta",
+    arr[
+      new TestCase("first", passes, false, ""),
+      new TestCase("failure", expected_failure, false, ""),
+      new TestCase("third", passes, false, "")
+    ]
+  );
+
+  val TestOptions filtered_options = new TestOptions("meta/third", false, true);
+  val RunSummary filtered = run_suite(&suite, &filtered_options);
+  if filtered.total != 1 | filtered.passed != 1 | filtered.failed != 0 | filtered.filtered != 2; do
+    invariant_failure("exact-name filtering summary is incorrect");
+  fi
+  require_success(&filtered);
+
+  val TestOptions fail_fast_options = new TestOptions("", true, true);
+  val RunSummary fail_fast = run_suite(&suite, &fail_fast_options);
+  if fail_fast.total != 2 | fail_fast.passed != 1 | fail_fast.failed != 1; do
+    invariant_failure("fail-fast did not stop after the first failure");
+  fi
+  return;
+}

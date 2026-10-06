@@ -1,0 +1,9 @@
+async fnc answer(): int {
+  return 42;
+}
+
+pub routine main(): void {
+  val int result = await answer();
+  stdio.println(result);
+  return;
+}

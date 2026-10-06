@@ -1,0 +1,43 @@
+import class TestCase, TestSuite, TestOptions, RunSummary, TestOutcome from '../stdlib/testing';
+import fnc pass, expect_true, expect_equal_int, expect_near_float, check_int_cases, run_suite, require_success from '../stdlib/testing';
+
+fnc arithmetic_adds(): TestOutcome {
+  return expect_equal_int(2 + 3, 5, "2 + 3 must equal 5");
+}
+
+fnc floating_point_tolerance(): TestOutcome {
+  return expect_near_float(0.1 + 0.2, 0.3, 0.000001, "0.1 + 0.2 must be near 0.3");
+}
+
+fnc non_negative_property(int value): TestOutcome {
+  return expect_true((value * value) >= 0, "integer square must be non-negative");
+}
+
+fnc property_table(): TestOutcome {
+  return check_int_cases(
+    "square-is-non-negative",
+    arr[-9, -1, 0, 1, 11],
+    non_negative_property
+  );
+}
+
+fnc placeholder_skip_body(): TestOutcome {
+  return pass();
+}
+
+pub routine main(): void {
+  val TestSuite suite = new TestSuite(
+    "core",
+    arr[
+      new TestCase("arithmetic/adds", arithmetic_adds, false, ""),
+      new TestCase("float/tolerance", floating_point_tolerance, false, ""),
+      new TestCase("property/square", property_table, false, ""),
+      new TestCase("future/parallel-runner", placeholder_skip_body, true, "native scheduler-backed parallel test execution is not landed on main yet")
+    ]
+  );
+
+  val TestOptions options = new TestOptions("", false, true);
+  val RunSummary summary = run_suite(&suite, &options);
+  require_success(&summary);
+  return;
+}

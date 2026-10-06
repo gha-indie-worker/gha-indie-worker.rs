@@ -1,0 +1,26 @@
+name: concurrency-contract
+
+on:
+  push:
+    branches:
+      - integration/concurrency-contract-20261006
+  pull_request:
+
+jobs:
+  concurrency-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Compile
+        run: mvn -B -DskipTests -Dores.runtime.carriers=java test-compile
+      - name: Runtime and language proof suite
+        run: >
+          mvn -B -Dores.runtime.carriers=java
+          -Dtest=OresVMTest,OresSchedulerTest,ChannelRuntimeTest,ActorEventBusTest,ChannelSelectSyntaxTest
+          test
