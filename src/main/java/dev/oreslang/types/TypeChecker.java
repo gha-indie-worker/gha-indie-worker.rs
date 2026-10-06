@@ -1052,7 +1052,12 @@ public final class TypeChecker {
             if (destructure.kind() == Ast.DestructureKind.SEQUENCE) {
                 List<Type> elementTypes = sequenceDestructureTypes(source, destructure.bindings());
                 for (int i = 0; i < destructure.bindings().size(); i++) {
-                    defineDestructureBinding(env, destructure.bindings().get(i), elementTypes.get(i));
+                    defineDestructureBinding(
+                            env,
+                            destructure.bindings().get(i),
+                            elementTypes.get(i),
+                            generics,
+                            self);
                 }
             } else {
                 Set<String> selectedMembers = new LinkedHashSet<>();
@@ -1064,7 +1069,7 @@ public final class TypeChecker {
                     Type bindingType = binding.rest()
                             ? objectDestructureRestType(source, selectedMembers)
                             : objectDestructureMemberType(source, binding.name());
-                    env.define(binding.name(), bindingType, binding.kind());
+                    defineDestructureBinding(env, binding, bindingType, generics, self);
                 }
             }
             return;
@@ -1206,7 +1211,12 @@ public final class TypeChecker {
             List<Type> elementTypes = sequenceDestructureTypes(element, loop.bindings());
             Env loopEnv = new Env(env);
             for (int i = 0; i < loop.bindings().size(); i++) {
-                defineDestructureBinding(loopEnv, loop.bindings().get(i), elementTypes.get(i));
+                defineDestructureBinding(
+                        loopEnv,
+                        loop.bindings().get(i),
+                        elementTypes.get(i),
+                        generics,
+                        self);
             }
             checkLoopBlock(loop.body(), loopEnv, generics, expectedReturn, self);
             return;
@@ -1322,8 +1332,10 @@ public final class TypeChecker {
                 } else {
                     requireAssignable(index, Primitive.INT, "array/list index");
                     if (receiver instanceof ListType list) targetType = list.element();
-                    else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
-                    else throw new IllegalArgumentException("indexed assignment requires an array/list, tuple, or DynamicStruct");
+                    else if (receiver instanceof Tuple) {
+                        throw new IllegalArgumentException(
+                                "tuple elements are immutable; destructure or construct a new tuple instead");
+                    } else throw new IllegalArgumentException("indexed assignment requires an array/list or DynamicStruct");
                 }
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
@@ -2147,10 +2159,68 @@ public final class TypeChecker {
             }
             requireAssignable(index, Primitive.INT, "array/list index");
             if (receiver instanceof ListType list) return list.element();
-            if (receiver instanceof Tuple tuple) return tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
+            if (receiver instanceof Tuple tuple) {
+                if (indexed.index() instanceof Ast.LiteralExpr literal
+                        && literal.value() instanceof Long rawIndex) {
+                    int tupleIndex;
+                    try {
+                        tupleIndex = Math.toIntExact(rawIndex);
+                    } catch (ArithmeticException overflow) {
+                        throw new IllegalArgumentException("tuple index is outside integer range: " + rawIndex);
+                    }
+                    if (tupleIndex < 0 || tupleIndex >= tuple.elements().size()) {
+                        throw new IllegalArgumentException(
+                                "tuple index " + tupleIndex + " is out of bounds for arity " + tuple.elements().size());
+                    }
+                    return tuple.elements().get(tupleIndex);
+                }
+                if (tuple.elements().isEmpty()) return Unknown.INSTANCE;
+                return Types.unionOf(tuple.elements());
+            }
             throw new IllegalArgumentException("indexing requires an array/list, tuple, or DynamicStruct");
         }
         if (expr instanceof Ast.NewExpr created) {
+            if (created.type().name().equals("Tuple")) {
+                if (created.arguments().isEmpty()) {
+                    throw new IllegalArgumentException("new Tuple(...) requires at least one element");
+                }
+                for (Ast.Expr argument : created.arguments()) {
+                    if (argument instanceof Ast.NamedArgExpr || argument instanceof Ast.SpreadExpr) {
+                        throw new IllegalArgumentException(
+                                "Tuple construction is positional; named and spread constructor arguments are not permitted");
+                    }
+                }
+
+                if (created.type().arguments().isEmpty()) {
+                    return new Tuple(created.arguments().stream()
+                            .map(argument -> typeOf(argument, env, generics, self))
+                            .toList());
+                }
+
+                Type resolved = resolve(created.type(), generics, self);
+                if (!(resolved instanceof Tuple expectedTuple)) {
+                    throw new IllegalArgumentException("Tuple constructor target did not resolve to a tuple type");
+                }
+                if (expectedTuple.elements().size() != created.arguments().size()) {
+                    throw new IllegalArgumentException(
+                            "Tuple constructor expects " + expectedTuple.elements().size()
+                                    + " element(s), got " + created.arguments().size());
+                }
+                for (int i = 0; i < expectedTuple.elements().size(); i++) {
+                    Type expectedElement = expectedTuple.elements().get(i);
+                    Type actualElement = typeOfAgainstExpected(
+                            created.arguments().get(i),
+                            expectedElement,
+                            env,
+                            generics,
+                            self);
+                    requireAssignable(
+                            actualElement,
+                            expectedElement,
+                            "Tuple constructor element " + i);
+                }
+                return expectedTuple;
+            }
             if (created.type().name().equals("DynamicStruct")) {
                 Type dynamic = resolve(created.type(), generics, self);
                 if (!created.arguments().isEmpty()) {
@@ -2576,8 +2646,23 @@ public final class TypeChecker {
         return null;
     }
 
-    private void defineDestructureBinding(Env env, Ast.DestructureBinding binding, Type type) {
-        if (!binding.isDiscard()) env.define(binding.name(), type, binding.kind());
+    private void defineDestructureBinding(
+            Env env,
+            Ast.DestructureBinding binding,
+            Type inferredType,
+            Set<String> generics,
+            Type self) {
+        if (binding.isDiscard()) return;
+        Type bindingType = inferredType;
+        if (binding.declaredType() != null) {
+            Type declared = resolve(binding.declaredType(), generics, self);
+            requireAssignable(
+                    inferredType,
+                    declared,
+                    "destructure binding '" + binding.name() + "'");
+            bindingType = declared;
+        }
+        env.define(binding.name(), bindingType, binding.kind());
     }
 
     private List<Type> sequenceDestructureTypes(Type source, List<Ast.DestructureBinding> bindings) {
@@ -4316,6 +4401,13 @@ public final class TypeChecker {
                 rejectStaticClassGenericReference(binding.declaredType(), classGenerics, klass, method);
                 rejectStaticClassGenericReferences(binding.initializer(), classGenerics, klass, method);
             } else if (statement instanceof Ast.DestructureStmt destructure) {
+                for (Ast.DestructureBinding binding : destructure.bindings()) {
+                    rejectStaticClassGenericReference(
+                            binding.declaredType(),
+                            classGenerics,
+                            klass,
+                            method);
+                }
                 rejectStaticClassGenericReferences(destructure.initializer(), classGenerics, klass, method);
             } else if (statement instanceof Ast.ReturnStmt returned) {
                 rejectStaticClassGenericReferences(returned.value(), classGenerics, klass, method);
