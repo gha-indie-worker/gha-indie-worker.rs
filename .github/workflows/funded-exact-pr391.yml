@@ -1,0 +1,32 @@
+name: funded exact oreslang PR 391
+
+on:
+  push:
+    branches:
+      - feat/oreslang-pr391-211da04b-fund
+
+permissions:
+  contents: read
+
+jobs:
+  exact-source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 8a97fc7ce8b96114c25a7b6a3157af54486bd37f
+          fetch-depth: 1
+      - name: Prove exact source tree
+        run: test "$(git rev-parse HEAD^{tree})" = "96ad42733624affdf9d2bd1be170acdc69459929"
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Run control-flow regression tests
+        run: mvn -B -ntp -Dtest=BlockLoopControlFlowTest test
+      - name: Run full JVM verification
+        run: mvn -B -ntp -Dores.runtime.carriers=native verify
