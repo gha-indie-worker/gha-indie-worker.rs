@@ -1,0 +1,24 @@
+name: funded exact oreslang-format PR 14
+
+on:
+  push:
+    branches:
+      - feat/oreslang-format-pr14-94f47dc-fund
+
+permissions:
+  contents: read
+
+jobs:
+  exact-format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: a88d50567b68643bb76f896a905cc3cfab67fe93
+          fetch-depth: 1
+      - name: Prove exact formatter tree
+        run: test "$(git rev-parse HEAD^{tree})" = "c51b7a1b240008d27cc88a32d5c8215ba795690e"
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo fmt --all -- --check
+      - run: cargo test --all-targets
+      - run: cargo clippy --all-targets -- -D warnings
