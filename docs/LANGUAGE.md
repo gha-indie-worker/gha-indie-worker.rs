@@ -190,46 +190,12 @@ The `type` marker inside `Array<type intOrBoolOrString>` is accepted as an expli
 
 ## Collection shapes and named type metadata
 
-Collection syntax deliberately separates four concerns:
+Collection syntax deliberately separates three concerns:
 
-- ordinary nominal generic type arguments use `<T, K, V, ...>`;
-- intrinsic sequence shapes use `[...]`;
-- intrinsic compile-time layout/storage metadata uses `<name=value, ...>`;
-- runtime construction state uses named call arguments such as
-  `(capacity: 5)`.
-
-Those forms are not interchangeable. In particular, the element type never
-disappears merely because a collection has sizing policy.
-
-For intrinsic collection types, `<...>` is a declared type-constructor
-parameter list and supports both positional and named binding. The current
-common positional schema begins:
-
-```text
-type, size, align, allocator, growth_policy,
-inline_capacity, max_capacity, storage, rank
-```
-
-For example, these are the same type:
-
-```ores
-FixedArray<
-    type=int|string,
-    size=21
->[...(3 of int, 3 of string)]
-
-FixedArray<
-    int|string,
-    21
->[...(3 of int, 3 of string)]
-```
-
-As with named call arguments, positional type parameters may come first and
-named parameters may follow, but a positional parameter may not follow a named
-parameter. The compiler canonicalizes both spellings to the named schema and
-rejects duplicate bindings. The `type=` parameter is an element-domain
-constraint and is checked against every statically resolved position in a
-fixed shape.
+- `[...]` describes the element/sequence shape;
+- `<name=value, ...>` carries compile-time type/storage metadata;
+- `(...)` carries runtime construction state such as an initial size or
+  capacity.
 
 The core sequence families are intentionally distinct even when they share a
 runtime representation today:
@@ -245,41 +211,9 @@ runtime representation today:
 `Tuple`, `FixedArray`, and `FixedList` are distinct static kinds. A
 `FixedArray[int, string]` is therefore not silently assignable to
 `Tuple[int, string]`, even if both are currently list-backed in the
-interpreter.
-
-The important notation boundary is:
-
-| Intent | Canonical spelling |
-| --- | --- |
-| intrinsic homogeneous runtime array | `Array[T]` |
-| intrinsic growable vector | `Vector[T]` |
-| intrinsic fixed array of four T values | `FixedArray[4 of T]` |
-| intrinsic tuple/product | `Tuple[T1, T2]` |
-| nested runtime arrays | `Array[Array[T]]` |
-| ordinary nominal generic collection class | `ArrayList<T>` |
-| runtime initial capacity | `new ArrayList<T>(capacity: 5)` |
-| fixed intrinsic compile-time extent | `FixedArray<size=4>[4 of T]` or `FixedArray[4 of T]` |
-
-Thus `ArrayList<T>[]` is not the Oreslang spelling for a nominal
-`ArrayList`, and `ArrayList<size=5>[]` is doubly wrong: it loses the
-element type and treats runtime sizing as type metadata. Oreslang deliberately
-does not use Java/C suffix-array syntax `T[]`; arrays are prefix/container
-types. If the intended type is an array whose elements are array lists, write:
-
-```ores
-Array[ArrayList<T>]
-```
-
-If the intended type is simply a growable list of `T`, write:
-
-```ores
-ArrayList<T>
-```
-
-An `ArrayList<T>` implementation supplied by the Oreslang standard library
-is an ordinary generic class and therefore follows ordinary generic syntax.
-Importing `java.util.ArrayList` remains explicit Java interop and does not
-change these language rules.
+interpreter. `ArrayList` is not a core Oreslang sequence spelling on current
+main; importing `java.util.ArrayList` remains explicit Java interop and does
+not define Oreslang collection semantics.
 
 For exact finite storage, counted repetition is part of the shape:
 
@@ -370,13 +304,8 @@ no precedence rule.
 
 For runtime-extent collections, current `size` and `capacity` are not
 properties of the type. They belong to runtime construction. Fixed-extent
-sequences are different: `size=N` is compile-time extent metadata.
-
-When the bracketed shape is already finite, `size=N` is a checked redundant
-assertion and must equal the expanded arity. When the bracketed shape contains
-an unbounded `...` repetition, `size=N` closes that repetition into a
-finite fixed layout and is therefore semantically required rather than
-redundant.
+sequences are different: `size=N` may be used as a compile-time layout
+assertion and must equal the statically expanded arity.
 
 ```ores
 // runtime-extent policy: size/capacity are constructor state
@@ -386,7 +315,7 @@ val xs: Vector<growth_policy=GP.Foo>[int] = [1, 2, 3];
 // Vector<size=3>[int]
 // Vector<capacity=32>[int]
 
-// fixed extent is carried by the shape, and size may restate it
+// fixed product/storage policy: size is a checked compile-time assertion
 val pair: Tuple<
     growth_policy=GP.Fixed,
     allocator=Arena,
@@ -395,50 +324,28 @@ val pair: Tuple<
 >[int, string] = (7, "seven");
 
 val fixed: FixedArray<size=4, align=32>[4 of int] = [1, 2, 3, 4];
-
-// size closes an otherwise unbounded repeating shape.
-// The six-slot unit repeats cyclically and is truncated at exactly 21 slots.
-val patterned: FixedArray<size=21>[
-    ...(3 of int, 3 of string)
-];
 ```
 
 `capacity=N` remains runtime state and is not accepted as type metadata.
-Fixed-only `size=N` is first-class compile-time extent metadata. With a
-finite bracket shape it acts as a consistency assertion; with an unbounded
-`...` shape it supplies the terminating extent. Repeating groups are expanded
-cyclically until exactly `size` slots exist, so the final cycle may be
-truncated. `growth_policy` on a tuple/fixed sequence describes backing-storage
-or construction policy only; it never makes the logical arity resizable.
+`growth_policy` on a tuple/fixed sequence describes backing-storage or
+construction policy only; it never makes the logical arity resizable.
 `inline_capacity` and `max_capacity`, when present on a fixed sequence,
 must be at least its exact arity.
 
-Nested element types are the clearest canonical spelling for multidimensional
-runtime collections:
+Repeated bracket suffixes provide homogeneous multidimensional shorthand:
 
 ```ores
-val matrix: Vector[Vector[int]] =
+val matrix: Vector[int][int] =
     [[1, 2], [3, 4]];
 
-val array_matrix: Array[Array[int]] =
+// Explicit rank metadata is equivalent for a homogeneous shape:
+val matrix2: Vector<rank=2>[int] =
     [[1, 2], [3, 4]];
 ```
 
-The existing repeated-bracket and explicit-rank forms remain compatibility
-shorthands for homogeneous rank-N collections:
-
-```ores
-val matrix_compat: Vector[int][int] =
-    [[1, 2], [3, 4]];
-
-val matrix_rank: Vector<rank=2>[int] =
-    [[1, 2], [3, 4]];
-```
-
-New code should prefer nested element types because every bracketed shape has a
-single local meaning. Exact fixed multidimensional layouts remain explicit by
-nesting fixed element types, for example
-`FixedArray[3 of FixedArray[4 of int]]`.
+The compiler canonicalizes both to nested rank-2 collection semantics. This is
+distinct from an exact fixed multidimensional layout, whose extents belong in
+finite sequence shapes.
 
 ## Bindings
 

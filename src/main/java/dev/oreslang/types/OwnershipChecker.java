@@ -172,9 +172,7 @@ public final class OwnershipChecker {
             for (int i = 0; i < destructure.bindings().size(); i++) {
                 Ast.DestructureBinding binding = destructure.bindings().get(i);
                 if (binding.isDiscard()) continue;
-                Ast.TypeRef bindingType = binding.declaredType() != null
-                        ? binding.declaredType()
-                        : destructureBindingType(destructure, source.type, i, binding.name());
+                Ast.TypeRef bindingType = destructureBindingType(destructure, source.type, i, binding.name());
                 ValueKind bindingKind = bindingType.name().equals("$infer$")
                         ? (source.kind == ValueKind.COPY ? ValueKind.COPY : ValueKind.MOVE_ONLY)
                         : kindOfType(bindingType);
@@ -412,9 +410,7 @@ public final class OwnershipChecker {
             for (int i = 0; i < loop.bindings().size(); i++) {
                 Ast.DestructureBinding binding = loop.bindings().get(i);
                 if (binding.isDiscard()) continue;
-                Ast.TypeRef bindingType = binding.declaredType() != null
-                        ? binding.declaredType()
-                        : sequenceDestructureBindingType(elementType, i, binding.rest());
+                Ast.TypeRef bindingType = sequenceDestructureBindingType(elementType, i, binding.rest());
                 loopScope.define(binding.name(), new VarState(
                         bindingType,
                         binding.kind() == Ast.BindingKind.LET,
@@ -602,9 +598,6 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.SpreadExpr spread) {
             return checkExpr(spread.expression(), scope, consuming);
-        }
-        if (expr instanceof Ast.NamedArgExpr named) {
-            return checkExpr(named.value(), scope, consuming);
         }
         if (expr instanceof Ast.CallExpr call) {
             return checkCall(call, scope);
@@ -1089,7 +1082,6 @@ public final class OwnershipChecker {
     }
 
     private void checkArguments(List<Ast.Expr> arguments, List<Ast.Param> params, Scope scope, String callable) {
-        arguments = bindNamedArguments(arguments, params, callable);
         if (arguments.size() != params.size()) return; // arity is TypeChecker's responsibility
         for (int i = 0; i < arguments.size(); i++) {
             Ast.Expr arg = arguments.get(i);
@@ -1405,8 +1397,6 @@ public final class OwnershipChecker {
             for (Ast.Expr arg : e.arguments()) scanExpr(arg, locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.SpreadExpr e) {
             scanExpr(e.expression(), locals, outer, recursiveBinding, captures, false);
-        } else if (expr instanceof Ast.NamedArgExpr e) {
-            scanExpr(e.value(), locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.MemberExpr e) scanExpr(e.receiver(), locals, outer, recursiveBinding, captures, write);
         else if (expr instanceof Ast.IndexExpr e) {
             scanExpr(e.receiver(), locals, outer, recursiveBinding, captures, write);
@@ -1727,48 +1717,6 @@ public final class OwnershipChecker {
         }
     }
 
-    private List<Ast.Expr> bindNamedArguments(
-            List<Ast.Expr> arguments,
-            List<Ast.Param> parameters,
-            String label) {
-        boolean hasNamed = arguments.stream().anyMatch(Ast.NamedArgExpr.class::isInstance);
-        if (!hasNamed) return arguments;
-        if (arguments.stream().anyMatch(Ast.SpreadExpr.class::isInstance)) {
-            throw error(label + " cannot mix named arguments with spread arguments");
-        }
-        if (arguments.size() != parameters.size()) return arguments;
-
-        List<Ast.Expr> ordered = new ArrayList<>(
-                java.util.Collections.nCopies(parameters.size(), null));
-        int positional = 0;
-        for (Ast.Expr argument : arguments) {
-            if (argument instanceof Ast.NamedArgExpr named) {
-                int index = -1;
-                for (int i = 0; i < parameters.size(); i++) {
-                    if (parameters.get(i).name().equals(named.name())) {
-                        index = i;
-                        break;
-                    }
-                }
-                if (index < 0) {
-                    throw error(label + " has no parameter named '" + named.name() + "'");
-                }
-                if (ordered.get(index) != null) {
-                    throw error(label + " parameter '" + named.name() + "' is supplied more than once");
-                }
-                ordered.set(index, named.value());
-                continue;
-            }
-            while (positional < ordered.size() && ordered.get(positional) != null) positional++;
-            if (positional >= ordered.size()) return arguments;
-            ordered.set(positional++, argument);
-        }
-        for (Ast.Expr argument : ordered) {
-            if (argument == null) return arguments;
-        }
-        return java.util.Collections.unmodifiableList(ordered);
-    }
-
     private CallSignature specializeCall(
             List<String> allGenericNames,
             List<String> explicitGenericNames,
@@ -1785,10 +1733,8 @@ public final class OwnershipChecker {
                 fixed.add(explicitGenericNames.get(i));
             }
         }
-        List<Ast.Expr> orderedArguments =
-                bindNamedArguments(call.arguments(), parameters, "call");
-        for (int i = 0; i < Math.min(parameters.size(), orderedArguments.size()); i++) {
-            inferGenericBindings(parameters.get(i).type(), syntacticType(orderedArguments.get(i), scope),
+        for (int i = 0; i < Math.min(parameters.size(), call.arguments().size()); i++) {
+            inferGenericBindings(parameters.get(i).type(), syntacticType(call.arguments().get(i), scope),
                     Set.copyOf(allGenericNames), bindings, fixed);
         }
         List<Ast.Param> specialized = parameters.stream()
@@ -2061,10 +2007,9 @@ public final class OwnershipChecker {
                 || concrete.name().equals("DynamicStruct")) && concrete.arguments().size() == 1) {
             return concrete.arguments().getFirst();
         }
-        List<Ast.TypeRef> tupleElements = tupleElements(concrete);
-        if (tupleElements != null && !tupleElements.isEmpty()) {
-            Ast.TypeRef first = tupleElements.getFirst();
-            boolean same = tupleElements.stream().allMatch(first::equals);
+        if (concrete.isTupleType() && !concrete.arguments().isEmpty()) {
+            Ast.TypeRef first = concrete.arguments().getFirst();
+            boolean same = concrete.arguments().stream().allMatch(first::equals);
             return same ? first : Ast.TypeRef.inferred();
         }
         return Ast.TypeRef.inferred();
@@ -2089,13 +2034,12 @@ public final class OwnershipChecker {
             return sequenceDestructureBindingType(iterableShape, index, rest);
         }
 
-        List<Ast.TypeRef> tupleElements = tupleElements(concrete);
-        if (tupleElements != null) {
+        if (concrete.isTupleType()) {
             if (rest) {
-                if (index > tupleElements.size()) return Ast.TypeRef.inferred();
-                return Ast.TypeRef.tupleType(tupleElements.subList(index, tupleElements.size()));
+                if (index > concrete.arguments().size()) return Ast.TypeRef.inferred();
+                return Ast.TypeRef.tupleType(concrete.arguments().subList(index, concrete.arguments().size()));
             }
-            if (index < tupleElements.size()) return tupleElements.get(index);
+            if (index < concrete.arguments().size()) return concrete.arguments().get(index);
             return Ast.TypeRef.inferred();
         }
 
@@ -2119,7 +2063,7 @@ public final class OwnershipChecker {
                 iterator.method().returnType(),
                 genericBindings(iterator.owner().genericParameters(), iterator.ownerType().arguments()));
         if (result == null) return Ast.TypeRef.inferred();
-        if (tupleElements(result) != null) return result;
+        if (result.isTupleType()) return result;
         if ((result.name().equals("Array") || result.name().equals("List"))
                 && result.arguments().size() == 1) {
             return result;
@@ -2245,44 +2189,9 @@ public final class OwnershipChecker {
         return isCopyType(type) ? ValueKind.COPY : ValueKind.MOVE_ONLY;
     }
 
-    /**
-     * Normalize both legacy finite tuple types ([T1, T2]) and canonical
-     * Tuple[...] sequence shapes to positional elements for ownership analysis.
-     * Unbounded repetitions intentionally return null until a finite size can
-     * be proven from metadata.
-     */
-    private List<Ast.TypeRef> tupleElements(Ast.TypeRef type) {
-        if (type == null) return null;
-        Ast.TypeRef concrete = type.isBorrow() ? type.borrowedTarget() : type;
-        if (concrete.isTupleType()) return concrete.arguments();
-        if (!concrete.name().equals("Tuple")) return null;
-
-        Ast.TypeRef shape = concrete.arguments().stream()
-                .filter(Ast.TypeRef::isSequenceShape)
-                .findFirst()
-                .orElse(null);
-        if (shape == null) return null;
-
-        List<Ast.TypeRef> elements = new ArrayList<>();
-        for (Ast.TypeRef pattern : shape.arguments()) {
-            if (pattern.isRepeatMany()) return null;
-            if (pattern.isRepeatExact()) {
-                long count = pattern.repeatExactCount();
-                if (count > 1_000_000L) return null;
-                Ast.TypeRef repeated = pattern.arguments().getFirst();
-                for (long i = 0; i < count; i++) elements.add(repeated);
-            } else {
-                elements.add(pattern);
-            }
-        }
-        return List.copyOf(elements);
-    }
-
     private boolean isCopyType(Ast.TypeRef type) {
         if (type == null || type.isBorrow()) return false;
         if (type.isUnion()) return type.arguments().stream().allMatch(this::isCopyType);
-        List<Ast.TypeRef> tupleElements = tupleElements(type);
-        if (tupleElements != null) return tupleElements.stream().allMatch(this::isCopyType);
         return switch (type.name()) {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",

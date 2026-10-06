@@ -145,7 +145,6 @@ public final class OresEvalRootNode extends RootNode {
         private final ThreadLocal<GeneratorRuntime.Emitter<Object>> activeGeneratorEmitter = new ThreadLocal<>();
         private static final int TAIL_SAFEPOINT_INTERVAL = 64;
         private static final Object UNINITIALIZED_FIELD = new Object();
-        private static final Object MISSING_ARGUMENT = new Object();
 
         private enum InvocationKind {
             FUNCTION,
@@ -827,6 +826,110 @@ public final class OresEvalRootNode extends RootNode {
             return future;
         }
 
+        private OresFuture<Object> startFutureChainTask(
+                OresScheduler.Task<Object> task) {
+            if (ActorRuntime.inActorExecution()) {
+                OresFuture<Object> future = context.actors().startActorTask(task);
+                context.actors().ownCurrentActorFuture(future);
+                return future;
+            }
+            OresScheduler current = OresScheduler.current();
+            return (current != null
+                    ? current
+                    : context.vm().rootScheduler()).start(task);
+        }
+
+        private OresFuture<Object> chainFuture(
+                OresFuture<?> source,
+                Invokable callback,
+                boolean flatten,
+                boolean observeSuccess) {
+            Objects.requireNonNull(source, "source");
+            Objects.requireNonNull(callback, "callback");
+            return startFutureChainTask(new OresScheduler.Task<>() {
+                private int pc;
+
+                @Override
+                public OresScheduler.Step<Object> resume(
+                        OresScheduler.Resume resume) {
+                    if (pc == 0) {
+                        if (!resume.initial()) {
+                            throw new IllegalStateException(
+                                    "Future chain started with a non-initial resume");
+                        }
+                        pc = 1;
+                        return OresScheduler.await(source);
+                    }
+
+                    if (pc == 1) {
+                        if (resume.failure() != null) {
+                            throw sourceFailure(resume.failure());
+                        }
+                        Object value = resume.value();
+                        Object mapped = invoke(
+                                invokableInvocation(callback, List.of(value)));
+
+                        if (observeSuccess) {
+                            if (mapped != null) {
+                                throw new IllegalArgumentException(
+                                        "Future.onSuccess callback must return void");
+                            }
+                            pc = 3;
+                            return OresScheduler.done(value);
+                        }
+
+                        if (!flatten) {
+                            pc = 3;
+                            return OresScheduler.done(mapped);
+                        }
+
+                        if (!(mapped instanceof OresFuture<?> nested)) {
+                            throw new IllegalArgumentException(
+                                    "Future.compose/flatMap callback must return Future<T>");
+                        }
+                        pc = 2;
+                        return OresScheduler.await(nested);
+                    }
+
+                    if (pc == 2) {
+                        if (resume.failure() != null) {
+                            throw sourceFailure(resume.failure());
+                        }
+                        pc = 3;
+                        return OresScheduler.done(resume.value());
+                    }
+
+                    throw new IllegalStateException(
+                            "Future chain resumed after completion");
+                }
+            });
+        }
+
+        private OresFuture<Object> wrapFutureSome(OresFuture<?> source) {
+            Objects.requireNonNull(source, "source");
+            return startFutureChainTask(new OresScheduler.Task<>() {
+                private boolean waiting;
+
+                @Override
+                public OresScheduler.Step<Object> resume(
+                        OresScheduler.Resume resume) {
+                    if (!waiting) {
+                        if (!resume.initial()) {
+                            throw new IllegalStateException(
+                                    "optional Future wrapper started with a non-initial resume");
+                        }
+                        waiting = true;
+                        return OresScheduler.await(source);
+                    }
+                    if (resume.failure() != null) {
+                        throw sourceFailure(resume.failure());
+                    }
+                    return OresScheduler.done(
+                            new OptionValue(true, resume.value()));
+                }
+            });
+        }
+
         private boolean functionContainsPotentialSuspension(
                 Ast.FunctionDecl function) {
             return functionContainsPotentialSuspension(
@@ -1069,9 +1172,6 @@ public final class OresEvalRootNode extends RootNode {
                                 index.receiver(), seen)
                         || expressionContainsPotentialSuspension(
                                 index.index(), seen);
-            }
-            if (expr instanceof Ast.NamedArgExpr named) {
-                return expressionContainsPotentialSuspension(named.value(), seen);
             }
             if (expr instanceof Ast.NewExpr created) {
                 return created.arguments().stream().anyMatch(
@@ -2457,20 +2557,18 @@ public final class OresEvalRootNode extends RootNode {
                                             set.selectAsync(policy);
                                     if (selected.mode()
                                             == Ast.WaitMode.NONBLOCKING) {
-                                        if (ActorRuntime.inActorExecution()) {
-                                            context.actors().ownCurrentActorFuture(
-                                                    future);
-                                        }
                                         continuation.accept(
                                                 t,
-                                                future,
+                                                wrapFutureSome(future),
                                                 null);
                                         return;
                                     }
                                     if (future.isDone()) {
                                         continuation.accept(
                                                 t,
-                                                future.join(),
+                                                new OptionValue(
+                                                        true,
+                                                        future.join()),
                                                 null);
                                         return;
                                     }
@@ -2479,7 +2577,11 @@ public final class OresEvalRootNode extends RootNode {
                                             (t2, value, failure2) ->
                                                     continuation.accept(
                                                             t2,
-                                                            value,
+                                                            failure2 == null
+                                                                    ? new OptionValue(
+                                                                            true,
+                                                                            value)
+                                                                    : null,
                                                             failure2));
                                 } catch (RuntimeException | Error failure2) {
                                     continuation.accept(
@@ -2889,13 +2991,9 @@ public final class OresEvalRootNode extends RootNode {
                 continuation.accept(task, List.copyOf(values), null);
                 return;
             }
-            Ast.Expr source = expressions.get(index);
-            Ast.Expr valueExpression = source instanceof Ast.NamedArgExpr named
-                    ? named.value()
-                    : source;
             evalSuspendableExpr(
                     task,
-                    valueExpression,
+                    expressions.get(index),
                     env,
                     (t, value, failure) -> {
                         if (failure != null) {
@@ -3263,28 +3361,6 @@ public final class OresEvalRootNode extends RootNode {
                 SourceValueCont continuation) {
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
-                if (name.name().equals("Channel")) {
-                    evalSuspendableArguments(
-                            task,
-                            call.arguments(),
-                            env,
-                            (t, values, failure) -> {
-                                if (failure != null) {
-                                    continuation.accept(t, null, failure);
-                                    return;
-                                }
-                                try {
-                                    List<Object> bound = bindEvaluatedArgumentsByNames(
-                                            call.arguments(), values, List.of("capacity"), "Channel<T>", true);
-                                    Invocation invocation =
-                                            invokableInvocation(new ChannelFactory()::create, bound);
-                                    completeSourceInvocation(t, invocation, true, continuation);
-                                } catch (RuntimeException | Error failure2) {
-                                    continuation.accept(t, null, failure2);
-                                }
-                            });
-                    return;
-                }
                 Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
                 if (direct != null) {
                     evalSuspendableArguments(
@@ -3297,11 +3373,8 @@ public final class OresEvalRootNode extends RootNode {
                                     return;
                                 }
                                 try {
-                                    List<Object> bound = bindEvaluatedArguments(
-                                            call.arguments(), values, direct.parameters(),
-                                            "function " + direct.name());
                                     Invocation invocation =
-                                            functionInvocation(direct, bound);
+                                            functionInvocation(direct, values);
                                     completeSourceInvocation(
                                             t,
                                             invocation,
@@ -3373,14 +3446,6 @@ public final class OresEvalRootNode extends RootNode {
                                 (t2, values, failure2) -> {
                                     if (failure2 != null) {
                                         continuation.accept(t2, null, failure2);
-                                        return;
-                                    }
-                                    if (hasNamedArguments(call.arguments())) {
-                                        continuation.accept(
-                                                t2,
-                                                null,
-                                                new IllegalArgumentException(
-                                                        "named arguments require a direct declared callable; function values do not retain parameter names"));
                                         return;
                                     }
                                     if (!(callee instanceof Invokable invokable)) {
@@ -3464,13 +3529,10 @@ public final class OresEvalRootNode extends RootNode {
                             env.accessClass(),
                             "method",
                             method.name());
-                    List<Object> bound = object.owner.bindEvaluatedArguments(
-                            call.arguments(), args, method.parameters(),
-                            "method " + object.klass.name() + "." + method.name());
                     return object.owner.methodInvocation(
                             object,
                             method,
-                            bound);
+                            args);
                 }
 
                 OwnedField ownedField = object.owner.findField(
@@ -3506,19 +3568,15 @@ public final class OresEvalRootNode extends RootNode {
                 klass.owner().requireClassMemberVisible(
                         method.visibility(), klass.owner().declaringClass(method),
                         env.accessClass(), "static function", method.name());
-                List<Object> bound = klass.owner().bindEvaluatedArguments(
-                        call.arguments(), args, method.parameters(),
-                        "static function " + klass.klass().name() + "." + method.name());
                 return klass.owner().staticFunctionInvocation(
                         method,
-                        bound);
+                        args);
             }
 
             if (receiver instanceof ModuleFacade module) {
                 return module.owner().prepareModuleInvocation(
                         module.module(),
                         member.member(),
-                        call.arguments(),
                         args);
             }
 
@@ -3526,7 +3584,6 @@ public final class OresEvalRootNode extends RootNode {
                 return namespace.owner().prepareImportedInvocation(
                         namespace.kind(),
                         member.member(),
-                        call.arguments(),
                         args);
             }
 
@@ -3534,13 +3591,6 @@ public final class OresEvalRootNode extends RootNode {
             if (!(callee instanceof Invokable invokable)) {
                 throw new IllegalArgumentException(
                         "member is not callable: " + member.member());
-            }
-            if (receiver instanceof ChannelFactory && member.member().equals("new")) {
-                args = bindEvaluatedArgumentsByNames(
-                        call.arguments(), args, List.of("capacity"), "Channel.new<T>", true);
-            } else if (hasNamedArguments(call.arguments())) {
-                throw new IllegalArgumentException(
-                        "named arguments require a declared Ores callable with parameter names");
             }
             return invokableInvocation(invokable, args);
         }
@@ -3655,12 +3705,6 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.NewExpr created,
                 List<Object> args,
                 Env env) {
-            if (created.type().name().equals("Tuple")) {
-                if (args.isEmpty()) {
-                    throw new IllegalArgumentException("new Tuple(...) requires at least one element");
-                }
-                return List.copyOf(args);
-            }
             if (created.type().name().equals("DynamicStruct")) {
                 if (!args.isEmpty()) {
                     throw new IllegalArgumentException(
@@ -3671,10 +3715,6 @@ public final class OresEvalRootNode extends RootNode {
             HostClassFacade hostClass =
                     hostClasses.get(created.type().name());
             if (hostClass != null) {
-                if (hasNamedArguments(created.arguments())) {
-                    throw new IllegalArgumentException(
-                            "named arguments are unavailable for Java host constructors because stable parameter names are not part of the interop ABI");
-                }
                 context.requireCapability(
                         IsolatePolicy.Capability.JAVA_INTEROP,
                         "Java host constructor " + hostClass.className());
@@ -3694,24 +3734,6 @@ public final class OresEvalRootNode extends RootNode {
             if (klass == null) {
                 throw new IllegalArgumentException(
                         "unknown class " + created.type().name());
-            }
-
-            Ast.ConstructorDecl constructor = klass.constructor();
-            if (constructor != null) {
-                args = owner.bindEvaluatedArguments(
-                        created.arguments(),
-                        args,
-                        constructor.parameters(),
-                        "constructor " + klass.name());
-            } else if (hasNamedArguments(created.arguments())) {
-                List<Ast.FieldDecl> fields =
-                        owner.effectiveFields(klass, new LinkedHashSet<>());
-                args = owner.bindEvaluatedArgumentsByNames(
-                        created.arguments(),
-                        args,
-                        fields.stream().map(Ast.FieldDecl::name).toList(),
-                        "constructor " + klass.name(),
-                        false);
             }
             return owner.instantiate(klass, args, externalConstruction);
         }
@@ -3925,6 +3947,24 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callFunctionBodyRaw(Ast.FunctionDecl fn, List<?> args) {
+            if (!fn.trapped()) {
+                return callFunctionBodyUnchecked(fn, args);
+            }
+            try {
+                return new OptionValue(true, callFunctionBodyUnchecked(fn, args));
+            } catch (OresPanic panic) {
+                throw panic;
+            } catch (java.util.concurrent.CancellationException cancelled) {
+                throw cancelled;
+            } catch (RuntimeException ordinaryFailure) {
+                // trap is deliberately lossy: ordinary guest/runtime failure
+                // becomes None. Panic and scheduler cancellation remain distinct
+                // non-trappable control channels.
+                return new OptionValue(false, null);
+            }
+        }
+
+        private Object callFunctionBodyUnchecked(Ast.FunctionDecl fn, List<?> args) {
             if (fn.async() || functionContainsPotentialSuspension(fn)) {
                 OresFuture<Object> future =
                         startSourceFunctionTask(
@@ -3941,7 +3981,10 @@ public final class OresEvalRootNode extends RootNode {
                 env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
             try {
-                executeBlock(fn.body(), env);
+                // A trap boundary must survive tail-call lowering. Treat it as a
+                // tail barrier so a callee failure cannot escape by replacing
+                // this function's dynamic boundary.
+                executeBlock(fn.body(), env, fn.trapped());
                 return null;
             } catch (TailCallSignal signal) {
                 return new TailCall(signal.invocation);
@@ -4663,17 +4706,9 @@ public final class OresEvalRootNode extends RootNode {
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
-                if (directName.name().equals("Channel")) {
-                    List<Object> args = evaluateArguments(call.arguments(), env);
-                    args = bindEvaluatedArgumentsByNames(
-                            call.arguments(), args, List.of("capacity"), "Channel<T>", true);
-                    return invokableInvocation(new ChannelFactory()::create, args);
-                }
                 Ast.FunctionDecl direct = findFunction(directName.name(), call.arguments().size());
                 if (direct != null) {
                     List<Object> args = evaluateArguments(call.arguments(), env);
-                    args = bindEvaluatedArguments(
-                            call.arguments(), args, direct.parameters(), "function " + direct.name());
                     return functionInvocation(direct, args);
                 }
             }
@@ -4692,10 +4727,7 @@ public final class OresEvalRootNode extends RootNode {
                                 env.accessClass(),
                                 "method",
                                 method.name());
-                        List<Object> bound = object.owner.bindEvaluatedArguments(
-                                call.arguments(), args, method.parameters(),
-                                "method " + object.klass.name() + "." + method.name());
-                        return object.owner.methodInvocation(object, method, bound);
+                        return object.owner.methodInvocation(object, method, args);
                     }
 
                     OwnedField ownedField = object.owner.findField(
@@ -4741,15 +4773,12 @@ public final class OresEvalRootNode extends RootNode {
                             env.accessClass(),
                             "static function",
                             fn.name());
-                    List<Object> bound = klass.owner().bindEvaluatedArguments(
-                            call.arguments(), args, fn.parameters(),
-                            "static function " + klass.klass().name() + "." + fn.name());
-                    return klass.owner().staticFunctionInvocation(fn, bound);
+                    return klass.owner().staticFunctionInvocation(fn, args);
                 }
 
                 if (receiver instanceof ModuleFacade module) {
                     return module.owner().prepareModuleInvocation(
-                            module.module(), methodCall.member(), call.arguments(), args);
+                            module.module(), methodCall.member(), args);
                 }
 
                 if (receiver instanceof OresMutex.Guard<?> guard
@@ -4771,19 +4800,12 @@ public final class OresEvalRootNode extends RootNode {
 
                 if (receiver instanceof ImportedNamespace namespace) {
                     return namespace.owner().prepareImportedInvocation(
-                            namespace.kind(), methodCall.member(), call.arguments(), args);
+                            namespace.kind(), methodCall.member(), args);
                 }
 
                 Object callee = member(receiver, methodCall.member(), env);
                 if (!(callee instanceof Invokable invokable)) {
                     throw new IllegalArgumentException("value is not callable: " + callee);
-                }
-                if (receiver instanceof ChannelFactory && methodCall.member().equals("new")) {
-                    args = bindEvaluatedArgumentsByNames(
-                            call.arguments(), args, List.of("capacity"), "Channel.new<T>", true);
-                } else if (hasNamedArguments(call.arguments())) {
-                    throw new IllegalArgumentException(
-                            "named arguments require a declared Ores callable with parameter names");
                 }
                 return invokableInvocation(invokable, args);
             }
@@ -4796,17 +4818,12 @@ public final class OresEvalRootNode extends RootNode {
                     return importedTarget(directImport.declaration()).prepareImportedInvocation(
                             Ast.ImportKind.FUNCTION,
                             directImport.sourceName(),
-                            call.arguments(),
                             args);
                 }
             }
 
             Object callee = eval(call.callee(), env);
             List<Object> args = evaluateArguments(call.arguments(), env);
-            if (hasNamedArguments(call.arguments())) {
-                throw new IllegalArgumentException(
-                        "named arguments require a direct declared callable; function values do not retain parameter names");
-            }
             if (!(callee instanceof Invokable invokable)) {
                 throw new IllegalArgumentException("value is not callable: " + callee);
             }
@@ -4818,92 +4835,11 @@ public final class OresEvalRootNode extends RootNode {
             for (Ast.Expr argument : arguments) {
                 if (argument instanceof Ast.SpreadExpr spread) {
                     values.addAll(expandArgumentSequence(eval(spread.expression(), env), "argument spread"));
-                } else if (argument instanceof Ast.NamedArgExpr named) {
-                    values.add(eval(named.value(), env));
                 } else {
                     values.add(eval(argument, env));
                 }
             }
             return List.copyOf(values);
-        }
-
-        private List<Object> bindEvaluatedArguments(
-                List<Ast.Expr> sourceArguments,
-                List<Object> values,
-                List<Ast.Param> parameters,
-                String label) {
-            return bindEvaluatedArgumentsByNames(
-                    sourceArguments,
-                    values,
-                    parameters.stream().map(Ast.Param::name).toList(),
-                    label,
-                    true);
-        }
-
-        private List<Object> bindEvaluatedArgumentsByNames(
-                List<Ast.Expr> sourceArguments,
-                List<Object> values,
-                List<String> parameterNames,
-                String label,
-                boolean requireAll) {
-            boolean hasNamed = sourceArguments.stream()
-                    .anyMatch(Ast.NamedArgExpr.class::isInstance);
-            if (!hasNamed) return values;
-            if (sourceArguments.stream().anyMatch(Ast.SpreadExpr.class::isInstance)) {
-                throw new IllegalArgumentException(
-                        label + " cannot mix named arguments with spread arguments");
-            }
-            if (sourceArguments.size() != values.size()) {
-                throw new IllegalStateException(
-                        label + " named argument evaluation lost source/value correspondence");
-            }
-            if (sourceArguments.size() > parameterNames.size()) {
-                throw new IllegalArgumentException(label + " received too many arguments");
-            }
-
-            ArrayList<Object> ordered = new ArrayList<>(
-                    java.util.Collections.nCopies(parameterNames.size(), MISSING_ARGUMENT));
-            int positional = 0;
-            for (int sourceIndex = 0; sourceIndex < sourceArguments.size(); sourceIndex++) {
-                Ast.Expr source = sourceArguments.get(sourceIndex);
-                Object value = values.get(sourceIndex);
-                if (source instanceof Ast.NamedArgExpr named) {
-                    int index = parameterNames.indexOf(named.name());
-                    if (index < 0) {
-                        throw new IllegalArgumentException(
-                                label + " has no parameter named '" + named.name() + "'");
-                    }
-                    if (ordered.get(index) != MISSING_ARGUMENT) {
-                        throw new IllegalArgumentException(
-                                label + " parameter '" + named.name() + "' is supplied more than once");
-                    }
-                    ordered.set(index, value);
-                    continue;
-                }
-                while (positional < ordered.size()
-                        && ordered.get(positional) != MISSING_ARGUMENT) {
-                    positional++;
-                }
-                if (positional >= ordered.size()) {
-                    throw new IllegalArgumentException(
-                            label + " received too many positional arguments");
-                }
-                ordered.set(positional++, value);
-            }
-
-            if (requireAll) {
-                for (int i = 0; i < ordered.size(); i++) {
-                    if (ordered.get(i) == MISSING_ARGUMENT) {
-                        throw new IllegalArgumentException(
-                                label + " is missing required parameter '" + parameterNames.get(i) + "'");
-                    }
-                }
-            }
-            return java.util.Collections.unmodifiableList(ordered);
-        }
-
-        private boolean hasNamedArguments(List<Ast.Expr> arguments) {
-            return arguments.stream().anyMatch(Ast.NamedArgExpr.class::isInstance);
         }
 
         private boolean isBooleanIntrinsicCall(Ast.CallExpr call, Env env) {
@@ -5207,9 +5143,6 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.SpreadExpr) {
                 throw new IllegalArgumentException("spread expressions are only valid inside call argument lists");
             }
-            if (expr instanceof Ast.NamedArgExpr) {
-                throw new IllegalArgumentException("named arguments are only valid inside call/constructor argument lists");
-            }
             if (expr instanceof Ast.CallExpr call) {
                 if (isBooleanIntrinsicCall(call, env)) return evalBooleanIntrinsic(call, env);
                 return invoke(prepareInvocation(call, env));
@@ -5243,8 +5176,38 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("value is not indexable: " + receiver);
             }
             if (expr instanceof Ast.NewExpr created) {
-                List<Object> args = evaluateArguments(created.arguments(), env);
-                return instantiateEvaluated(created, args, env);
+                if (created.type().name().equals("DynamicStruct")) {
+                    if (!created.arguments().isEmpty()) {
+                        throw new IllegalArgumentException("DynamicStruct<T> constructor takes no positional arguments");
+                    }
+                    return new DynamicStructValue();
+                }
+                HostClassFacade hostClass = hostClasses.get(created.type().name());
+                if (hostClass != null) {
+                    context.requireCapability(IsolatePolicy.Capability.JAVA_INTEROP,
+                            "Java host constructor " + hostClass.className());
+                    if (!hostClass.constructible()) {
+                        throw new IllegalArgumentException(
+                                "Java function namespace '" + created.type().name() + "' is not constructible");
+                    }
+                    List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
+                    return instantiateHost(hostClass, args);
+                }
+
+                Ast.ClassDecl klass = findClass(created.type().name());
+                Evaluator owner = this;
+                boolean externalConstruction = false;
+                if (klass == null) {
+                    Object imported = importedValue(created.type().name());
+                    if (imported instanceof ClassFacade externalClass) {
+                        owner = externalClass.owner();
+                        klass = externalClass.klass();
+                        externalConstruction = true;
+                    }
+                }
+                if (klass == null) throw new IllegalArgumentException("unknown class " + created.type().name());
+                List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
+                return owner.instantiate(klass, args, externalConstruction);
             }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
@@ -5273,9 +5236,13 @@ public final class OresEvalRootNode extends RootNode {
                 OresFuture<ChannelRuntime.SelectResult> future =
                         set.selectAsync(policy);
                 if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
-                    return context.actors().ownCurrentActorFuture(future);
+                    return wrapFutureSome(future);
                 }
-                return awaitBlockingChannelFuture(future, "dynamic select");
+                return new OptionValue(
+                        true,
+                        awaitBlockingChannelFuture(
+                                future,
+                                "dynamic select"));
             }
             if (expr instanceof Ast.ListExpr list) {
                 ArrayList<Object> result = new ArrayList<>(list.elements().size());
@@ -5478,6 +5445,36 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof MutexFactory factory) {
                 if (!name.equals("new")) throw new IllegalArgumentException("unknown mutex factory member " + name);
                 return (Invokable) factory::create;
+            }
+            if (receiver instanceof OresFuture<?> future) {
+                return switch (name) {
+                    case "map" -> (Invokable) args -> {
+                        requireOne(args, "Future.map");
+                        if (!(args.getFirst() instanceof Invokable callback)) {
+                            throw new IllegalArgumentException(
+                                    "Future.map expects one callable");
+                        }
+                        return chainFuture(future, callback, false, false);
+                    };
+                    case "compose", "flatMap" -> (Invokable) args -> {
+                        requireOne(args, "Future." + name);
+                        if (!(args.getFirst() instanceof Invokable callback)) {
+                            throw new IllegalArgumentException(
+                                    "Future." + name + " expects one callable");
+                        }
+                        return chainFuture(future, callback, true, false);
+                    };
+                    case "onSuccess" -> (Invokable) args -> {
+                        requireOne(args, "Future.onSuccess");
+                        if (!(args.getFirst() instanceof Invokable callback)) {
+                            throw new IllegalArgumentException(
+                                    "Future.onSuccess expects one callable");
+                        }
+                        return chainFuture(future, callback, false, true);
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown Future instance member " + name);
+                };
             }
             if (receiver instanceof FutureFactory) {
                 return switch (name) {
@@ -5950,21 +5947,6 @@ public final class OresEvalRootNode extends RootNode {
                     + " does not expose direct callable '" + name + "'");
         }
 
-        private Invocation prepareImportedInvocation(
-                Ast.ImportKind kind,
-                String name,
-                List<Ast.Expr> sourceArguments,
-                List<Object> args) {
-            Ast.FunctionDecl fn = findFunction(name, args.size());
-            if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC) {
-                throw new IllegalArgumentException("code unit '" + codeUnitId
-                        + "' does not export callable '" + name + "'");
-            }
-            List<Object> bound = bindEvaluatedArguments(
-                    sourceArguments, args, fn.parameters(), "imported function " + name);
-            return prepareImportedInvocation(kind, name, bound);
-        }
-
         private Object invokeImportedCallable(Ast.ImportKind kind, String name, List<Object> args) {
             return invoke(prepareImportedInvocation(kind, name, args));
         }
@@ -6080,7 +6062,7 @@ public final class OresEvalRootNode extends RootNode {
                 for (int i = 0; i < classFields.size(); i++) {
                     Ast.FieldDecl field = classFields.get(i);
                     Object value;
-                    if (i < args.size() && args.get(i) != MISSING_ARGUMENT) value = args.get(i);
+                    if (i < args.size()) value = args.get(i);
                     else if (field.initializer() != null) {
                         OwnedField owned = findField(klass, field.name(), new LinkedHashSet<>());
                         Ast.ClassDecl fieldOwner = owned == null ? klass : owned.owner();
@@ -6219,35 +6201,6 @@ public final class OresEvalRootNode extends RootNode {
             if (match != null) return functionInvocation(match, args);
             throw new IllegalArgumentException("module '" + module.name()
                     + "' does not export callable '" + name + "' at arity " + args.size());
-        }
-
-        private Invocation prepareModuleInvocation(
-                Ast.ModuleDecl module,
-                String name,
-                List<Ast.Expr> sourceArguments,
-                List<Object> args) {
-            Ast.FunctionDecl match = null;
-            for (Ast.Decl decl : module.declarations()) {
-                if (decl instanceof Ast.FunctionDecl fn
-                        && fn.name().equals(name)
-                        && fn.parameters().size() == args.size()
-                        && fn.visibility() == Ast.Visibility.PUBLIC) {
-                    if (match != null) {
-                        throw new IllegalArgumentException(
-                                "duplicate callable slot '" + module.name() + "." + name
-                                        + "' at arity " + args.size());
-                    }
-                    match = fn;
-                }
-            }
-            if (match == null) {
-                throw new IllegalArgumentException("module '" + module.name()
-                        + "' does not export callable '" + name + "' at arity " + args.size());
-            }
-            List<Object> bound = bindEvaluatedArguments(
-                    sourceArguments, args, match.parameters(),
-                    "function " + module.name() + "." + name);
-            return functionInvocation(match, bound);
         }
 
         private Object invokeModuleFunction(Ast.ModuleDecl module, String name, List<Object> args) {
