@@ -60,7 +60,6 @@ public final class ActorRuntime implements AutoCloseable {
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
     private static final long MAILMAN_MAX_BATCH_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
     private static final int INTERNAL_CONTINUATION_SLOTS = 1_024;
-    private static final int UNTRUSTED_YIELD_QUANTUM = 64;
     private static final long UNTRUSTED_FUEL_PER_MILLI = 256L;
     private static final long UNTRUSTED_MIN_FUEL = 256L;
     private static final ThreadMXBean THREAD_MX_BEAN = ManagementFactory.getThreadMXBean();
@@ -2704,6 +2703,21 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         IsolatePolicy policy = defaultSpawnPolicy();
+
+        /*
+         * The guest result is deliberately staged separately from the Future
+         * exposed to the caller. A one-shot actor may compute its result while
+         * its carrier still owns a TruffleContext. Publishing that result here
+         * would let an awaiting root frame resume, return from Context.eval(),
+         * and close the Polyglot Context before TurnExecutor.execute(...) has
+         * crossed its leave boundary.
+         *
+         * ActorCell.finalizedFuture is settled only after carrierActive is
+         * false, scheduled is clear, actor teardown is complete, and the
+         * TurnExecutor has returned. The externally visible Future therefore
+         * becomes terminal only after that barrier.
+         */
+        OresFuture<R> staged = new OresFuture<>();
         OresFuture<R> completion = new OresFuture<>();
 
         ActorRef<M> ref = spawnInternal(
@@ -2724,14 +2738,14 @@ public final class ActorRuntime implements AutoCloseable {
                                     (value, failure) -> {
                                         try {
                                             if (failure != null) {
-                                                completion.failFromRuntime(
+                                                staged.failFromRuntime(
                                                         OresFuture.unwrap(failure));
                                             } else {
                                                 R frozen = (R) freeze(value);
-                                                completion.completeFromRuntime(frozen);
+                                                staged.completeFromRuntime(frozen);
                                             }
                                         } catch (Throwable callbackFailure) {
-                                            completion.failFromRuntime(callbackFailure);
+                                            staged.failFromRuntime(callbackFailure);
                                         } finally {
                                             turnContext.self().stop();
                                         }
@@ -2740,28 +2754,68 @@ public final class ActorRuntime implements AutoCloseable {
                         }
 
                         R frozen = (R) freeze(result);
-                        completion.completeFromRuntime(frozen);
+                        staged.completeFromRuntime(frozen);
                         turnContext.self().stop();
                     } catch (VirtualMachineError fatal) {
-                        completion.failFromRuntime(fatal);
+                        staged.failFromRuntime(fatal);
                         throw fatal;
                     } catch (ThreadDeath fatal) {
-                        completion.failFromRuntime(fatal);
+                        staged.failFromRuntime(fatal);
                         throw fatal;
                     } catch (LinkageError fatal) {
-                        completion.failFromRuntime(fatal);
+                        staged.failFromRuntime(fatal);
                         throw fatal;
                     } catch (Throwable failure) {
-                        completion.failFromRuntime(failure);
+                        staged.failFromRuntime(failure);
                         turnContext.self().stop();
                     }
                 },
                 true);
 
+        @SuppressWarnings("unchecked")
+        ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
+        if (cell == null) {
+            completion.failFromRuntime(
+                    new IllegalStateException(
+                            "one-shot actor disappeared before finalization barrier registration"));
+            return completion;
+        }
+
+        cell.finalizedFuture.whenCompleteRuntime((ignored, barrierFailure) -> {
+            if (completion.isDone()) return;
+
+            Object terminal = staged.runtimeTerminalStateOrNull();
+            if (terminal != null) {
+                Throwable failure = OresFuture.runtimeTerminalFailure(terminal);
+                if (failure == null) {
+                    completion.completeFromRuntime(
+                            (R) OresFuture.runtimeTerminalValue(terminal));
+                } else if (failure instanceof CancellationException) {
+                    completion.cancel(false);
+                } else {
+                    completion.failFromRuntime(failure);
+                }
+                return;
+            }
+
+            Throwable termination = ref.terminationCause.get();
+            if (termination instanceof CancellationException) {
+                completion.cancel(false);
+            } else if (termination != null) {
+                completion.failFromRuntime(termination);
+            } else if (barrierFailure != null) {
+                completion.failFromRuntime(OresFuture.unwrap(barrierFailure));
+            } else {
+                completion.failFromRuntime(
+                        new IllegalStateException(
+                                "one-shot actor finalized before producing a result"));
+            }
+        });
+
         try {
             send(ref, message);
         } catch (Throwable failure) {
-            completion.failFromRuntime(failure);
+            staged.failFromRuntime(failure);
             try {
                 if (ref.isAlive()) stop(ref);
             } catch (RuntimeException cleanup) {
@@ -3244,8 +3298,19 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
-     * Cooperative scheduler hook used by compiler-injected loop safepoints.
-     * Carrier threads remain an implementation detail.
+     * Actor cancellation/quota checkpoint used at compiler-injected VM
+     * safepoints.
+     *
+     * <p>This method deliberately does <strong>not</strong> call
+     * {@link Thread#yield()} and does not claim to suspend the actor. An OS
+     * thread scheduling hint cannot preserve an Ores continuation and does not
+     * release the actor's logical turn. Resumable preemption is represented
+     * explicitly by {@link OresScheduler.Cooperate} from a heap-owned
+     * {@link OresScheduler.Task} state machine.</p>
+     *
+     * <p>Therefore a source line is never a preemption boundary. A caller that
+     * is not continuation-lowered may only observe cancellation/quota checks at
+     * this point; it must keep running until a real resumable boundary.</p>
      */
     public void schedulerSafepoint() {
         if (closed.get()) throw new ActorCancellationSignal("actor runtime is closing");
@@ -3254,6 +3319,7 @@ public final class ActorRuntime implements AutoCloseable {
             throw new ActorCancellationSignal("actor execution stopped");
         }
         if (cell != null && cell.kind == ActorKind.UNTRUSTED) {
+            cell.untrustedSafepoints++;
             if (--cell.untrustedFuelRemaining < 0) {
                 throw new UntrustedActorQuotaExceededException(
                         UntrustedActorQuotaExceededException.Resource.FUEL,
@@ -3272,20 +3338,13 @@ public final class ActorRuntime implements AutoCloseable {
                         UntrustedActorQuotaExceededException.Resource.CPU_TIME,
                         "untrusted actor exceeded its CPU-time budget");
             }
-            if (++cell.untrustedSafepoints % UNTRUSTED_YIELD_QUANTUM == 0) {
-                Thread.yield();
-            }
-            return;
         }
 
-        // Carrier identity is not actor identity. A shared carrier thread may
-        // be interrupted by executor shutdown, host code, or unrelated runtime
-        // machinery; that interrupt must never be reinterpreted as cancellation
-        // of whichever actor happens to be multiplexed onto the carrier now.
-        // Structured actor cancellation is represented by ActorCell/runtime
-        // state above. Non-cooperative untrusted termination belongs to the
-        // host-owned revocable isolate boundary used by FORCE_ISOLATED.
-        Thread.yield();
+        // Carrier identity is not actor identity. Carrier interruption/yield is
+        // never actor cancellation or actor preemption. Structured cancellation
+        // is represented by ActorCell/runtime state above. Non-cooperative
+        // untrusted termination belongs to the host-owned revocable isolate
+        // boundary used by FORCE_ISOLATED.
     }
 
     private static long currentThreadCpuNanos() {
@@ -4588,6 +4647,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
+        /** Settles only after the actor has fully crossed its TurnExecutor boundary. */
+        private final OresFuture<Void> finalizedFuture = new OresFuture<>();
         /** Mailbox transport is a bounded Oreslang channel of runtime envelopes. */
         private final ChannelRuntime.Channel<MessageEnvelope> mailbox;
         private final ActorMemorySlice memorySlice;
@@ -4706,18 +4767,25 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean beginTurn() {
             synchronized (lifecycleLock) {
                 if (stopped.get() || forceKillFenced || finalized) return false;
-                activeTurns++;
+                if (activeTurns != 0) {
+                    throw new IllegalStateException(
+                            "actor single-writer execution lease violation for " + ref.id()
+                                    + ": activeTurns=" + activeTurns);
+                }
+                activeTurns = 1;
                 return true;
             }
         }
 
         private void endTurn() {
             synchronized (lifecycleLock) {
-                if (activeTurns <= 0) {
-                    throw new IllegalStateException("actor active-turn accounting underflow for " + ref.id());
+                if (activeTurns != 1) {
+                    throw new IllegalStateException(
+                            "actor execution lease accounting violation for " + ref.id()
+                                    + ": activeTurns=" + activeTurns);
                 }
-                activeTurns--;
-                if (stopped.get() && activeTurns == 0) finalizeStopLocked();
+                activeTurns = 0;
+                if (stopped.get()) finalizeStopLocked();
                 lifecycleLock.notifyAll();
             }
         }
@@ -4754,6 +4822,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
             unregisterActor(this);
             if (parent != null) parent.childFinalized(this);
+            finalizedFuture.completeFromRuntime(null);
             lifecycleLock.notifyAll();
         }
 

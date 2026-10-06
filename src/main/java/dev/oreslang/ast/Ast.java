@@ -194,6 +194,7 @@ public final class Ast {
             boolean generator,
             boolean structural,
             boolean nonLexical,
+            boolean trapped,
             ActorKind actorKind,
             List<String> genericParameters,
             List<Param> parameters,
@@ -211,7 +212,17 @@ public final class Ast {
                             boolean generator, boolean nonLexical, ActorKind actorKind,
                             List<String> genericParameters, List<Param> parameters,
                             TypeRef returnType, List<Annotation> annotations, List<Stmt> body) {
-            this(name, kind, visibility, async, generator, false, nonLexical, actorKind,
+            this(name, kind, visibility, async, generator, false, nonLexical, false, actorKind,
+                    genericParameters, parameters, returnType, annotations, body);
+        }
+
+        /** Compatibility constructor for callers that already carry structural metadata. */
+        public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
+                            boolean generator, boolean structural, boolean nonLexical,
+                            ActorKind actorKind, List<String> genericParameters,
+                            List<Param> parameters, TypeRef returnType,
+                            List<Annotation> annotations, List<Stmt> body) {
+            this(name, kind, visibility, async, generator, structural, nonLexical, false, actorKind,
                     genericParameters, parameters, returnType, annotations, body);
         }
 
@@ -220,27 +231,27 @@ public final class Ast {
                             boolean nonLexical, ActorKind actorKind, List<String> genericParameters,
                             List<Param> parameters, TypeRef returnType, List<Annotation> annotations,
                             List<Stmt> body) {
-            this(name, kind, visibility, async, false, nonLexical, actorKind,
+            this(name, kind, visibility, async, false, false, nonLexical, false, actorKind,
                     genericParameters, parameters, returnType, annotations, body);
         }
 
         public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
                             ActorKind actorKind, List<String> genericParameters, List<Param> parameters,
                             TypeRef returnType, List<Annotation> annotations, List<Stmt> body) {
-            this(name, kind, visibility, async, false, false, actorKind,
+            this(name, kind, visibility, async, false, false, false, false, actorKind,
                     genericParameters, parameters, returnType, annotations, body);
         }
 
         public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
                             List<String> genericParameters, List<Param> parameters, TypeRef returnType,
                             List<Annotation> annotations, List<Stmt> body) {
-            this(name, kind, visibility, async, false, false, ActorKind.NONE,
+            this(name, kind, visibility, async, false, false, false, false, ActorKind.NONE,
                     genericParameters, parameters, returnType, annotations, body);
         }
 
         public FunctionDecl(String name, Visibility visibility, boolean async, List<String> genericParameters,
                             List<Param> parameters, TypeRef returnType, List<Annotation> annotations, List<Stmt> body) {
-            this(name, CallableKind.FNC, visibility, async, false, false, ActorKind.NONE,
+            this(name, CallableKind.FNC, visibility, async, false, false, false, false, ActorKind.NONE,
                     genericParameters, parameters, returnType, annotations, body);
         }
     }
@@ -430,18 +441,9 @@ public final class Ast {
             ForOfStmt, ForOfDestructureStmt, ForStmt, LoopStmt, SelectStmt { }
 
     public record BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer) implements Stmt { }
-    public record DestructureBinding(BindingKind kind, String name, TypeRef declaredType, boolean rest) {
+    public record DestructureBinding(BindingKind kind, String name, boolean rest) {
         public DestructureBinding(BindingKind kind, String name) {
-            this(kind, name, null, false);
-        }
-
-        /** Compatibility constructor for untyped sequence/object destructuring. */
-        public DestructureBinding(BindingKind kind, String name, boolean rest) {
-            this(kind, name, null, rest);
-        }
-
-        public DestructureBinding(BindingKind kind, String name, TypeRef declaredType) {
-            this(kind, name, declaredType, false);
+            this(kind, name, false);
         }
 
         public DestructureBinding {
@@ -454,7 +456,7 @@ public final class Ast {
         }
 
         public static DestructureBinding discard() {
-            return new DestructureBinding(BindingKind.VAL, "_", null, false);
+            return new DestructureBinding(BindingKind.VAL, "_", false);
         }
 
         public boolean isDiscard() {
@@ -662,8 +664,8 @@ public final class Ast {
     }
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
-            TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr, NamedArgExpr,
-            CallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ChannelOpExpr, DynamicSelectExpr,
+            TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
+            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
@@ -688,19 +690,6 @@ public final class Ast {
     /** Argument-list spread. The parser only constructs this inside call argument lists. */
     public record SpreadExpr(Expr expression) implements Expr { }
 
-    /**
-     * Named call/constructor argument. Declaration parameters remain canonical
-     * type-first ("Type name"); this node represents only call-site "name: value".
-     */
-    public record NamedArgExpr(String name, Expr value) implements Expr {
-        public NamedArgExpr {
-            if (name == null || name.isBlank()) {
-                throw new IllegalArgumentException("named argument name cannot be blank");
-            }
-            if (value == null) throw new IllegalArgumentException("named argument requires a value");
-        }
-    }
-
     public record CallExpr(
             Expr callee,
             List<TypeRef> typeArguments,
@@ -718,6 +707,16 @@ public final class Ast {
         }
         public CallExpr(Expr callee, List<TypeRef> typeArguments, List<Expr> arguments) {
             this(callee, typeArguments, true, arguments);
+        }
+    }
+
+    /** Compiler-owned runtime namespace operation. The rt prefix cannot be rebound or shadowed. */
+    public record RuntimeCallExpr(String operation, List<Expr> arguments) implements Expr {
+        public RuntimeCallExpr {
+            if (operation == null || operation.isBlank()) {
+                throw new IllegalArgumentException("runtime operation cannot be blank");
+            }
+            arguments = List.copyOf(arguments);
         }
     }
 

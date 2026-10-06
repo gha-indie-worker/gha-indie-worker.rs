@@ -267,9 +267,7 @@ channel_wait_mode
 postfix         = primary { call_suffix | member_suffix | index_suffix } ;
 call_suffix     = "(" [ call_argument_list ] ")" ;
 call_argument_list = call_argument { "," call_argument } ;
-call_argument   = "..." expression
-                | IDENT ":" expression
-                | expression ;
+call_argument   = [ "..." ] expression ;
 member_suffix   = "." member_name ;
 member_name     = IDENT | "stop" | "do" | "done"
                 | "match" | "matches" | "eq" | "neq" | "is" | "when"
@@ -281,7 +279,7 @@ argument_list   = expression { "," expression } ;
 primary         = literal
                 | callable_name
                 | "self"
-                | "new" type_ref "(" [ call_argument_list ] ")"
+                | "new" type_ref "(" [ argument_list ] ")"
                 | lambda
                 | tuple_literal
                 | array_literal
@@ -334,7 +332,7 @@ named_type      = qualified_name
                   [ "<" [ type_arg_or_named { "," type_arg_or_named } ] ">" ]
                   { sequence_type_shape } ;
 type_arg_or_named = type_ref | named_type_param ;
-named_type_param = ( IDENT | "type" ) "=" meta_value ;
+named_type_param = IDENT "=" meta_value ;
 meta_value      = INT_LITERAL | STRING_LITERAL | "true" | "false" | type_ref ;
 
 sequence_type_shape
@@ -377,25 +375,10 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      only the selected arm and break/continue cannot target an already-
      continued outer loop. Dynamic selection uses "select from cases" and
      lowers to the same SelectSet primitive as static select.
-   - Callable declarations are canonical type-first: "fnc handle(Job job)".
-     Call-site named arguments are a distinct expression form: "handle(job: x)".
-     Positional arguments may precede named arguments, but once a named argument
-     appears all remaining arguments must be named. Duplicate/unknown names are
-     errors. Named arguments bind by declaration name without changing
-     left-to-right source evaluation order.
-   - Intrinsic collection '<...>' syntax is a type-constructor
-     parameter list. Its positional schema currently begins:
-       type, size, align, allocator, growth_policy,
-       inline_capacity, max_capacity, storage, rank.
-     Therefore FixedArray<int|string, 21>[...] is identical to
-     FixedArray<type=int|string, size=21>[...]. Positional parameters may
-     precede named parameters, but may not follow them. Duplicate positional/
-     named bindings are errors. Named parameters are order-independent after
-     canonicalization.
    - In collection type syntax, '[...]' describes element/sequence shape,
-     '<name=value>' binds compile-time type/layout parameters, and '(...)'
-     remains runtime construction/instance state. Call-site "name: value" and
-     type-level "name=value" are intentionally different syntactic layers.
+     '<name=value>' describes compile-time type/storage metadata, and '(...)'
+     remains runtime construction/instance state. Named metadata parameters are
+     order-independent after canonicalization.
    - Tuple/FixedArray/FixedList accept finite sequence shapes. Tuple[int,
      string] is the named tuple spelling; bare [int, string] remains the compact
      tuple spelling. Fixed arrays/lists also accept counted repetition such as
@@ -411,15 +394,8 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      element shape is present.
    - For runtime-extent collections, size/capacity are constructor state and
      are rejected inside '<...>'. Fixed Tuple/FixedArray/FixedList may carry
-     size=N as compile-time extent metadata. With an already-finite shape it
-     must equal the statically expanded arity. With a final unbounded '...'
-     repeating shape it closes that shape to exactly N positions; the repeated
-     unit is cycled and the final cycle may be truncated. capacity= remains
-     runtime-only. Nominal generic collection classes keep their element type
-     in the ordinary generic position, e.g. ArrayList<T>; runtime sizing is
-     written at construction as "new ArrayList<T>(capacity: 5)".
-     "ArrayList<size=5>[]" is not a valid replacement for the element type and
-     empty sequence-shape suffixes are invalid.
+     size=N as a compile-time extent assertion; N must equal the statically
+     expanded arity. capacity= remains runtime-only.
    - Tuple/FixedArray/FixedList are distinct static kinds even when their
      interpreter representation is list-backed. Fixed sequence rank is
      currently 1; express exact multidimensional layouts with nested fixed

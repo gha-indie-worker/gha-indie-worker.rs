@@ -383,6 +383,13 @@ public final class CapabilityChecker {
             Ast.FunctionDecl referenced = findFunction(n.name());
             if (referenced != null) checkReferencedFunction(referenced, policy);
         }
+        else if (expr instanceof Ast.RuntimeCallExpr runtime) {
+            if (!Set.of("copy", "take", "borrow", "share").contains(runtime.operation())) {
+                throw new SecurityException(
+                        "runtime intrinsic 'rt " + runtime.operation() + "' is not admitted on this compiler head");
+            }
+            for (Ast.Expr argument : runtime.arguments()) checkExpr(argument, policy);
+        }
         else if (expr instanceof Ast.CallExpr c) {
             String target = memberPath(c.callee());
             if (isZeroAuthorityAdversarial(policy) && target != null) {
@@ -447,8 +454,6 @@ public final class CapabilityChecker {
             checkExpr(m.receiver(), policy);
         } else if (expr instanceof Ast.SpreadExpr e) {
             checkExpr(e.expression(), policy);
-        } else if (expr instanceof Ast.NamedArgExpr e) {
-            checkExpr(e.value(), policy);
         } else if (expr instanceof Ast.BinaryExpr e) { checkExpr(e.left(), policy); checkExpr(e.right(), policy); }
         else if (expr instanceof Ast.UnaryExpr e) checkExpr(e.operand(), policy);
         else if (expr instanceof Ast.AssignExpr e) {

@@ -182,6 +182,149 @@ final class OresSchedulerTest {
     }
 
     @Test
+    void cooperateResumesSameTaskAtFreshDispatchWithoutReplay() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            AtomicInteger pc = new AtomicInteger();
+            AtomicInteger completedSideEffects = new AtomicInteger();
+            AtomicLong firstDispatch = new AtomicLong();
+            AtomicReference<Object> taskDomain = new AtomicReference<>();
+
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                int step = pc.getAndIncrement();
+                if (step == 0) {
+                    assertTrue(resume.initial());
+                    completedSideEffects.incrementAndGet();
+                    firstDispatch.set(OresScheduler.currentDispatchId());
+                    taskDomain.set(OresScheduler.currentTaskDomain());
+                    return OresScheduler.cooperate();
+                }
+
+                assertFalse(resume.initial());
+                assertNull(resume.value());
+                assertNull(resume.failure());
+                assertEquals(1, completedSideEffects.get(),
+                        "completed code before the safepoint must never replay");
+                assertNotEquals(firstDispatch.get(), OresScheduler.currentDispatchId(),
+                        "cooperate must re-enter through a fresh scheduler dispatch");
+                assertSame(taskDomain.get(), OresScheduler.currentTaskDomain(),
+                        "physical dispatch may change but logical task identity must not");
+                return OresScheduler.done(42);
+            });
+
+            assertEquals(42, result.get(5, TimeUnit.SECONDS));
+            assertEquals(2, pc.get());
+        }
+    }
+
+    @Test
+    void manyCooperatesRemainStackless() throws Exception {
+        final int cooperates = 1024;
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            AtomicInteger pc = new AtomicInteger();
+            AtomicLong previousDispatch = new AtomicLong();
+
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                long dispatch = OresScheduler.currentDispatchId();
+                long prior = previousDispatch.getAndSet(dispatch);
+                if (prior != 0L) {
+                    assertNotEquals(prior, dispatch,
+                            "every cooperate must establish a fresh dispatch");
+                }
+
+                int step = pc.getAndIncrement();
+                if (step < cooperates) return OresScheduler.cooperate();
+                return OresScheduler.done(step);
+            });
+
+            assertEquals(cooperates, result.get(10, TimeUnit.SECONDS));
+            assertEquals(cooperates + 1, pc.get());
+        }
+    }
+
+    @Test
+    void cooperateQueuesBehindAlreadyRunnablePeerWork() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            java.util.List<String> order =
+                    java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+            CountDownLatch firstTurnEntered = new CountDownLatch(1);
+            CountDownLatch peerQueued = new CountDownLatch(1);
+            AtomicInteger aPc = new AtomicInteger();
+
+            OresFuture<Void> a = scheduler.start(resume -> {
+                if (aPc.getAndIncrement() == 0) {
+                    order.add("a1");
+                    firstTurnEntered.countDown();
+                    assertTrue(peerQueued.await(5, TimeUnit.SECONDS));
+                    return OresScheduler.cooperate();
+                }
+                order.add("a2");
+                return OresScheduler.done(null);
+            });
+
+            assertTrue(firstTurnEntered.await(5, TimeUnit.SECONDS));
+            OresFuture<Void> b = scheduler.start(resume -> {
+                order.add("b");
+                return OresScheduler.done(null);
+            });
+            peerQueued.countDown();
+
+            a.get(5, TimeUnit.SECONDS);
+            b.get(5, TimeUnit.SECONDS);
+            assertEquals(java.util.List.of("a1", "b", "a2"), order);
+        }
+    }
+
+    @Test
+    void cooperateCannotResumeUntilPriorGuestTurnFullyUnwinds() throws Exception {
+        ExecutorService carriers = Executors.newFixedThreadPool(2);
+        CountDownLatch firstTurnBodyReturned = new CountDownLatch(1);
+        CountDownLatch allowFirstGuestExit = new CountDownLatch(1);
+        AtomicInteger guestAdmissions = new AtomicInteger();
+        AtomicInteger resumes = new AtomicInteger();
+
+        try (OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "cooperate-unwind-proof",
+                2,
+                carriers,
+                turn -> {
+                    int admission = guestAdmissions.incrementAndGet();
+                    turn.run();
+                    if (admission == 1) {
+                        firstTurnBodyReturned.countDown();
+                        try {
+                            if (!allowFirstGuestExit.await(5, TimeUnit.SECONDS)) {
+                                throw new AssertionError("timed out holding first guest turn open");
+                            }
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(interrupted);
+                        }
+                    }
+                })) {
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                int pc = resumes.getAndIncrement();
+                if (pc == 0) return OresScheduler.cooperate();
+                return OresScheduler.done(42);
+            });
+
+            assertTrue(firstTurnBodyReturned.await(5, TimeUnit.SECONDS));
+            Thread.sleep(100);
+            assertEquals(1, resumes.get(),
+                    "cooperate must not admit the continuation while the old guest turn is unwinding");
+            assertEquals(1, guestAdmissions.get());
+
+            allowFirstGuestExit.countDown();
+            assertEquals(42, result.get(5, TimeUnit.SECONDS));
+            assertEquals(2, resumes.get());
+            assertEquals(2, guestAdmissions.get());
+        } finally {
+            allowFirstGuestExit.countDown();
+            carriers.shutdownNow();
+            assertTrue(carriers.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void runtimeOwnedCompletionPublishesOnlyAfterGuestTurnAdmissionExits() throws Exception {
         ExecutorService carrier = Executors.newSingleThreadExecutor();
         AtomicBoolean insideGuestTurn = new AtomicBoolean();
