@@ -163,9 +163,12 @@ public final class OresContext implements AutoCloseable {
     }
 
     /**
-     * Compiler-injected cooperative scheduling checkpoint. Loops call this on
-     * every iteration so a future supervisor/control mailbox can interrupt
-     * long-running actor code without requiring recursion-only looping.
+     * Compiler-injected VM checkpoint for cancellation and quota accounting.
+     *
+     * <p>This is not, by itself, a resumable preemption operation. Code that
+     * wants to release its carrier must be continuation-lowered and return an
+     * {@link OresScheduler.Cooperate} step. Keeping these concepts separate
+     * prevents an OS-thread yield from being mistaken for actor suspension.</p>
      */
     public void schedulerSafepoint() {
         schedulerSafepoints.incrementAndGet();

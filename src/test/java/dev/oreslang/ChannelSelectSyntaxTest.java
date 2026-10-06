@@ -188,11 +188,11 @@ final class ChannelSelectSyntaxTest {
     @Test
     void parsesDynamicSelectFromRuntimeCollections() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
-                fnc choose(Array<SelectCase> cases): SelectResult {
+                fnc choose(Array<SelectCase> cases): Option<SelectResult> {
                   return select from cases;
                 }
 
-                fnc arm(Array<SelectCase> cases): Future<SelectResult> {
+                fnc arm(Array<SelectCase> cases): Future<Option<SelectResult>> {
                   return nb select first from cases;
                 }
 
@@ -244,7 +244,7 @@ final class ChannelSelectSyntaxTest {
                   return Channel.new<int>(16);
                 }
 
-                fnc arm(): Future<SelectResult> {
+                fnc arm(): Future<Option<SelectResult>> {
                   val Channel<int> input = Channel.new<int>(4);
                   val Channel<int> output = Channel.new<int>(4);
                   val Array<SelectCase> cases = [

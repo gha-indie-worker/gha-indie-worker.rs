@@ -64,31 +64,7 @@ public final class Types {
         }
     }
 
-    public enum SequenceKind {
-        ARRAY,
-        LIST,
-        VECTOR,
-        SLICE
-    }
-
-    /**
-     * Runtime-extent intrinsic sequence type.
-     *
-     * <p>The interpreter may use a common backing representation today, but the
-     * static kind is preserved so Array/List/Vector/Slice storage and ABI policy
-     * are not erased by type checking.
-     */
-    public record ListType(Type element, SequenceKind kind) implements Type {
-        public ListType {
-            Objects.requireNonNull(element, "sequence element");
-            Objects.requireNonNull(kind, "sequence kind");
-        }
-
-        /** Bare/inferred list literals default to the ordinary List family. */
-        public ListType(Type element) {
-            this(element, SequenceKind.LIST);
-        }
-    }
+    public record ListType(Type element) implements Type { }
 
     public enum TupleKind {
         TUPLE,
@@ -167,7 +143,6 @@ public final class Types {
         }
 
         if (from instanceof ListType source && to instanceof ListType target) {
-            if (source.kind() != target.kind()) return false;
             return isAssignable(source.element(), target.element()) && isAssignable(target.element(), source.element());
         }
 
