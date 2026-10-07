@@ -322,17 +322,7 @@ async fn clone_repository(
         );
     }
 
-    let mut command = Command::new("gh");
-    sanitize_git_environment(&mut command);
-    configure_transient_git_safety(&mut command);
-    command
-        .env("GH_HOST", "github.com")
-        .arg("repo")
-        .arg("clone")
-        .arg(&repository.name_with_owner)
-        .arg(local)
-        .arg("--")
-        .arg("--no-recurse-submodules");
+    let command = clone_command(repository, local);
     let output = run_bounded(
         command,
         format!("gh repo clone {}", repository.name_with_owner),
@@ -360,15 +350,7 @@ async fn pull_repository(
     ensure_clean_checkout(local).await?;
     let remote_branch = current_origin_upstream(local).await?;
 
-    let mut command = git_command(local);
-    command
-        .arg("pull")
-        .arg("--ff-only")
-        .arg("--no-rebase")
-        .arg("--recurse-submodules=no")
-        .arg("--")
-        .arg("origin")
-        .arg(&remote_branch);
+    let command = pull_command(local, &remote_branch);
     let output = run_bounded(
         command,
         format!("git -C {} pull --ff-only --no-rebase", local.display()),
@@ -387,6 +369,34 @@ async fn pull_repository(
     verify_origin(local, expected_repository).await?;
     ensure_clean_checkout(local).await?;
     Ok(RepositoryOutcome::Pulled)
+}
+
+fn clone_command(repository: &GitHubRepository, local: &Path) -> Command {
+    let mut command = Command::new("gh");
+    sanitize_git_environment(&mut command);
+    configure_transient_git_safety(&mut command);
+    command
+        .env("GH_HOST", "github.com")
+        .arg("repo")
+        .arg("clone")
+        .arg(&repository.name_with_owner)
+        .arg(local)
+        .arg("--")
+        .arg("--no-recurse-submodules");
+    command
+}
+
+fn pull_command(local: &Path, remote_branch: &str) -> Command {
+    let mut command = git_command(local);
+    command
+        .arg("pull")
+        .arg("--ff-only")
+        .arg("--no-rebase")
+        .arg("--recurse-submodules=no")
+        .arg("--")
+        .arg("origin")
+        .arg(remote_branch);
+    command
 }
 
 async fn validate_checkout(local: &Path) -> Result<(), String> {
@@ -554,6 +564,8 @@ fn git_command(local: &Path) -> Command {
     command
         .arg("-c")
         .arg(format!("core.hooksPath={}", disabled_hooks_path()))
+        .arg("-c")
+        .arg("core.fsmonitor=false")
         .arg("-C")
         .arg(local);
     command
@@ -567,9 +579,11 @@ fn sanitize_git_environment(command: &mut Command) {
 
 fn configure_transient_git_safety(command: &mut Command) {
     command
-        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_COUNT", "2")
         .env("GIT_CONFIG_KEY_0", "core.hooksPath")
-        .env("GIT_CONFIG_VALUE_0", disabled_hooks_path());
+        .env("GIT_CONFIG_VALUE_0", disabled_hooks_path())
+        .env("GIT_CONFIG_KEY_1", "core.fsmonitor")
+        .env("GIT_CONFIG_VALUE_1", "false");
 }
 
 const fn disabled_hooks_path() -> &'static str {
@@ -927,6 +941,83 @@ mod tests {
         let mut traversal = repository("api");
         traversal.name = "..".to_owned();
         assert!(validate_inventory(&[traversal], "example-org").is_err());
+    }
+
+    fn command_args(command: &Command) -> Vec<String> {
+        command
+            .as_std()
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn git_commands_disable_hooks_and_external_fsmonitor() {
+        let args = command_args(&git_command(Path::new("/tmp/repo")));
+        let hooks = format!("core.hooksPath={}", disabled_hooks_path());
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0] == "-c" && pair[1] == hooks)
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0] == "-c" && pair[1] == "core.fsmonitor=false")
+        );
+    }
+
+    #[test]
+    fn pull_command_is_fast_forward_only_and_scoped_to_origin_without_submodules() {
+        let args = command_args(&pull_command(Path::new("/tmp/repo"), "main"));
+        let pull = args.iter().position(|value| value == "pull").unwrap();
+        assert_eq!(
+            &args[pull + 1..],
+            [
+                "--ff-only".to_owned(),
+                "--no-rebase".to_owned(),
+                "--recurse-submodules=no".to_owned(),
+                "--".to_owned(),
+                "origin".to_owned(),
+                "main".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn clone_command_pins_github_and_disables_submodule_recursion() {
+        let repo = repository("api");
+        let command = clone_command(&repo, Path::new("/tmp/api"));
+        let args = command_args(&command);
+        assert_eq!(
+            args,
+            vec![
+                "repo".to_owned(),
+                "clone".to_owned(),
+                "example-org/api".to_owned(),
+                "/tmp/api".to_owned(),
+                "--".to_owned(),
+                "--no-recurse-submodules".to_owned(),
+            ]
+        );
+        let environment = command
+            .as_std()
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(environment["GH_HOST"].as_deref(), Some("github.com"));
+        assert_eq!(environment["GIT_CONFIG_COUNT"].as_deref(), Some("2"));
+        assert_eq!(
+            environment["GIT_CONFIG_KEY_0"].as_deref(),
+            Some("core.hooksPath")
+        );
+        assert_eq!(
+            environment["GIT_CONFIG_KEY_1"].as_deref(),
+            Some("core.fsmonitor")
+        );
     }
 
     #[cfg(unix)]
