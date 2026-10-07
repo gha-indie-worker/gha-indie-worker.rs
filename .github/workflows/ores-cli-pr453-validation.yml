@@ -26,6 +26,7 @@ jobs:
           set -euo pipefail
           rustfmt --edition 2024 --check \
             mirror/src/org/actions.rs \
+            mirror/src/org/names.rs \
             mirror/src/org/workspace.rs \
             mirror/tests/admin_mcp_contract.rs
           rustfmt --edition 2024 --emit stdout mirror/src/flags.rs >/dev/null
