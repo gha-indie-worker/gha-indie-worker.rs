@@ -135,7 +135,10 @@ pub async fn manage_workspace(
                 report.push(
                     Finding::info(
                         "repository-pulled",
-                        format!("fast-forward pull completed for {}", repository.name_with_owner),
+                        format!(
+                            "fast-forward pull completed for {}",
+                            repository.name_with_owner
+                        ),
                     )
                     .with_target(local.display().to_string()),
                 );
@@ -181,7 +184,9 @@ async fn manage_repository(
         let metadata = fs::symlink_metadata(local)
             .map_err(|error| format!("could not inspect local checkout: {error}"))?;
         if metadata.file_type().is_symlink() {
-            return Err("local repository path is a symbolic link; refusing to traverse it".to_owned());
+            return Err(
+                "local repository path is a symbolic link; refusing to traverse it".to_owned(),
+            );
         }
         if !metadata.is_dir() {
             return Err("local repository path exists but is not a directory".to_owned());
