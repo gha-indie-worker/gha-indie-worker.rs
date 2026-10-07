@@ -853,11 +853,11 @@ mod tests {
     use std::ffi::OsString;
 
     use super::{
-        PathBuf, SOURCE_FLAG_CONTRACT_PATH, ensure_no_extras, non_empty,
-        parse_environment_selection, parse_visibility, resolve_flag_contract_path, split_csv,
-        validate_flag_contract_path,
+        CliCommand, PathBuf, SOURCE_FLAG_CONTRACT_PATH, ensure_no_extras, non_empty,
+        parse_environment_selection, parse_invocation, parse_visibility, resolve_flag_contract_path,
+        split_csv, validate_flag_contract_path,
     };
-    use crate::org::{RepositoryVisibility, validate_org_login};
+    use crate::org::{RepositoryVisibility, WorkspaceAction, validate_org_login};
 
     #[test]
     fn csv_values_are_trimmed_sorted_and_deduplicated() {
@@ -924,6 +924,65 @@ mod tests {
             .to_string();
         assert!(!positional_error.contains(secret));
         assert!(positional_error.contains("received 1"));
+    }
+
+    fn argv(values: &[&str]) -> Vec<String> {
+        std::iter::once("oresc")
+            .chain(values.iter().copied())
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn workspace_sync_requires_explicit_all_on_argv() {
+        let error = parse_invocation(&argv(&[
+            "org",
+            "--name",
+            "example-org",
+            "sync",
+            "--non-interactive",
+        ]))
+        .expect_err("sync without --all must fail");
+        assert!(error.to_string().contains("requires explicit --all"));
+    }
+
+    #[test]
+    fn workspace_sync_resolves_default_root_and_explicit_non_interactive_mode() {
+        let invocation = parse_invocation(&argv(&[
+            "org",
+            "--name",
+            "example-org",
+            "sync",
+            "--all",
+            "--non-interactive",
+        ]))
+        .expect("workspace sync invocation");
+        let CliCommand::OrgWorkspace(options) = invocation.command else {
+            panic!("expected org workspace command");
+        };
+        assert_eq!(options.action, WorkspaceAction::Sync);
+        assert_eq!(options.workspace_root, PathBuf::from("~/codes"));
+        assert!(options.all);
+        assert!(options.non_interactive);
+    }
+
+    #[test]
+    fn workspace_sync_accepts_explicit_non_default_root() {
+        let invocation = parse_invocation(&argv(&[
+            "org",
+            "--name",
+            "example-org",
+            "sync",
+            "--all",
+            "--dir",
+            "/tmp/codes",
+            "--non-interactive",
+        ]))
+        .expect("workspace sync invocation with explicit root");
+        let CliCommand::OrgWorkspace(options) = invocation.command else {
+            panic!("expected org workspace command");
+        };
+        assert_eq!(options.workspace_root, PathBuf::from("/tmp/codes"));
     }
 
     #[test]
