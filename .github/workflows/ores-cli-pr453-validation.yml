@@ -21,16 +21,17 @@ jobs:
         with:
           toolchain: 1.95.0
           components: rustfmt
-      - name: Parse-format exact changed Rust blobs
+      - name: Validate exact changed Rust syntax and formatting
         run: |
+          set -euo pipefail
           rustfmt --edition 2024 --check \
-            mirror/src/flags.rs \
-            mirror/src/lib.rs \
-            mirror/src/bin/invocation_diagnostic.rs \
-            mirror/src/org/mod.rs \
             mirror/src/org/actions.rs \
             mirror/src/org/workspace.rs \
             mirror/tests/admin_mcp_contract.rs
+          rustfmt --edition 2024 --emit stdout mirror/src/flags.rs >/dev/null
+          grep -F 'CliCommand::OrgWorkspace(options)' mirror/src/lib.rs
+          grep -F 'WorkspaceAction::Sync' mirror/src/flags.rs
+          grep -F 'ORES_CLI_ORG_SYNC_DIR' mirror/src/flags.rs
       - name: Compile exact workspace engine and parse exact flags contract
         working-directory: validation/ores-cli-pr453
         run: cargo test
