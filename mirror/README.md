@@ -218,7 +218,11 @@ Before authentication, inventory, directory creation, cloning, or pulling, inter
 oresc org --name ores-truffle-oreslang sync --all --non-interactive
 ```
 
-The safety bypass and --all must be present on argv; environment values cannot silently authorize them. In non-interactive mode, the default ~/codes root may be used without --dir, but any non-default workspace root must also be supplied explicitly as --dir on argv. Existing checkout directories are verified to be Git repositories whose origin points at the expected github.com/<org>/<repo>. Symbolic links, non-Git collisions, and origin mismatches are left untouched and reported. Pull uses git pull --ff-only, so it does not create merge commits. The pull command never clones missing repositories; sync does both.
+The safety bypass and --all must be present on argv; environment values cannot silently authorize them. In non-interactive mode, the default ~/codes root may be used without --dir, but any non-default workspace root must also be supplied explicitly as --dir on argv. Whole-organization clone/pull/sync requires active organization-owner membership so the inventory is authoritative, and the authenticated GitHub login is pinned across the operation.
+
+Before filesystem mutation, repository names, owner-qualified identities, URLs, duplicate identities, and inventory truncation are validated. Existing parent symlinks are resolved before the path is shown for confirmation; the final <root>/<org> directory and per-repository checkout paths may not be symlinks. Workspace identity is rechecked during the operation.
+
+Existing checkout directories must be exact Git work-tree roots whose origin points at the expected HTTPS or SSH github.com/<org>/<repo>. Plain HTTP origins are rejected. Pull refuses dirty or detached checkouts, requires the current branch to track origin/*, and runs git pull --ff-only --no-rebase against that upstream, so it never manufactures merge commits or silently rebases local work. Ambient Git repository-location overrides such as GIT_DIR and GIT_WORK_TREE are stripped from child processes. The pull command never clones missing repositories; sync does both.
 
 Change visibility on existing repositories with a separate fail-stop command. Preview the exact frozen target set first:
 
