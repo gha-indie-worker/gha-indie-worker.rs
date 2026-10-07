@@ -1,7 +1,8 @@
+use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::io::{self, BufRead, IsTerminal, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::json;
@@ -10,13 +11,27 @@ use tokio::process::Command;
 use crate::error::RuntimeError;
 use crate::github::{GhCli, GitHubRepository};
 use crate::model::{CommandReport, Finding};
-use crate::process::{CaptureLimits, run_bounded};
+use crate::process::{CaptureLimits, CapturedOutput, run_bounded};
 
+use super::names::{ensure_complete_inventory, validate_repository_name};
 use super::{OrgRepositoryScope, validate_repository_scope};
 
 const DEFAULT_WORKSPACE_ROOT: &str = "~/codes";
 const PROCESS_LIMITS: CaptureLimits =
     CaptureLimits::new(Duration::from_secs(15 * 60), 256 * 1024, 256 * 1024);
+const GIT_QUERY_LIMITS: CaptureLimits =
+    CaptureLimits::new(Duration::from_secs(30), 64 * 1024, 64 * 1024);
+const GIT_LOCATION_ENV: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS",
+];
 
 /// Local organization-workspace operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,9 +78,15 @@ pub fn default_workspace_root() -> PathBuf {
 }
 
 /// Resolve the final organization workspace path without creating it.
+///
+/// Existing parent symlinks are resolved so the confirmation shows the actual
+/// filesystem destination. The final organization directory itself is never
+/// accepted as a symlink.
 pub fn workspace_directory(options: &WorkspaceOptions) -> Result<PathBuf, RuntimeError> {
     let root = expand_workspace_root(&options.workspace_root)?;
-    Ok(root.join(&options.scope.owner))
+    let lexical_workspace = root.join(&options.scope.owner);
+    reject_direct_workspace_symlink(&lexical_workspace)?;
+    resolve_through_existing_ancestor(&lexical_workspace)
 }
 
 /// Clone and/or pull every repository selected by the workspace command.
@@ -97,27 +118,78 @@ pub async fn manage_workspace(
         return Ok(report.finalize());
     }
 
+    require_git_available().await?;
     gh.require_authentication().await?;
-    let mut repositories = gh
-        .list_repositories(&options.scope.owner, options.scope.repo_limit)
-        .await?;
-    if repositories.len() >= options.scope.repo_limit {
+    let account = gh.authenticated_login().await?;
+    let membership = gh.organization_membership(&options.scope.owner).await?;
+    if membership.role != "admin" {
         return Err(RuntimeError::Usage(format!(
-            "repository inventory reached --repo-limit={}; raise the limit before using org {} --all",
-            options.scope.repo_limit,
+            "org {} --all requires organization-owner membership so the repository inventory is authoritative",
             options.action.as_str()
         )));
     }
-    repositories.sort_by(|left, right| left.name.cmp(&right.name));
 
-    fs::create_dir_all(&workspace)?;
+    let mut repositories = gh
+        .list_repositories(&options.scope.owner, options.scope.repo_limit)
+        .await?;
+    ensure_account_unchanged(gh, &account).await?;
+    ensure_complete_inventory(&repositories, &options.scope)?;
+    validate_inventory(&repositories, &options.scope.owner)?;
+    repositories.sort_by(|left, right| {
+        left.name
+            .to_ascii_lowercase()
+            .cmp(&right.name.to_ascii_lowercase())
+    });
 
+    report.insert_metadata("account", json!(&account));
+    report.insert_metadata("organizationRole", json!(&membership.role));
+    report.insert_metadata("repositoryCount", json!(repositories.len()));
+
+    let repository_names = repositories
+        .iter()
+        .map(|repository| repository.name.clone())
+        .collect::<Vec<_>>();
     let mut cloned = Vec::new();
     let mut pulled = Vec::new();
     let mut skipped = Vec::new();
     let mut failed = Vec::new();
 
-    for repository in &repositories {
+    if let Err(error) = prepare_workspace_directory(&workspace) {
+        record_workspace_outcomes(
+            &mut report,
+            &cloned,
+            &pulled,
+            &skipped,
+            &failed,
+            &repository_names,
+        );
+        return Err(error.with_partial_report(report));
+    }
+
+    for (index, repository) in repositories.iter().enumerate() {
+        if let Err(error) = ensure_account_unchanged(gh, &account).await {
+            record_workspace_outcomes(
+                &mut report,
+                &cloned,
+                &pulled,
+                &skipped,
+                &failed,
+                &repository_names[index..],
+            );
+            return Err(error.with_partial_report(report));
+        }
+        if let Err(error) = ensure_workspace_identity(&workspace) {
+            record_workspace_outcomes(
+                &mut report,
+                &cloned,
+                &pulled,
+                &skipped,
+                &failed,
+                &repository_names[index..],
+            );
+            return Err(error.with_partial_report(report));
+        }
+
         let local = workspace.join(&repository.name);
         match manage_repository(options.action, repository, &local).await {
             Ok(RepositoryOutcome::Cloned) => {
@@ -158,14 +230,56 @@ pub async fn manage_workspace(
                 );
             }
         }
+
+        if let Err(error) = ensure_account_unchanged(gh, &account).await {
+            record_workspace_outcomes(
+                &mut report,
+                &cloned,
+                &pulled,
+                &skipped,
+                &failed,
+                &repository_names[index + 1..],
+            );
+            return Err(error.with_partial_report(report));
+        }
     }
 
-    report.insert_metadata("repositoryCount", json!(repositories.len()));
+    if let Err(error) = ensure_account_unchanged(gh, &account).await {
+        record_workspace_outcomes(
+            &mut report,
+            &cloned,
+            &pulled,
+            &skipped,
+            &failed,
+            &[],
+        );
+        return Err(error.with_partial_report(report));
+    }
+
+    record_workspace_outcomes(
+        &mut report,
+        &cloned,
+        &pulled,
+        &skipped,
+        &failed,
+        &[],
+    );
+    Ok(report.finalize())
+}
+
+fn record_workspace_outcomes(
+    report: &mut CommandReport,
+    cloned: &[String],
+    pulled: &[String],
+    skipped: &[String],
+    failed: &[String],
+    not_attempted: &[String],
+) {
     report.insert_metadata("clonedRepositories", json!(cloned));
     report.insert_metadata("pulledRepositories", json!(pulled));
     report.insert_metadata("skippedRepositories", json!(skipped));
     report.insert_metadata("failedRepositories", json!(failed));
-    Ok(report.finalize())
+    report.insert_metadata("notAttemptedRepositories", json!(not_attempted));
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,19 +295,7 @@ async fn manage_repository(
     local: &Path,
 ) -> Result<RepositoryOutcome, String> {
     if local.exists() {
-        let metadata = fs::symlink_metadata(local)
-            .map_err(|error| format!("could not inspect local checkout: {error}"))?;
-        if metadata.file_type().is_symlink() {
-            return Err(
-                "local repository path is a symbolic link; refusing to traverse it".to_owned(),
-            );
-        }
-        if !metadata.is_dir() {
-            return Err("local repository path exists but is not a directory".to_owned());
-        }
-        if !local.join(".git").exists() {
-            return Err("local repository directory exists but is not a Git checkout".to_owned());
-        }
+        validate_checkout(local).await?;
         verify_origin(local, &repository.name_with_owner).await?;
 
         return match action {
@@ -201,7 +303,9 @@ async fn manage_repository(
                 "{} already has a verified local checkout",
                 repository.name_with_owner
             ))),
-            WorkspaceAction::Pull | WorkspaceAction::Sync => pull_repository(local).await,
+            WorkspaceAction::Pull | WorkspaceAction::Sync => {
+                pull_repository(local, &repository.name_with_owner).await
+            }
         };
     }
 
@@ -219,7 +323,9 @@ async fn clone_repository(
     local: &Path,
 ) -> Result<RepositoryOutcome, String> {
     let mut command = Command::new("gh");
+    sanitize_git_environment(&mut command);
     command
+        .env("GH_HOST", "github.com")
         .arg("repo")
         .arg("clone")
         .arg(&repository.name_with_owner)
@@ -231,69 +337,180 @@ async fn clone_repository(
     )
     .await
     .map_err(|error| error.to_string())?;
-    if output.status.success() {
-        Ok(RepositoryOutcome::Cloned)
-    } else {
-        Err(format!(
-            "clone failed with exit code {:?}: {}",
-            output.status.code(),
-            diagnostic(&output.stderr, &output.stdout)
-        ))
+    if !output.status.success() {
+        return Err(format!(
+            "clone failed with exit code {:?}; inspect the local target before retrying",
+            output.status.code()
+        ));
     }
+
+    validate_checkout(local).await?;
+    verify_origin(local, &repository.name_with_owner).await?;
+    ensure_clean_checkout(local).await?;
+    Ok(RepositoryOutcome::Cloned)
 }
 
-async fn pull_repository(local: &Path) -> Result<RepositoryOutcome, String> {
-    let mut command = Command::new("git");
-    command.arg("-C").arg(local).arg("pull").arg("--ff-only");
-    let output = run_bounded(
-        command,
-        format!("git -C {} pull --ff-only", local.display()),
-        PROCESS_LIMITS,
-    )
-    .await
-    .map_err(|error| error.to_string())?;
-    if output.status.success() {
-        Ok(RepositoryOutcome::Pulled)
-    } else {
-        Err(format!(
-            "pull failed with exit code {:?}: {}",
-            output.status.code(),
-            diagnostic(&output.stderr, &output.stdout)
-        ))
-    }
-}
+async fn pull_repository(
+    local: &Path,
+    expected_repository: &str,
+) -> Result<RepositoryOutcome, String> {
+    ensure_clean_checkout(local).await?;
+    let remote_branch = current_origin_upstream(local).await?;
 
-async fn verify_origin(local: &Path, expected: &str) -> Result<(), String> {
-    let mut command = Command::new("git");
+    let mut command = git_command(local);
     command
-        .arg("-C")
-        .arg(local)
-        .arg("remote")
-        .arg("get-url")
-        .arg("origin");
+        .arg("pull")
+        .arg("--ff-only")
+        .arg("--no-rebase")
+        .arg("--")
+        .arg("origin")
+        .arg(&remote_branch);
     let output = run_bounded(
         command,
-        format!("git -C {} remote get-url origin", local.display()),
-        CaptureLimits::new(Duration::from_secs(30), 16 * 1024, 16 * 1024),
+        format!("git -C {} pull --ff-only --no-rebase", local.display()),
+        PROCESS_LIMITS,
     )
     .await
     .map_err(|error| error.to_string())?;
     if !output.status.success() {
         return Err(format!(
-            "could not read origin remote: {}",
-            diagnostic(&output.stderr, &output.stdout)
+            "pull failed with exit code {:?}; local changes were not merged automatically",
+            output.status.code()
         ));
     }
-    let actual = normalize_github_remote(&output.stdout).ok_or_else(|| {
-        format!(
-            "origin is not a recognized github.com repository URL: {}",
-            output.stdout.trim()
+
+    validate_checkout(local).await?;
+    verify_origin(local, expected_repository).await?;
+    ensure_clean_checkout(local).await?;
+    Ok(RepositoryOutcome::Pulled)
+}
+
+async fn validate_checkout(local: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(local)
+        .map_err(|_| "could not inspect local checkout".to_owned())?;
+    if metadata.file_type().is_symlink() {
+        return Err("local repository path is a symbolic link; refusing to traverse it".to_owned());
+    }
+    if !metadata.is_dir() {
+        return Err("local repository path exists but is not a directory".to_owned());
+    }
+
+    let dot_git = local.join(".git");
+    let git_metadata = fs::symlink_metadata(&dot_git)
+        .map_err(|_| "local repository directory is missing .git metadata".to_owned())?;
+    if git_metadata.file_type().is_symlink() {
+        return Err("local .git metadata is a symbolic link; refusing to traverse it".to_owned());
+    }
+    if !git_metadata.is_dir() && !git_metadata.is_file() {
+        return Err("local .git metadata is not a regular file or directory".to_owned());
+    }
+
+    let mut command = git_command(local);
+    command.arg("rev-parse").arg("--show-toplevel");
+    let output = run_git_query(command, local, "rev-parse --show-toplevel").await?;
+    if !output.status.success() {
+        return Err("local repository directory is not a valid Git work tree".to_owned());
+    }
+    let root = output.stdout.trim();
+    if root.is_empty() || root.contains(['\n', '\r']) {
+        return Err("Git returned an invalid work-tree root".to_owned());
+    }
+
+    let expected = fs::canonicalize(local)
+        .map_err(|_| "could not canonicalize local repository path".to_owned())?;
+    let actual = fs::canonicalize(root)
+        .map_err(|_| "could not canonicalize Git work-tree root".to_owned())?;
+    if actual != expected {
+        return Err(
+            "local repository path is nested in or redirected to a different Git work tree"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
+async fn ensure_clean_checkout(local: &Path) -> Result<(), String> {
+    let mut command = git_command(local);
+    command
+        .arg("status")
+        .arg("--porcelain=v1")
+        .arg("--untracked-files=normal");
+    let output = run_git_query(command, local, "status --porcelain=v1").await?;
+    if !output.status.success() {
+        return Err("could not inspect local repository status".to_owned());
+    }
+    if output.stdout.is_empty() {
+        Ok(())
+    } else {
+        Err(
+            "local checkout has uncommitted or untracked changes; refusing to pull automatically"
+                .to_owned(),
         )
-    })?;
+    }
+}
+
+async fn current_origin_upstream(local: &Path) -> Result<String, String> {
+    let mut branch_command = git_command(local);
+    branch_command
+        .arg("symbolic-ref")
+        .arg("--quiet")
+        .arg("--short")
+        .arg("HEAD");
+    let branch = run_git_query(branch_command, local, "symbolic-ref --short HEAD").await?;
+    if !branch.status.success() || branch.stdout.trim().is_empty() {
+        return Err("local checkout is detached or has no current branch".to_owned());
+    }
+
+    let mut upstream_command = git_command(local);
+    upstream_command
+        .arg("rev-parse")
+        .arg("--abbrev-ref")
+        .arg("--symbolic-full-name")
+        .arg("@{upstream}");
+    let upstream = run_git_query(
+        upstream_command,
+        local,
+        "rev-parse --abbrev-ref --symbolic-full-name @{upstream}",
+    )
+    .await?;
+    if !upstream.status.success() {
+        return Err("current branch has no configured upstream; refusing to guess".to_owned());
+    }
+
+    origin_upstream_branch(&upstream.stdout).ok_or_else(|| {
+        "current branch upstream is not origin/*; refusing to pull from another remote".to_owned()
+    })
+}
+
+fn origin_upstream_branch(value: &str) -> Option<String> {
+    let value = value.trim();
+    let branch = value.strip_prefix("origin/")?;
+    if branch.is_empty() || branch.chars().any(char::is_control) {
+        return None;
+    }
+    Some(branch.to_owned())
+}
+
+async fn verify_origin(local: &Path, expected: &str) -> Result<(), String> {
+    let mut command = git_command(local);
+    command
+        .arg("remote")
+        .arg("get-url")
+        .arg("origin");
+    let output = run_git_query(command, local, "remote get-url origin").await?;
+    if !output.status.success() {
+        return Err("could not read origin remote".to_owned());
+    }
+    let Some(actual) = normalize_github_remote(&output.stdout) else {
+        return Err(
+            "origin is not a supported HTTPS or SSH github.com repository URL".to_owned(),
+        );
+    };
     if !actual.eq_ignore_ascii_case(expected) {
-        return Err(format!(
-            "origin mismatch: expected {expected}, found {actual}; refusing to modify checkout"
-        ));
+        return Err(
+            "origin does not match the expected GitHub repository; refusing to modify checkout"
+                .to_owned(),
+        );
     }
     Ok(())
 }
@@ -303,34 +520,122 @@ fn normalize_github_remote(value: &str) -> Option<String> {
     let repository = value
         .strip_prefix("git@github.com:")
         .or_else(|| value.strip_prefix("ssh://git@github.com/"))
-        .or_else(|| value.strip_prefix("https://github.com/"))
-        .or_else(|| value.strip_prefix("http://github.com/"))?
+        .or_else(|| value.strip_prefix("https://github.com/"))?
         .trim_end_matches(".git");
     let mut parts = repository.split('/');
     let owner = parts.next()?;
     let name = parts.next()?;
-    if owner.is_empty() || name.is_empty() || parts.next().is_some() {
+    if owner.is_empty()
+        || name.is_empty()
+        || parts.next().is_some()
+        || validate_repository_name(name).is_err()
+    {
         return None;
     }
     Some(format!("{owner}/{name}"))
 }
 
-fn diagnostic(stderr: &str, stdout: &str) -> String {
-    let stderr = stderr.trim();
-    if !stderr.is_empty() {
-        return stderr.to_owned();
+async fn run_git_query(
+    command: Command,
+    local: &Path,
+    operation: &str,
+) -> Result<CapturedOutput, String> {
+    run_bounded(
+        command,
+        format!("git -C {} {operation}", local.display()),
+        GIT_QUERY_LIMITS,
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+fn git_command(local: &Path) -> Command {
+    let mut command = Command::new("git");
+    sanitize_git_environment(&mut command);
+    command.arg("-C").arg(local);
+    command
+}
+
+fn sanitize_git_environment(command: &mut Command) {
+    for key in GIT_LOCATION_ENV {
+        command.env_remove(key);
     }
-    let stdout = stdout.trim();
-    if !stdout.is_empty() {
-        return stdout.to_owned();
+}
+
+async fn require_git_available() -> Result<(), RuntimeError> {
+    let mut command = Command::new("git");
+    sanitize_git_environment(&mut command);
+    command.arg("--version");
+    let output = run_bounded(
+        command,
+        "git --version",
+        CaptureLimits::new(Duration::from_secs(15), 16 * 1024, 16 * 1024),
+    )
+    .await?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(RuntimeError::Dependency {
+            command: "git --version".to_owned(),
+            exit_code: output.status.code(),
+            message: "git is required for organization workspace operations".to_owned(),
+        })
     }
-    "no diagnostic output".to_owned()
+}
+
+fn validate_inventory(
+    repositories: &[GitHubRepository],
+    owner: &str,
+) -> Result<(), RuntimeError> {
+    let mut names = BTreeSet::new();
+    for repository in repositories {
+        if validate_repository_name(&repository.name).is_err() {
+            return Err(RuntimeError::Invariant(
+                "GitHub returned an invalid repository name in organization inventory".to_owned(),
+            ));
+        }
+        let expected_full_name = format!("{owner}/{}", repository.name);
+        let expected_url = format!("https://github.com/{owner}/{}", repository.name);
+        if !repository
+            .name_with_owner
+            .eq_ignore_ascii_case(&expected_full_name)
+            || !repository.url.eq_ignore_ascii_case(&expected_url)
+        {
+            return Err(RuntimeError::Invariant(
+                "GitHub returned inconsistent repository identity metadata".to_owned(),
+            ));
+        }
+        if !names.insert(repository.name.to_ascii_lowercase()) {
+            return Err(RuntimeError::Invariant(
+                "GitHub returned duplicate repository identities in organization inventory"
+                    .to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn ensure_account_unchanged(gh: &GhCli, expected: &str) -> Result<(), RuntimeError> {
+    let current = gh.authenticated_login().await?;
+    if current.eq_ignore_ascii_case(expected) {
+        Ok(())
+    } else {
+        Err(RuntimeError::Invariant(
+            "active GitHub account changed during organization workspace operation".to_owned(),
+        ))
+    }
 }
 
 fn expand_workspace_root(root: &Path) -> Result<PathBuf, RuntimeError> {
     let text = root
         .to_str()
         .ok_or_else(|| RuntimeError::Usage("--dir must be valid UTF-8".to_owned()))?;
+    if text.trim().is_empty() || text.chars().any(char::is_control) {
+        return Err(RuntimeError::Usage(
+            "--dir must be a nonempty path without control characters".to_owned(),
+        ));
+    }
+
     let expanded = if text == "~" {
         PathBuf::from(home_directory()?)
     } else if let Some(suffix) = text.strip_prefix("~/") {
@@ -343,22 +648,119 @@ fn expand_workspace_root(root: &Path) -> Result<PathBuf, RuntimeError> {
         root.to_path_buf()
     };
 
-    if expanded.is_absolute() {
-        Ok(expanded)
-    } else {
-        Ok(env::current_dir()?.join(expanded))
+    if expanded
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(RuntimeError::Usage(
+            "--dir must not contain parent-directory traversal".to_owned(),
+        ));
     }
+
+    let absolute = if expanded.is_absolute() {
+        expanded
+    } else {
+        env::current_dir()?.join(expanded)
+    };
+    Ok(absolute)
 }
 
 fn home_directory() -> Result<String, RuntimeError> {
-    env::var("HOME")
+    let value = env::var("HOME")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| {
             RuntimeError::Usage(
                 "cannot expand --dir because HOME is not set; pass an absolute --dir".to_owned(),
             )
-        })
+        })?;
+    if value.chars().any(char::is_control) || !Path::new(&value).is_absolute() {
+        return Err(RuntimeError::Usage(
+            "HOME must be an absolute path without control characters to expand --dir".to_owned(),
+        ));
+    }
+    Ok(value)
+}
+
+fn reject_direct_workspace_symlink(workspace: &Path) -> Result<(), RuntimeError> {
+    match fs::symlink_metadata(workspace) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(RuntimeError::Usage(
+            "final organization workspace path must not be a symbolic link".to_owned(),
+        )),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn resolve_through_existing_ancestor(path: &Path) -> Result<PathBuf, RuntimeError> {
+    let mut cursor = path.to_path_buf();
+    let mut missing = Vec::new();
+
+    loop {
+        match fs::symlink_metadata(&cursor) {
+            Ok(_) => break,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let name = cursor.file_name().ok_or_else(|| {
+                    RuntimeError::Usage("could not resolve workspace path".to_owned())
+                })?;
+                missing.push(name.to_os_string());
+                cursor = cursor
+                    .parent()
+                    .ok_or_else(|| {
+                        RuntimeError::Usage("could not resolve workspace parent".to_owned())
+                    })?
+                    .to_path_buf();
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    let metadata = fs::metadata(&cursor)?;
+    if !metadata.is_dir() {
+        return Err(RuntimeError::Usage(
+            "existing workspace ancestor is not a directory".to_owned(),
+        ));
+    }
+    let mut resolved = fs::canonicalize(&cursor)?;
+    for name in missing.iter().rev() {
+        resolved.push(name);
+    }
+    Ok(resolved)
+}
+
+fn prepare_workspace_directory(workspace: &Path) -> Result<(), RuntimeError> {
+    match fs::symlink_metadata(workspace) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(RuntimeError::Invariant(
+                    "workspace path changed to a symlink or non-directory after confirmation"
+                        .to_owned(),
+                ));
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            fs::create_dir_all(workspace)?;
+        }
+        Err(error) => return Err(error.into()),
+    }
+    ensure_workspace_identity(workspace)
+}
+
+fn ensure_workspace_identity(workspace: &Path) -> Result<(), RuntimeError> {
+    let metadata = fs::symlink_metadata(workspace)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(RuntimeError::Invariant(
+            "workspace path changed to a symlink or non-directory during operation".to_owned(),
+        ));
+    }
+    let actual = fs::canonicalize(workspace)?;
+    if actual != workspace {
+        return Err(RuntimeError::Invariant(
+            "workspace canonical path changed during operation".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn confirm_workspace_path(
@@ -446,21 +848,74 @@ mod tests {
         }
     }
 
+    fn repository(name: &str) -> GitHubRepository {
+        GitHubRepository {
+            name: name.to_owned(),
+            name_with_owner: format!("example-org/{name}"),
+            is_archived: false,
+            is_fork: false,
+            is_private: true,
+            url: format!("https://github.com/example-org/{name}"),
+        }
+    }
+
     #[test]
-    fn remote_normalization_accepts_standard_github_forms() {
+    fn remote_normalization_accepts_only_supported_github_forms() {
         for remote in [
             "git@github.com:example-org/repo.git",
             "ssh://git@github.com/example-org/repo.git",
             "https://github.com/example-org/repo.git",
-            "http://github.com/example-org/repo",
         ] {
             assert_eq!(
                 normalize_github_remote(remote).as_deref(),
                 Some("example-org/repo")
             );
         }
-        assert!(normalize_github_remote("https://example.com/example-org/repo.git").is_none());
-        assert!(normalize_github_remote("https://github.com/a/b/c.git").is_none());
+        for remote in [
+            "http://github.com/example-org/repo",
+            "https://token@github.com/example-org/repo.git",
+            "https://example.com/example-org/repo.git",
+            "https://github.com/a/b/c.git",
+            "https://github.com/example-org/..",
+        ] {
+            assert!(normalize_github_remote(remote).is_none(), "{remote}");
+        }
+    }
+
+    #[test]
+    fn upstream_must_be_on_origin() {
+        assert_eq!(
+            origin_upstream_branch("origin/main\n").as_deref(),
+            Some("main")
+        );
+        assert_eq!(
+            origin_upstream_branch("origin/feature/harden").as_deref(),
+            Some("feature/harden")
+        );
+        for value in ["", "origin/", "fork/main", "upstream/main", "origin/a\nb"] {
+            assert!(origin_upstream_branch(value).is_none(), "{value:?}");
+        }
+    }
+
+    #[test]
+    fn organization_inventory_identity_is_validated_before_filesystem_work() {
+        let valid = vec![repository("api"), repository("docs")];
+        assert!(validate_inventory(&valid, "example-org").is_ok());
+
+        let mut wrong_owner = repository("api");
+        wrong_owner.name_with_owner = "other/api".to_owned();
+        assert!(validate_inventory(&[wrong_owner], "example-org").is_err());
+
+        let mut wrong_url = repository("api");
+        wrong_url.url = "https://github.com/other/api".to_owned();
+        assert!(validate_inventory(&[wrong_url], "example-org").is_err());
+
+        let duplicate = vec![repository("API"), repository("api")];
+        assert!(validate_inventory(&duplicate, "example-org").is_err());
+
+        let mut traversal = repository("api");
+        traversal.name = "..".to_owned();
+        assert!(validate_inventory(&[traversal], "example-org").is_err());
     }
 
     #[test]
@@ -495,5 +950,41 @@ mod tests {
     fn workspace_directory_appends_the_org_once() {
         let value = workspace_directory(&options(WorkspaceAction::Clone)).unwrap();
         assert_eq!(value, PathBuf::from("/tmp/codes/example-org"));
+    }
+
+    #[test]
+    fn workspace_directory_rejects_parent_traversal_and_controls() {
+        let mut value = options(WorkspaceAction::Sync);
+        value.workspace_root = PathBuf::from("/tmp/codes/../other");
+        assert!(workspace_directory(&value).is_err());
+
+        value.workspace_root = PathBuf::from("/tmp/codes\nspoof");
+        assert!(workspace_directory(&value).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn direct_workspace_symlink_is_rejected_but_parent_symlink_is_resolved() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let actual_root = temporary.path().join("actual");
+        fs::create_dir(&actual_root).unwrap();
+
+        let root_link = temporary.path().join("codes");
+        symlink(&actual_root, &root_link).unwrap();
+        let mut value = options(WorkspaceAction::Sync);
+        value.workspace_root = root_link;
+        assert_eq!(
+            workspace_directory(&value).unwrap(),
+            fs::canonicalize(&actual_root)
+                .unwrap()
+                .join("example-org")
+        );
+
+        let target = temporary.path().join("target");
+        fs::create_dir(&target).unwrap();
+        symlink(&target, actual_root.join("example-org")).unwrap();
+        assert!(workspace_directory(&value).is_err());
     }
 }
