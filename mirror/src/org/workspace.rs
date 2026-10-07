@@ -245,25 +245,11 @@ pub async fn manage_workspace(
     }
 
     if let Err(error) = ensure_account_unchanged(gh, &account).await {
-        record_workspace_outcomes(
-            &mut report,
-            &cloned,
-            &pulled,
-            &skipped,
-            &failed,
-            &[],
-        );
+        record_workspace_outcomes(&mut report, &cloned, &pulled, &skipped, &failed, &[]);
         return Err(error.with_partial_report(report));
     }
 
-    record_workspace_outcomes(
-        &mut report,
-        &cloned,
-        &pulled,
-        &skipped,
-        &failed,
-        &[],
-    );
+    record_workspace_outcomes(&mut report, &cloned, &pulled, &skipped, &failed, &[]);
     Ok(report.finalize())
 }
 
@@ -386,8 +372,8 @@ async fn pull_repository(
 }
 
 async fn validate_checkout(local: &Path) -> Result<(), String> {
-    let metadata = fs::symlink_metadata(local)
-        .map_err(|_| "could not inspect local checkout".to_owned())?;
+    let metadata =
+        fs::symlink_metadata(local).map_err(|_| "could not inspect local checkout".to_owned())?;
     if metadata.file_type().is_symlink() {
         return Err("local repository path is a symbolic link; refusing to traverse it".to_owned());
     }
@@ -493,18 +479,13 @@ fn origin_upstream_branch(value: &str) -> Option<String> {
 
 async fn verify_origin(local: &Path, expected: &str) -> Result<(), String> {
     let mut command = git_command(local);
-    command
-        .arg("remote")
-        .arg("get-url")
-        .arg("origin");
+    command.arg("remote").arg("get-url").arg("origin");
     let output = run_git_query(command, local, "remote get-url origin").await?;
     if !output.status.success() {
         return Err("could not read origin remote".to_owned());
     }
     let Some(actual) = normalize_github_remote(&output.stdout) else {
-        return Err(
-            "origin is not a supported HTTPS or SSH github.com repository URL".to_owned(),
-        );
+        return Err("origin is not a supported HTTPS or SSH github.com repository URL".to_owned());
     };
     if !actual.eq_ignore_ascii_case(expected) {
         return Err(
@@ -583,10 +564,7 @@ async fn require_git_available() -> Result<(), RuntimeError> {
     }
 }
 
-fn validate_inventory(
-    repositories: &[GitHubRepository],
-    owner: &str,
-) -> Result<(), RuntimeError> {
+fn validate_inventory(repositories: &[GitHubRepository], owner: &str) -> Result<(), RuntimeError> {
     let mut names = BTreeSet::new();
     for repository in repositories {
         if validate_repository_name(&repository.name).is_err() {
@@ -977,9 +955,7 @@ mod tests {
         value.workspace_root = root_link;
         assert_eq!(
             workspace_directory(&value).unwrap(),
-            fs::canonicalize(&actual_root)
-                .unwrap()
-                .join("example-org")
+            fs::canonicalize(&actual_root).unwrap().join("example-org")
         );
 
         let target = temporary.path().join("target");
