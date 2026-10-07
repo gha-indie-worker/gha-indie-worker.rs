@@ -218,7 +218,7 @@ Before authentication, inventory, directory creation, cloning, or pulling, inter
 oresc org --name ores-truffle-oreslang sync --all --non-interactive
 ```
 
-The safety bypass and --all must be present on argv; environment values cannot silently authorize them. Existing checkout directories are verified to be Git repositories whose origin points at the expected github.com/<org>/<repo>. Symbolic links, non-Git collisions, and origin mismatches are left untouched and reported. Pull uses git pull --ff-only, so it does not create merge commits. The pull command never clones missing repositories; sync does both.
+The safety bypass and --all must be present on argv; environment values cannot silently authorize them. In non-interactive mode, the default ~/codes root may be used without --dir, but any non-default workspace root must also be supplied explicitly as --dir on argv. Existing checkout directories are verified to be Git repositories whose origin points at the expected github.com/<org>/<repo>. Symbolic links, non-Git collisions, and origin mismatches are left untouched and reported. Pull uses git pull --ff-only, so it does not create merge commits. The pull command never clones missing repositories; sync does both.
 
 Change visibility on existing repositories with a separate fail-stop command. Preview the exact frozen target set first:
 
