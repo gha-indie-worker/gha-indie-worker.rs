@@ -1,0 +1,707 @@
+[help]
+url = "https://github.com/ORESoftware/ores-cli#usage"
+columns = ["options", "env", "type", "default", "description"]
+
+[env]
+files = []
+
+[parse]
+command_env = "ORES_CLI_COMMAND"
+positionals_env = "ORES_CLI_POSITIONALS"
+unknown_options_env = "ORES_CLI_UNKNOWN_OPTIONS"
+errors_env = "ORES_CLI_PARSE_ERRORS"
+allow_unknown = false
+
+[flags.json]
+env = "ORES_CLI_JSON"
+aliases = ["json"]
+type = "bool"
+default = "true"
+true_aliases = ["t", "1", "yes"]
+false_aliases = ["f", "0", "no"]
+help = "Emit newline-delimited next-loggers/v1 JSON records. Use --no-json for plain stdout. When explicitly supplied on an invalid invocation, emit a structured error object to stdout without ANSI color."
+
+[flags.yaml]
+env = "ORES_CLI_YAML"
+aliases = ["yaml"]
+type = "bool"
+default = "false"
+help = "When explicitly supplied on an invalid invocation, emit a structured YAML error document to stdout without ANSI color."
+
+[flags.colors]
+env = "ORES_CLI_COLORS"
+aliases = ["colors"]
+type = "bool"
+default = "true"
+help = "Use ANSI colors for human-readable errors when stderr is a terminal; use --no-colors to disable them. Structured JSON/YAML errors never contain ANSI color."
+
+[flags.log-level]
+env = "ORES_CLI_LOG_LEVEL"
+aliases = ["log-level"]
+type = "string"
+default = "info"
+help = "Logging threshold: trace, debug, info, warn, error, quiet, or silent. trace is the most verbose diagnostic/progress mode; info streams progress by default; quiet keeps only the final report summary; silent suppresses log/report stdout."
+
+[commands.doctor]
+help = "Audit ores-cli configuration and report required and optional runtime dependencies."
+env = "ORES_CLI_COMMAND_DOCTOR"
+
+[commands.codespace]
+help = "Manage GitHub Codespaces development and preview runtime integrations."
+env = "ORES_CLI_COMMAND_CODESPACE"
+
+[commands.codespace.commands.edge]
+help = "Manage a loopback HTTP origin and remotely managed Cloudflare Tunnel connector."
+env = "ORES_CLI_COMMAND_CODESPACE_EDGE"
+
+[commands.codespace.commands.edge.flags.port]
+env = "ORES_CLI_CODESPACE_EDGE_PORT"
+aliases = ["port"]
+short = "p"
+type = "integer"
+default = 8080
+help = "Loopback HTTP port for the Codespace edge preview server."
+
+[commands.codespace.commands.edge.flags.state-dir]
+env = "ORES_CLI_CODESPACE_EDGE_STATE_DIR"
+aliases = ["state-dir"]
+type = "string"
+default = ".ores/codespace-edge"
+help = "Repository-local runtime state directory; credentials are never written here."
+
+[commands.codespace.commands.edge.flags.cloudflared]
+env = "ORES_CLI_CODESPACE_EDGE_CLOUDFLARED"
+aliases = ["cloudflared"]
+type = "string"
+default = "cloudflared"
+help = "cloudflared executable name or path."
+
+[commands.codespace.commands.edge.commands.up]
+help = "Start the loopback edge server and a Cloudflare Tunnel connector; requires TUNNEL_TOKEN or CF_TUNNEL_TOKEN in the environment."
+env = "ORES_CLI_COMMAND_CODESPACE_EDGE_UP"
+
+[commands.codespace.commands.edge.commands.status]
+help = "Read local edge supervisor, tunnel, and readiness status without mutation."
+env = "ORES_CLI_COMMAND_CODESPACE_EDGE_STATUS"
+
+[commands.codespace.commands.edge.commands.down]
+help = "Stop only the supervisor and tunnel processes proven to belong to this edge runtime."
+env = "ORES_CLI_COMMAND_CODESPACE_EDGE_DOWN"
+
+[commands.codespace.commands.edge.commands.supervise]
+help = "Internal long-running edge supervisor used by `codespace edge up`."
+env = "ORES_CLI_COMMAND_CODESPACE_EDGE_SUPERVISE"
+
+[commands.org]
+help = "Inspect a GitHub organization and discover organization-level actions."
+env = "ORES_CLI_COMMAND_ORG"
+
+[commands.org.flags.name]
+env = "ORES_CLI_ORG_NAME"
+aliases = ["name", "org", "owner"]
+short = "n"
+type = "string"
+help = "GitHub organization login."
+
+[commands.org.flags.repo-limit]
+env = "ORES_CLI_ORG_REPO_LIMIT"
+aliases = ["repo-limit", "limit"]
+type = "integer"
+default = 1000
+help = "Maximum repositories requested from gh repo list."
+
+[commands.org.flags.expected-repos]
+env = "ORES_CLI_ORG_EXPECTED_REPOS"
+aliases = ["expected-repos"]
+type = "string"
+default = ".github"
+help = "Comma-separated exact repository names in the canonical organization set."
+
+[commands.org.flags.family-prefix]
+env = "ORES_CLI_ORG_FAMILY_PREFIX"
+aliases = ["family-prefix", "prefix", "prefix-family"]
+type = "string"
+help = "Override the standard repository-family prefix; otherwise infer a unique >4/7 dominant known-family prefix from a complete inventory with >7 repositories, then fall back to the organization name."
+
+[commands.org.flags.family-members]
+env = "ORES_CLI_ORG_FAMILY_MEMBERS"
+aliases = ["family-members"]
+type = "string"
+default = "interfaces,clients,sync,cli,monorepo,infra,desktop-app.rs,flutter,lambdas,api-server.rs,admin-api-server.rs,web-server.rs,admin-web-server.rs,docs,mcp-server.rs,admin-mcp-server.rs,lib-core,pub-lib-core,orm-core"
+help = "Comma-separated standard repository-family suffixes."
+
+[commands.org.flags.standard-family]
+env = "ORES_CLI_ORG_STANDARD_FAMILY"
+aliases = ["standard-family"]
+type = "bool"
+default = "true"
+help = "Include the standard prefixed repository family; use --no-standard-family for exact repositories only."
+
+[commands.org.commands.list-missing-repos]
+help = "List missing canonical repositories as shell-composable names."
+env = "ORES_CLI_COMMAND_ORG_LIST_MISSING_REPOS"
+
+[commands.org.commands.list-missing-repos.flags.report]
+env = "ORES_CLI_ORG_LIST_REPORT"
+aliases = ["report"]
+type = "bool"
+default = "false"
+help = "Emit the normal JSON/plain command report instead of one repository name per line."
+
+[commands.org.commands.create-missing-repos]
+help = "Create selected or all missing canonical repositories."
+env = "ORES_CLI_COMMAND_ORG_CREATE_MISSING_REPOS"
+
+[commands.org.commands.create-missing-repos.flags.all]
+env = "ORES_CLI_ORG_CREATE_ALL"
+aliases = ["all"]
+type = "bool"
+default = "false"
+help = "Create every currently missing canonical repository."
+
+[commands.org.commands.create-missing-repos.flags.visibility]
+env = "ORES_CLI_ORG_VISIBILITY"
+aliases = ["visibility"]
+type = "string"
+default = "private"
+help = "Visibility for created repositories: private, internal, or public."
+
+[commands.org.commands.set-repo-visibility]
+help = "Change visibility on existing repositories selected from one authoritative organization inventory."
+env = "ORES_CLI_COMMAND_ORG_SET_REPO_VISIBILITY"
+
+[commands.org.commands.set-repo-visibility.flags.all]
+env = "ORES_CLI_ORG_SET_VISIBILITY_ALL"
+aliases = ["all"]
+type = "bool"
+default = "false"
+help = "Select every repository in the complete preflight inventory."
+
+[commands.org.commands.set-repo-visibility.flags.exclude]
+env = "ORES_CLI_ORG_SET_VISIBILITY_EXCLUDE"
+aliases = ["exclude"]
+type = "string"
+help = "Comma-separated repository names that must remain untouched; every exclusion must exist in preflight."
+
+[commands.org.commands.set-repo-visibility.flags.dry-run]
+env = "ORES_CLI_ORG_SET_VISIBILITY_DRY_RUN"
+aliases = ["dry-run"]
+type = "bool"
+default = "false"
+help = "Report the exact visibility-change plan without issuing mutation requests."
+
+[commands.org.commands.set-repo-visibility.flags.accept-visibility-change-consequences]
+env = "ORES_CLI_ORG_SET_VISIBILITY_ACCEPT_CONSEQUENCES"
+aliases = ["accept-visibility-change-consequences"]
+type = "bool"
+default = "false"
+help = "Explicitly acknowledge GitHub visibility-change consequences before any non-dry-run mutation."
+
+[commands.org.commands.set-repo-visibility.flags.visibility]
+env = "ORES_CLI_ORG_SET_VISIBILITY"
+aliases = ["visibility"]
+type = "string"
+default = "private"
+help = "Target visibility for selected existing repositories: private, internal, or public."
+
+[commands.org.commands.clone]
+help = "Clone every visible repository missing from the local organization workspace."
+env = "ORES_CLI_COMMAND_ORG_CLONE"
+
+[commands.org.commands.clone.flags.all]
+env = "ORES_CLI_ORG_CLONE_ALL"
+aliases = ["all"]
+type = "bool"
+default = "false"
+help = "Select every repository in the complete organization inventory."
+
+[commands.org.commands.clone.flags.dir]
+env = "ORES_CLI_ORG_CLONE_DIR"
+aliases = ["dir"]
+type = "string"
+default = "~/codes"
+help = "Workspace root; the organization login is appended to form the final path."
+
+[commands.org.commands.clone.flags.non-interactive]
+env = "ORES_CLI_ORG_CLONE_NON_INTERACTIVE"
+aliases = ["non-interactive"]
+type = "bool"
+default = "false"
+help = "Skip terminal path confirmation. This safety bypass must be supplied explicitly on argv."
+
+[commands.org.commands.pull]
+help = "Fast-forward pull every verified repository already present in the local organization workspace."
+env = "ORES_CLI_COMMAND_ORG_PULL"
+
+[commands.org.commands.pull.flags.all]
+env = "ORES_CLI_ORG_PULL_ALL"
+aliases = ["all"]
+type = "bool"
+default = "false"
+help = "Select every repository in the complete organization inventory."
+
+[commands.org.commands.pull.flags.dir]
+env = "ORES_CLI_ORG_PULL_DIR"
+aliases = ["dir"]
+type = "string"
+default = "~/codes"
+help = "Workspace root; the organization login is appended to form the final path."
+
+[commands.org.commands.pull.flags.non-interactive]
+env = "ORES_CLI_ORG_PULL_NON_INTERACTIVE"
+aliases = ["non-interactive"]
+type = "bool"
+default = "false"
+help = "Skip terminal path confirmation. This safety bypass must be supplied explicitly on argv."
+
+[commands.org.commands.sync]
+help = "Clone missing repositories and fast-forward pull verified existing repositories in the local organization workspace."
+env = "ORES_CLI_COMMAND_ORG_SYNC"
+
+[commands.org.commands.sync.flags.all]
+env = "ORES_CLI_ORG_SYNC_ALL"
+aliases = ["all"]
+type = "bool"
+default = "false"
+help = "Select every repository in the complete organization inventory."
+
+[commands.org.commands.sync.flags.dir]
+env = "ORES_CLI_ORG_SYNC_DIR"
+aliases = ["dir"]
+type = "string"
+default = "~/codes"
+help = "Workspace root; the organization login is appended to form the final path."
+
+[commands.org.commands.sync.flags.non-interactive]
+env = "ORES_CLI_ORG_SYNC_NON_INTERACTIVE"
+aliases = ["non-interactive"]
+type = "bool"
+default = "false"
+help = "Skip terminal path confirmation. This safety bypass must be supplied explicitly on argv."
+
+[commands.audit]
+help = "Audit a GitHub organization, local repository, encrypted environment, zed-pkg package, or TypeSpec/JSON Schema contract."
+env = "ORES_CLI_COMMAND_AUDIT"
+
+[commands.audit.commands.org]
+help = "Audit GitHub repository topology and optional top-level layouts through the authenticated gh CLI."
+env = "ORES_CLI_COMMAND_AUDIT_ORG"
+
+[commands.audit.commands.org.flags.org]
+env = "ORES_CLI_GITHUB_OWNER"
+aliases = ["org", "owner"]
+short = "o"
+type = "string"
+help = "GitHub organization or account login to audit."
+
+[commands.audit.commands.org.flags.repo-limit]
+env = "ORES_CLI_GITHUB_REPO_LIMIT"
+aliases = ["repo-limit", "limit"]
+type = "integer"
+default = 1000
+help = "Maximum repositories requested from gh repo list."
+
+[commands.audit.commands.org.flags.expected-repos]
+env = "ORES_CLI_EXPECTED_REPOS"
+aliases = ["expected-repos"]
+type = "string"
+default = ".github"
+help = "Comma-separated repository names that must exist."
+
+[commands.audit.commands.org.flags.family-prefix]
+env = "ORES_CLI_FAMILY_PREFIX"
+aliases = ["family-prefix", "prefix", "prefix-family"]
+type = "string"
+help = "Optional standard repository-family prefix, for example sonus-auris."
+
+[commands.audit.commands.org.flags.family-members]
+env = "ORES_CLI_FAMILY_MEMBERS"
+aliases = ["family-members"]
+type = "string"
+default = "interfaces,clients,sync,cli,monorepo,infra,desktop-app.rs,flutter,lambdas,api-server.rs,admin-api-server.rs,web-server.rs,admin-web-server.rs,docs,mcp-server.rs,admin-mcp-server.rs,lib-core,pub-lib-core,orm-core"
+help = "Comma-separated suffixes required when --family-prefix is set."
+
+[commands.audit.commands.org.flags.require-docs-repo]
+env = "ORES_CLI_REQUIRE_DOCS_REPO"
+aliases = ["require-docs-repo"]
+type = "bool"
+default = "true"
+help = "Require a repository named docs or ending in -docs."
+
+[commands.audit.commands.org.flags.check-layout]
+env = "ORES_CLI_CHECK_LAYOUT"
+aliases = ["check-layout"]
+type = "bool"
+default = "true"
+help = "Audit top-level repository entries with gh api."
+
+[commands.audit.commands.org.flags.layout-required]
+env = "ORES_CLI_LAYOUT_REQUIRED"
+aliases = ["layout-required"]
+type = "string"
+default = "README.md,LICENSE,AGENTS.md,.github,.zpkg.toml"
+help = "Comma-separated top-level entries required in active non-fork repositories."
+
+[commands.audit.commands.org.flags.max-layout-repos]
+env = "ORES_CLI_MAX_LAYOUT_REPOS"
+aliases = ["max-layout-repos"]
+type = "integer"
+default = 50
+help = "Maximum active repositories whose top-level layout is inspected."
+
+[commands.audit.commands.org.flags.include-archived]
+env = "ORES_CLI_INCLUDE_ARCHIVED"
+aliases = ["include-archived"]
+type = "bool"
+default = "false"
+help = "Include archived repositories in layout checks."
+
+[commands.audit.commands.repo]
+help = "Audit a local repository path against a structural, GitOps, or read-only standards profile."
+env = "ORES_CLI_COMMAND_AUDIT_REPO"
+
+[commands.audit.commands.repo.flags.path]
+env = "ORES_CLI_REPOSITORY_PATH"
+aliases = ["path", "repo-path"]
+short = "p"
+type = "string"
+default = "."
+help = "Local repository root."
+
+[commands.audit.commands.repo.flags.profile]
+env = "ORES_CLI_REPOSITORY_PROFILE"
+aliases = ["profile"]
+type = "string"
+default = "baseline"
+help = "Profile: baseline, rust-cli, docs, interfaces, infra, family, source, source-available, standards, or standards-logs. family infers the ORES repository family from the checkout name and runs TJSV over every contracts/** pair; The infra profile validates Supabase/Neon GitOps boundaries and runs TJSV fail-closed; source requires parser-backed (syn/ts-morph/go-ast/analyzer/tree-sitter) evidence for every language present, source-available admits whichever adapters are installed."
+
+[commands.audit.commands.repo.flags.required-paths]
+env = "ORES_CLI_REQUIRED_PATHS"
+aliases = ["required-paths"]
+type = "string"
+help = "Additional comma-separated paths required below the repository root."
+
+[commands.audit.commands.env]
+help = "Decrypt selected env/enc/*.env.enc inputs in memory and verify every declared variable exists in the local process environment."
+env = "ORES_CLI_COMMAND_AUDIT_ENV"
+
+[commands.audit.commands.env.flags.path]
+env = "ORES_CLI_ENV_PATH"
+aliases = ["path", "repo-path"]
+short = "p"
+type = "string"
+default = "."
+help = "Local repository root containing the encrypted environment directory."
+
+[commands.audit.commands.env.flags.encrypted-dir]
+env = "ORES_CLI_ENV_ENCRYPTED_DIR"
+aliases = ["encrypted-dir", "env-dir"]
+type = "string"
+default = "env/enc"
+help = "Directory below --path containing *.env.enc files."
+
+[commands.audit.commands.env.flags.environments]
+env = "ORES_CLI_ENV_ENVIRONMENTS"
+aliases = ["environments", "environment", "envs"]
+type = "string"
+default = "dev"
+help = "Ciphertext environments to audit: dev by default, all explicitly, or a comma-separated subset of dev, stage, prod."
+
+[commands.audit.commands.env.flags.sops]
+env = "ORES_CLI_ENV_SOPS"
+aliases = ["sops"]
+type = "string"
+default = "sops"
+help = "SOPS executable name or path."
+
+[commands.audit.commands.env.flags.max-ciphertext-bytes]
+env = "ORES_CLI_ENV_MAX_CIPHERTEXT_BYTES"
+aliases = ["max-ciphertext-bytes", "max-env-bytes"]
+type = "integer"
+default = 8388608
+help = "Maximum size accepted for any selected encrypted dotenv input before decryption."
+
+[commands.audit.commands.env.flags.require-non-empty]
+env = "ORES_CLI_ENV_REQUIRE_NON_EMPTY"
+aliases = ["require-non-empty"]
+type = "bool"
+default = "true"
+help = "Treat locally defined but empty required environment variables as failures; use --no-require-non-empty to check presence only."
+
+[commands.audit.commands.package]
+help = "Validate Cargo and zed-pkg publishing metadata for one local Rust package."
+env = "ORES_CLI_COMMAND_AUDIT_PACKAGE"
+
+[commands.audit.commands.package.flags.path]
+env = "ORES_CLI_PACKAGE_PATH"
+aliases = ["path", "package-path"]
+short = "p"
+type = "string"
+default = "."
+help = "Local package root."
+
+[commands.audit.commands.package.flags.require-cargo-lock]
+env = "ORES_CLI_REQUIRE_CARGO_LOCK"
+aliases = ["require-cargo-lock"]
+type = "bool"
+default = "true"
+help = "Require Cargo.lock for a publishable CLI package."
+
+[commands.audit.commands.contract]
+help = "Run the TypeSpec/JSON Schema parity validator as a captured subprocess."
+env = "ORES_CLI_COMMAND_AUDIT_CONTRACT"
+
+[commands.audit.commands.contract.flags.typespec]
+env = "ORES_CLI_TYPESPEC"
+aliases = ["typespec"]
+short = "t"
+type = "string"
+help = "TypeSpec entry file or project directory."
+
+[commands.audit.commands.contract.flags.schema]
+env = "ORES_CLI_JSON_SCHEMA"
+aliases = ["schema", "json-schema"]
+short = "s"
+type = "string"
+help = "Independently authored JSON Schema entry file or directory."
+
+[commands.audit.commands.contract.flags.report]
+env = "ORES_CLI_CONTRACT_REPORT"
+aliases = ["report"]
+short = "r"
+type = "string"
+default = ".typespec-json-schema-validator/report.json"
+help = "Parity-validator report path."
+
+[commands.audit.commands.contract.flags.validator]
+env = "ORES_CLI_VALIDATOR"
+aliases = ["validator"]
+type = "string"
+default = "tjsv"
+help = "Canonical tjsv TypeSpec/JSON Schema validator executable. Shell fragments are not accepted."
+
+[commands.orgs]
+help = "List active organization memberships or reconcile explicitly selected organizations."
+env = "ORES_CLI_COMMAND_ORGS"
+
+[commands.orgs.flags.names]
+env = "ORES_CLI_ORGS_NAMES"
+aliases = ["names", "orgs"]
+type = "string"
+help = "Comma-separated organization logins; mutually exclusive with --all-orgs and --interactive."
+
+[commands.orgs.flags.all-orgs]
+env = "ORES_CLI_ORGS_ALL_ORGS"
+aliases = ["all-orgs"]
+type = "bool"
+default = "false"
+help = "Explicitly select every eligible active organization membership. Does not authorize repository creation."
+
+[commands.orgs.flags.interactive]
+env = "ORES_CLI_ORGS_INTERACTIVE"
+aliases = ["interactive"]
+short = "i"
+type = "bool"
+default = "false"
+help = "Open the numbered multi-org picker and confirm creation. Requires --no-json and terminal stdin/stdout."
+
+[commands.orgs.flags.admin-only]
+env = "ORES_CLI_ORGS_ADMIN_ONLY"
+aliases = ["admin-only"]
+type = "bool"
+default = "false"
+help = "Only list/select admin memberships. Creation always requires an admin membership."
+
+[commands.orgs.flags.progress]
+env = "ORES_CLI_ORGS_PROGRESS"
+aliases = ["progress"]
+type = "bool"
+default = "true"
+help = "Flush ores-otel progress events during discovery and each org operation; --no-progress emits only the final report."
+
+[commands.orgs.flags.repo-limit]
+env = "ORES_CLI_ORGS_REPO_LIMIT"
+aliases = ["repo-limit", "limit"]
+type = "integer"
+default = 1000
+help = "Maximum repositories per org; reaching the limit aborts preflight rather than accepting a truncated inventory."
+
+[commands.orgs.flags.expected-repos]
+env = "ORES_CLI_ORGS_EXPECTED_REPOS"
+aliases = ["expected-repos"]
+type = "string"
+default = ".github"
+help = "Comma-separated exact repository names required in every selected organization."
+
+[commands.orgs.flags.standard-family]
+env = "ORES_CLI_ORGS_STANDARD_FAMILY"
+aliases = ["standard-family"]
+type = "bool"
+default = "true"
+help = "Include the prefixed standard family. Use --no-standard-family for focused test-org repository sets."
+
+[commands.orgs.flags.family-members]
+env = "ORES_CLI_ORGS_FAMILY_MEMBERS"
+aliases = ["family-members"]
+type = "string"
+default = "interfaces,clients,sync,cli,monorepo,infra,desktop-app.rs,flutter,lambdas,api-server.rs,admin-api-server.rs,web-server.rs,admin-web-server.rs,docs,mcp-server.rs,admin-mcp-server.rs,lib-core,pub-lib-core,orm-core"
+help = "Comma-separated standard repository-family suffixes."
+
+[commands.orgs.flags.family-prefixes]
+env = "ORES_CLI_ORGS_FAMILY_PREFIXES"
+aliases = ["family-prefixes"]
+type = "string"
+help = "Comma-separated org=prefix overrides, for example hhaus-org=hhaus,ores-rate-limit=ores-rl. Organizations without an override use complete-inventory statistical inference and then the organization-login fallback."
+
+[commands.orgs.commands.list]
+help = "List every active organization membership visible to the authenticated account, including its role."
+env = "ORES_CLI_COMMAND_ORGS_LIST"
+
+[commands.orgs.commands.list-missing-repos]
+help = "Read all selected inventories and report missing repositories without mutation."
+env = "ORES_CLI_COMMAND_ORGS_LIST_MISSING"
+
+[commands.orgs.commands.create-missing-repos]
+help = "Preflight every selected org, then create only the exact planned missing repositories."
+env = "ORES_CLI_COMMAND_ORGS_CREATE_MISSING"
+
+[commands.orgs.commands.create-missing-repos.flags.all]
+env = "ORES_CLI_ORGS_CREATE_ALL"
+aliases = ["all"]
+type = "bool"
+default = "false"
+help = "Authorize all planned missing repositories. Required without --interactive, including for --dry-run."
+
+[commands.orgs.commands.create-missing-repos.flags.dry-run]
+env = "ORES_CLI_ORGS_DRY_RUN"
+aliases = ["dry-run"]
+type = "bool"
+default = "false"
+help = "Report the exact creation plan without issuing any write requests."
+
+[commands.orgs.commands.create-missing-repos.flags.visibility]
+env = "ORES_CLI_ORGS_VISIBILITY"
+aliases = ["visibility"]
+type = "string"
+default = "private"
+help = "Visibility for newly created repositories: private, internal, or public."
+
+[commands.mcp]
+help = "Talk to an explicitly selected MCP server through a bounded stdio transport. Defaults to probe."
+env = "ORES_CLI_COMMAND_MCP"
+
+[commands.mcp.flags.server]
+env = "ORES_CLI_MCP_SERVER"
+aliases = ["server", "executable"]
+type = "string"
+help = "Exact MCP server executable name or path. No shell is invoked."
+
+[commands.mcp.flags.server-args-json]
+env = "ORES_CLI_MCP_SERVER_ARGS_JSON"
+aliases = ["server-args-json"]
+type = "string"
+default = "[]"
+help = "JSON array of exact argv elements passed directly to the MCP executable. Values are never emitted in reports."
+
+[commands.mcp.flags.timeout-ms]
+env = "ORES_CLI_MCP_TIMEOUT_MS"
+aliases = ["timeout-ms"]
+type = "integer"
+default = 10000
+help = "Per-frame/read/write timeout in milliseconds; maximum 120000."
+
+[commands.mcp.flags.max-frame-bytes]
+env = "ORES_CLI_MCP_MAX_FRAME_BYTES"
+aliases = ["max-frame-bytes"]
+type = "integer"
+default = 1048576
+help = "Maximum inbound or outbound newline-delimited JSON-RPC frame size."
+
+[commands.mcp.commands.probe]
+help = "Run initialize + notifications/initialized + tools/list and report bounded server/catalog metadata."
+env = "ORES_CLI_COMMAND_MCP_PROBE"
+
+[commands.mcp.commands.call]
+help = "Initialize the server, verify the advertised catalog, and invoke one advertised tool."
+env = "ORES_CLI_COMMAND_MCP_CALL"
+
+[commands.mcp.commands.call.flags.tool]
+env = "ORES_CLI_MCP_TOOL"
+aliases = ["tool"]
+type = "string"
+help = "Exact advertised MCP tool name."
+
+[commands.mcp.commands.call.flags.arguments-json]
+env = "ORES_CLI_MCP_ARGUMENTS_JSON"
+aliases = ["arguments-json", "args-json"]
+type = "string"
+default = "{}"
+help = "JSON object sent as MCP tool arguments. The value is not copied into the command report."
+
+[commands.mcp.commands.call.flags.include-result]
+env = "ORES_CLI_MCP_INCLUDE_RESULT"
+aliases = ["include-result"]
+type = "bool"
+default = "false"
+help = "Explicitly include the bounded MCP tool result in stdout. Off by default because tool results may contain sensitive data."
+
+[commands.ai]
+help = "Authenticate to Claude/OpenAI managed-agent APIs and operate on normalized stale AI threads. Defaults to auth."
+env = "ORES_CLI_COMMAND_AI"
+
+[commands.ai.flags.provider]
+env = "ORES_CLI_AI_PROVIDER"
+aliases = ["provider"]
+type = "string"
+default = "all"
+help = "Provider selector: claude, codex, or all. codex maps to OpenAI Managed Agents sessions."
+
+[commands.ai.flags.older-than-days]
+env = "ORES_CLI_AI_OLDER_THAN_DAYS"
+aliases = ["older-than-days", "created-before-days"]
+type = "integer"
+default = 7
+help = "Select only sessions created strictly more than this many days ago. Range 1..3650."
+
+[commands.ai.flags.inactive-days]
+env = "ORES_CLI_AI_INACTIVE_DAYS"
+aliases = ["inactive-days", "untouched-days"]
+type = "integer"
+default = 5
+help = "Select only sessions whose last provider update/activity was strictly more than this many days ago. Range 1..3650."
+
+[commands.ai.flags.max-threads]
+env = "ORES_CLI_AI_MAX_THREADS"
+aliases = ["max-threads", "limit"]
+type = "integer"
+default = 20
+help = "Maximum stale idle threads selected across providers. Hard-capped at 20."
+
+[commands.ai.flags.concurrency]
+env = "ORES_CLI_AI_CONCURRENCY"
+aliases = ["concurrency", "parallel"]
+type = "integer"
+default = 20
+help = "Maximum simultaneous prompt deliveries. Hard-capped at 20."
+
+[commands.ai.commands.auth]
+help = "Verify environment-provided provider credentials with read-only session-list probes."
+env = "ORES_CLI_COMMAND_AI_AUTH"
+
+[commands.ai.commands.threads]
+help = "Discover stale idle managed-agent sessions normalized as ORES AI threads. Defaults to list."
+env = "ORES_CLI_COMMAND_AI_THREADS"
+
+[commands.ai.commands.threads.commands.list]
+help = "List up to 20 stale idle threads matching the age and inactivity criteria without mutation."
+env = "ORES_CLI_COMMAND_AI_THREADS_LIST"
+
+[commands.ai.commands.threads.commands.prompt]
+help = "Discover stale idle threads, complete all provider preflight reads, then fan one message out with bounded concurrency."
+env = "ORES_CLI_COMMAND_AI_THREADS_PROMPT"
+
+[commands.ai.commands.threads.commands.prompt.flags.prompt]
+env = "ORES_CLI_AI_PROMPT"
+aliases = ["prompt", "message", "command"]
+type = "string"
+help = "Exact user message sent to every selected session. The value is not copied into the command report or curl argv."
