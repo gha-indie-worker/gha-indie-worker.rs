@@ -205,7 +205,7 @@ default = "private"
 help = "Target visibility for selected existing repositories: private, internal, or public."
 
 [commands.org.commands.clone]
-help = "Clone every visible repository missing from the local organization workspace."
+help = "Clone missing repositories from an authoritative owner-visible organization inventory into the local workspace."
 env = "ORES_CLI_COMMAND_ORG_CLONE"
 
 [commands.org.commands.clone.flags.all]
@@ -213,7 +213,7 @@ env = "ORES_CLI_ORG_CLONE_ALL"
 aliases = ["all"]
 type = "bool"
 default = "false"
-help = "Select every repository in the complete organization inventory."
+help = "Select every repository in the complete organization inventory; organization-owner membership is required."
 
 [commands.org.commands.clone.flags.dir]
 env = "ORES_CLI_ORG_CLONE_DIR"
@@ -230,7 +230,7 @@ default = "false"
 help = "Skip terminal path confirmation. This safety bypass must be supplied explicitly on argv."
 
 [commands.org.commands.pull]
-help = "Fast-forward pull every verified repository already present in the local organization workspace."
+help = "Fast-forward pull clean verified repositories from their origin/* upstream in the local organization workspace."
 env = "ORES_CLI_COMMAND_ORG_PULL"
 
 [commands.org.commands.pull.flags.all]
@@ -238,7 +238,7 @@ env = "ORES_CLI_ORG_PULL_ALL"
 aliases = ["all"]
 type = "bool"
 default = "false"
-help = "Select every repository in the complete organization inventory."
+help = "Select every repository in the complete organization inventory; organization-owner membership is required."
 
 [commands.org.commands.pull.flags.dir]
 env = "ORES_CLI_ORG_PULL_DIR"
@@ -255,7 +255,7 @@ default = "false"
 help = "Skip terminal path confirmation. This safety bypass must be supplied explicitly on argv."
 
 [commands.org.commands.sync]
-help = "Clone missing repositories and fast-forward pull verified existing repositories in the local organization workspace."
+help = "Clone missing repositories and fast-forward pull clean verified existing repositories from an authoritative owner-visible inventory."
 env = "ORES_CLI_COMMAND_ORG_SYNC"
 
 [commands.org.commands.sync.flags.all]
@@ -263,7 +263,7 @@ env = "ORES_CLI_ORG_SYNC_ALL"
 aliases = ["all"]
 type = "bool"
 default = "false"
-help = "Select every repository in the complete organization inventory."
+help = "Select every repository in the complete organization inventory; organization-owner membership is required."
 
 [commands.org.commands.sync.flags.dir]
 env = "ORES_CLI_ORG_SYNC_DIR"
