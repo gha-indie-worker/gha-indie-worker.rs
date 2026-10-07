@@ -18,13 +18,11 @@ fn prefix_argument(family_prefix: Option<&str>) -> String {
 pub(super) fn available_actions(owner: &str, family_prefix: Option<&str>) -> Vec<OrgAction> {
     let prefix_argument = prefix_argument(family_prefix);
     let list_missing = format!("oresc org --name {owner}{prefix_argument} list-missing-repos");
-    let create_all = format!(
-        "oresc org --name {owner}{prefix_argument} create-missing-repos --all"
-    );
+    let create_all =
+        format!("oresc org --name {owner}{prefix_argument} create-missing-repos --all");
     let filter_missing = format!("{list_missing} $({list_missing})");
-    let create_selected = format!(
-        "oresc org --name {owner}{prefix_argument} create-missing-repos $({list_missing})"
-    );
+    let create_selected =
+        format!("oresc org --name {owner}{prefix_argument} create-missing-repos $({list_missing})");
     let set_visibility = format!(
         "oresc org --name {owner} set-repo-visibility --all --visibility private --dry-run"
     );
