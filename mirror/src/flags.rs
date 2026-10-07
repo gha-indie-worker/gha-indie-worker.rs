@@ -525,51 +525,65 @@ pub fn parse_invocation(argv: &[String]) -> Result<CliInvocation, RuntimeError> 
             if org == "org" && matches!(action.as_str(), "clone" | "pull" | "sync") =>
         {
             ensure_no_extras(&structured.extras, "org workspace")?;
-            let (workspace_action, all, directory, non_interactive, all_key, non_interactive_key) =
-                match action.as_str() {
-                    "clone" => (
-                        WorkspaceAction::Clone,
-                        values.org_clone_all,
-                        &values.org_clone_dir,
-                        values.org_clone_non_interactive,
-                        "ORES_CLI_ORG_CLONE_ALL",
-                        "ORES_CLI_ORG_CLONE_NON_INTERACTIVE",
-                    ),
-                    "pull" => (
-                        WorkspaceAction::Pull,
-                        values.org_pull_all,
-                        &values.org_pull_dir,
-                        values.org_pull_non_interactive,
-                        "ORES_CLI_ORG_PULL_ALL",
-                        "ORES_CLI_ORG_PULL_NON_INTERACTIVE",
-                    ),
-                    "sync" => (
-                        WorkspaceAction::Sync,
-                        values.org_sync_all,
-                        &values.org_sync_dir,
-                        values.org_sync_non_interactive,
-                        "ORES_CLI_ORG_SYNC_ALL",
-                        "ORES_CLI_ORG_SYNC_NON_INTERACTIVE",
-                    ),
-                    _ => unreachable!("guard restricts workspace action"),
-                };
+            let (
+                workspace_action,
+                all,
+                directory,
+                non_interactive,
+                all_key,
+                directory_key,
+                non_interactive_key,
+            ) = match action.as_str() {
+                "clone" => (
+                    WorkspaceAction::Clone,
+                    values.org_clone_all,
+                    &values.org_clone_dir,
+                    values.org_clone_non_interactive,
+                    "ORES_CLI_ORG_CLONE_ALL",
+                    "ORES_CLI_ORG_CLONE_DIR",
+                    "ORES_CLI_ORG_CLONE_NON_INTERACTIVE",
+                ),
+                "pull" => (
+                    WorkspaceAction::Pull,
+                    values.org_pull_all,
+                    &values.org_pull_dir,
+                    values.org_pull_non_interactive,
+                    "ORES_CLI_ORG_PULL_ALL",
+                    "ORES_CLI_ORG_PULL_DIR",
+                    "ORES_CLI_ORG_PULL_NON_INTERACTIVE",
+                ),
+                "sync" => (
+                    WorkspaceAction::Sync,
+                    values.org_sync_all,
+                    &values.org_sync_dir,
+                    values.org_sync_non_interactive,
+                    "ORES_CLI_ORG_SYNC_ALL",
+                    "ORES_CLI_ORG_SYNC_DIR",
+                    "ORES_CLI_ORG_SYNC_NON_INTERACTIVE",
+                ),
+                _ => unreachable!("guard restricts workspace action"),
+            };
             if !all || !structured.provided_flags.contains_key(all_key) {
                 return Err(RuntimeError::Usage(format!(
                     "`org {action}` requires explicit --all on argv"
                 )));
             }
-            if non_interactive
-                && !structured.provided_flags.contains_key(non_interactive_key)
-            {
+            if non_interactive && !structured.provided_flags.contains_key(non_interactive_key) {
                 return Err(RuntimeError::Usage(format!(
                     "`org {action} --non-interactive` must be supplied explicitly on argv"
                 )));
             }
-            if non_interactive
-                && !structured.provided_flags.contains_key("ORES_CLI_ORG_NAME")
-            {
+            if non_interactive && !structured.provided_flags.contains_key("ORES_CLI_ORG_NAME") {
                 return Err(RuntimeError::Usage(format!(
                     "`org {action} --non-interactive` requires an explicit --name/--org/--owner argument"
+                )));
+            }
+            if non_interactive
+                && directory.trim() != default_workspace_dir()
+                && !structured.provided_flags.contains_key(directory_key)
+            {
+                return Err(RuntimeError::Usage(format!(
+                    "`org {action} --non-interactive` requires non-default --dir to be supplied explicitly on argv"
                 )));
             }
             if directory.trim().is_empty() {
