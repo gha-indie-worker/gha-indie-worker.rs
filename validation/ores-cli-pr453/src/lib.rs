@@ -8,8 +8,25 @@ pub mod error {
     pub enum RuntimeError {
         #[error("usage: {0}")]
         Usage(String),
+        #[error("dependency {command}: {message}")]
+        Dependency {
+            command: String,
+            exit_code: Option<i32>,
+            message: String,
+        },
+        #[error("invariant: {0}")]
+        Invariant(String),
         #[error(transparent)]
         Io(#[from] io::Error),
+    }
+
+    impl RuntimeError {
+        pub(crate) fn with_partial_report(
+            self,
+            _report: crate::model::CommandReport,
+        ) -> Self {
+            self
+        }
     }
 }
 
@@ -26,11 +43,31 @@ pub mod github {
         pub url: String,
     }
 
+    #[derive(Debug, Clone)]
+    pub struct OrganizationMembership {
+        pub login: String,
+        pub role: String,
+    }
+
     pub struct GhCli;
 
     impl GhCli {
         pub async fn require_authentication(&self) -> Result<(), RuntimeError> {
             Ok(())
+        }
+
+        pub async fn authenticated_login(&self) -> Result<String, RuntimeError> {
+            Ok("example-user".to_owned())
+        }
+
+        pub async fn organization_membership(
+            &self,
+            owner: &str,
+        ) -> Result<OrganizationMembership, RuntimeError> {
+            Ok(OrganizationMembership {
+                login: owner.to_owned(),
+                role: "admin".to_owned(),
+            })
         }
 
         pub async fn list_repositories(
@@ -126,6 +163,38 @@ pub mod org {
 
     pub fn validate_repository_scope(_scope: &OrgRepositoryScope) -> Result<(), RuntimeError> {
         Ok(())
+    }
+
+    pub mod names {
+        use super::OrgRepositoryScope;
+        use crate::error::RuntimeError;
+        use crate::github::GitHubRepository;
+
+        pub(super) fn ensure_complete_inventory(
+            repositories: &[GitHubRepository],
+            scope: &OrgRepositoryScope,
+        ) -> Result<(), RuntimeError> {
+            if repositories.len() < scope.repo_limit {
+                Ok(())
+            } else {
+                Err(RuntimeError::Usage("incomplete inventory".to_owned()))
+            }
+        }
+
+        pub(super) fn validate_repository_name(name: &str) -> Result<(), RuntimeError> {
+            let valid = !name.is_empty()
+                && name.len() <= 100
+                && name != "."
+                && name != ".."
+                && name
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || ".-_".contains(character));
+            if valid {
+                Ok(())
+            } else {
+                Err(RuntimeError::Usage("invalid GitHub repository name".to_owned()))
+            }
+        }
     }
 
     pub mod workspace {
