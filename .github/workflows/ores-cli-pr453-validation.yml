@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - "test/ores-cli-pr453-compile-mirror2"
+  pull_request:
 
 permissions:
   contents: read
