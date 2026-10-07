@@ -1,0 +1,60 @@
+[package]
+name = "ores-cli"
+default-run = "ores-cli"
+autobins = false
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+description = "Portfolio-aware Rust CLI and SDK for auditing ORES GitHub organizations, repositories, contracts, and zed-pkg metadata"
+repository = "https://github.com/ORESoftware/ores-cli"
+readme = "README.md"
+keywords = ["cli", "github", "audit", "zed-pkg", "typespec"]
+categories = ["command-line-utilities", "development-tools"]
+
+[lib]
+name = "ores_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ores-cli"
+path = "src/main.rs"
+
+[[bin]]
+name = "oresc"
+path = "src/bin/oresc.rs"
+
+[[bin]]
+name = "ores-config-shape"
+path = "src/bin/ores-config-shape.rs"
+
+[dependencies]
+flags2env = { package = "flags2env", git = "https://github.com/flags-2-env/flags-2-env.git", rev = "3414281ed8d7339d5bfabf951048bff31aa3349e" }
+next-loggers = { package = "oresoftware-next-loggers", git = "https://github.com/ores-otel/ores.otel.log", rev = "74bc1c421f5a56be28cade1a47f5d45de51f3b4b" }
+ores-middleware = { git = "https://github.com/ORESoftware/ores-middleware.git", rev = "6b53c965c8c23655e62a3b27600ae5a107e3369d", package = "ores-middleware", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "=1.0.151"
+thiserror = "2"
+tokio = { version = "1", features = ["io-util", "macros", "process", "rt-multi-thread", "time"] }
+toml = "0.8"
+tree-sitter = "=0.26.13"
+tree-sitter-dart = "=0.2.0"
+tree-sitter-gleam = "=1.0.0"
+# Keep the shared grammar ABI below 0.1.8: that release requires Rust 1.90,
+# while ores-cli declares Rust 1.88 as its MSRV.
+tree-sitter-language = "=0.1.7"
+tree-sitter-rust = "=0.24.2"
+tree-sitter-typescript = "=0.23.2"
+walkdir = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+all = "deny"
+pedantic = "allow"
+nursery = "allow"
