@@ -128,8 +128,12 @@ pub mod org {
         Ok(())
     }
 
-    #[path = "../../../mirror/src/org/workspace.rs"]
-    pub mod workspace;
+    pub mod workspace {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../mirror/src/org/workspace.rs"
+        ));
+    }
 }
 
 #[test]
