@@ -1,0 +1,35 @@
+name: ores-cli PR453 exact changed-blob validation
+
+on:
+  push:
+    branches:
+      - "test/ores-cli-pr453-compile-mirror2"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+      - name: Parse-format exact changed Rust blobs
+        run: |
+          rustfmt --edition 2024 --check \
+            mirror/src/flags.rs \
+            mirror/src/lib.rs \
+            mirror/src/bin/invocation_diagnostic.rs \
+            mirror/src/org/mod.rs \
+            mirror/src/org/actions.rs \
+            mirror/src/org/workspace.rs \
+            mirror/tests/admin_mcp_contract.rs
+      - name: Compile exact workspace engine and parse exact flags contract
+        working-directory: validation/ores-cli-pr453
+        run: cargo test
