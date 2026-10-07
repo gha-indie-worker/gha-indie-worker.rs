@@ -280,7 +280,7 @@ async fn manage_repository(
     repository: &GitHubRepository,
     local: &Path,
 ) -> Result<RepositoryOutcome, String> {
-    if local.exists() {
+    if checkout_target_present(local)? {
         validate_checkout(local).await?;
         verify_origin(local, &repository.name_with_owner).await?;
 
@@ -304,18 +304,35 @@ async fn manage_repository(
     }
 }
 
+fn checkout_target_present(local: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(local) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err("could not inspect local repository target".to_owned()),
+    }
+}
+
 async fn clone_repository(
     repository: &GitHubRepository,
     local: &Path,
 ) -> Result<RepositoryOutcome, String> {
+    if checkout_target_present(local)? {
+        return Err(
+            "local repository target appeared before clone; refusing to overwrite it".to_owned(),
+        );
+    }
+
     let mut command = Command::new("gh");
     sanitize_git_environment(&mut command);
+    configure_transient_git_safety(&mut command);
     command
         .env("GH_HOST", "github.com")
         .arg("repo")
         .arg("clone")
         .arg(&repository.name_with_owner)
-        .arg(local);
+        .arg(local)
+        .arg("--")
+        .arg("--no-recurse-submodules");
     let output = run_bounded(
         command,
         format!("gh repo clone {}", repository.name_with_owner),
@@ -348,6 +365,7 @@ async fn pull_repository(
         .arg("pull")
         .arg("--ff-only")
         .arg("--no-rebase")
+        .arg("--recurse-submodules=no")
         .arg("--")
         .arg("origin")
         .arg(&remote_branch);
@@ -533,7 +551,11 @@ async fn run_git_query(
 fn git_command(local: &Path) -> Command {
     let mut command = Command::new("git");
     sanitize_git_environment(&mut command);
-    command.arg("-C").arg(local);
+    command
+        .arg("-c")
+        .arg(format!("core.hooksPath={}", disabled_hooks_path()))
+        .arg("-C")
+        .arg(local);
     command
 }
 
@@ -541,6 +563,17 @@ fn sanitize_git_environment(command: &mut Command) {
     for key in GIT_LOCATION_ENV {
         command.env_remove(key);
     }
+}
+
+fn configure_transient_git_safety(command: &mut Command) {
+    command
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "core.hooksPath")
+        .env("GIT_CONFIG_VALUE_0", disabled_hooks_path());
+}
+
+const fn disabled_hooks_path() -> &'static str {
+    if cfg!(windows) { "NUL" } else { "/dev/null" }
 }
 
 async fn require_git_available() -> Result<(), RuntimeError> {
@@ -894,6 +927,27 @@ mod tests {
         let mut traversal = repository("api");
         traversal.name = "..".to_owned();
         assert!(validate_inventory(&[traversal], "example-org").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn broken_symlink_checkout_target_is_never_treated_as_missing() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let local = temporary.path().join("repo");
+        symlink(temporary.path().join("does-not-exist"), &local).unwrap();
+        assert!(checkout_target_present(&local).unwrap());
+    }
+
+    #[test]
+    fn disabled_hook_path_is_platform_specific_and_nonempty() {
+        assert!(!disabled_hooks_path().is_empty());
+        if cfg!(windows) {
+            assert_eq!(disabled_hooks_path(), "NUL");
+        } else {
+            assert_eq!(disabled_hooks_path(), "/dev/null");
+        }
     }
 
     #[test]
