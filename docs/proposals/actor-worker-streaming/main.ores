@@ -1,0 +1,71 @@
+// Proposed Oreslang actor-class acceptance fixture.
+// STATUS: PARTIALLY TYPECHECKABLE DESIGN. `spawn Actor()`/ActorRef lifecycle
+// semantics and ActorMail<T>/receive contracts are now parsed/typechecked, but
+// executable spawn lowering, async RHS lambdas, and parent output streams are not complete.
+//
+// Important language invariants:
+// - Actor constructors are FORBIDDEN; initialize through actor-local fields
+//   and the reserved on_start() hook instead.
+// - RHS lambda arrows use ->, never =>.
+// - Actor methods only access self, inherited members, and explicit imports.
+// - Runtime code/imports are one immutable image shared by all same-VM actors.
+// - Actor-owned mutable state remains isolated; cross-actor mail is serialized.
+
+define actor Worker as
+
+  // No constructor. This hook runs in the actor's own execution domain
+  // before w.ready settles, and is not publicly callable.
+  on_start(): void {
+    return;
+  }
+
+  receive(ActorMail<String> mail): void {
+    if mail.value != "start"; do
+      return;
+    fi
+
+    self.send("hello");  // worker -> parent output stream
+    rt cooperate;
+
+    self.send("world");
+    rt cooperate;
+
+    self.send("!");
+    self.end();          // graceful termination, close output after flush
+    return;
+  }
+end
+
+pub async routine main(): void {
+  // Async anonymous callback with slim arrow (future source feature).
+  const create = async || -> {
+    const w = spawn Worker();
+    await w.ready;
+    return w;            // ready resolves to void, so return actor reference
+  };
+
+  const workers = await Future.all([create(), create(), create()]);
+
+  workers[0].send("start");
+  workers[1].send("start");
+  workers[2].send("start");
+
+  // Each output is tagged with actor_id + per-actor sequence.
+  // Merge order across workers is not deterministic.
+  const merged = Stream.merge([
+    workers[0].outputs,
+    workers[1].outputs,
+    workers[2].outputs
+  ]);
+
+  for await const event of merged do
+    stdio.println(event.actor_id, event.sequence, event.value);
+  done
+
+  await Future.all([
+    workers[0].done,
+    workers[1].done,
+    workers[2].done
+  ]);
+  return;
+}

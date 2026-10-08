@@ -1,0 +1,272 @@
+define module testing
+// Oreslang-native test framework.
+//
+// The framework intentionally contains no Java implementation code.
+// Compiler/runtime hosts execute ordinary Oreslang; test definitions,
+// assertions, filtering, reporting, and failure policy live here.
+
+type TestBody = () => TestOutcome;
+type IntProperty = (int) => TestOutcome;
+
+pub define class TestOutcome as
+  pub val bool passed;
+  pub val String message;
+end
+
+pub define class TestCase as
+  pub val String name;
+  pub val TestBody body;
+  pub val bool skipped;
+  pub val String skip_reason;
+end
+
+pub define class TestSuite as
+  pub val String name;
+  pub val List<TestCase> tests;
+end
+
+pub define class TestOptions as
+  // Empty means run all. Names are exact hierarchical names:
+  // "suite/test" (and property/table cases should use slash-separated names).
+  pub val String only;
+  pub val bool fail_fast;
+  pub val bool machine;
+end
+
+pub define class RunSummary as
+  pub val int total;
+  pub val int passed;
+  pub val int failed;
+  pub val int skipped;
+  pub val int filtered;
+end
+
+pub fnc pass(): TestOutcome {
+  return new TestOutcome(true, "");
+}
+
+pub fnc fail(String message): TestOutcome {
+  return new TestOutcome(false, message);
+}
+
+pub fnc expect_true(bool actual, String message): TestOutcome {
+  if actual; do
+    return pass();
+  else
+    return fail(message);
+  fi
+}
+
+pub fnc expect_false(bool actual, String message): TestOutcome {
+  if !actual; do
+    return pass();
+  else
+    return fail(message);
+  fi
+}
+
+pub fnc expect_equal_int(int actual, int expected, String message): TestOutcome {
+  if actual == expected; do
+    return pass();
+  else
+    return fail(message);
+  fi
+}
+
+pub fnc expect_equal_float(float actual, float expected, String message): TestOutcome {
+  if actual == expected; do
+    return pass();
+  else
+    return fail(message);
+  fi
+}
+
+pub fnc expect_equal_string(String actual, String expected, String message): TestOutcome {
+  if actual == expected; do
+    return pass();
+  else
+    return fail(message);
+  fi
+}
+
+pub fnc expect_near_float(
+  float actual,
+  float expected,
+  float tolerance,
+  String message
+): TestOutcome {
+  let float delta = actual - expected;
+  if delta < 0.0; do
+    delta = 0.0 - delta;
+  fi
+
+  if delta <= tolerance; do
+    return pass();
+  else
+    return fail(message);
+  fi
+}
+
+fnc selected(String full_name, String only): bool {
+  if only == ""; do
+    return true;
+  fi
+
+  return full_name == only;
+}
+
+fnc emit_status(String status, String full_name, String detail, bool machine): void {
+  if machine; do
+    stdio.stdout.write("ORES_TEST|");
+    stdio.stdout.write(status);
+    stdio.stdout.write("|");
+    stdio.stdout.write(full_name);
+    stdio.stdout.write("|");
+    stdio.stdout.println(detail);
+    return;
+  fi
+
+  stdio.stdout.write(status);
+  stdio.stdout.write(" ");
+  stdio.stdout.write(full_name);
+  if detail != ""; do
+    stdio.stdout.write(" -- ");
+    stdio.stdout.write(detail);
+  fi
+  stdio.stdout.println("");
+  return;
+}
+
+fnc emit_summary(&RunSummary summary, bool machine): void {
+  let int total = summary.total;
+  let int passed_count = summary.passed;
+  let int failed_count = summary.failed;
+  let int skipped_count = summary.skipped;
+  let int filtered_count = summary.filtered;
+
+  if machine; do
+    stdio.stdout.write("ORES_TEST|SUMMARY|total=");
+    stdio.stdout.write(total);
+    stdio.stdout.write("|passed=");
+    stdio.stdout.write(passed_count);
+    stdio.stdout.write("|failed=");
+    stdio.stdout.write(failed_count);
+    stdio.stdout.write("|skipped=");
+    stdio.stdout.write(skipped_count);
+    stdio.stdout.write("|filtered=");
+    stdio.stdout.println(filtered_count);
+    return;
+  fi
+
+  stdio.stdout.write("test result: ");
+  if failed_count == 0; do
+    stdio.stdout.write("ok");
+  else
+    stdio.stdout.write("FAILED");
+  fi
+  stdio.stdout.write(". ");
+  stdio.stdout.write(passed_count);
+  stdio.stdout.write(" passed; ");
+  stdio.stdout.write(failed_count);
+  stdio.stdout.write(" failed; ");
+  stdio.stdout.write(skipped_count);
+  stdio.stdout.write(" skipped; ");
+  stdio.stdout.write(filtered_count);
+  stdio.stdout.println(" filtered");
+  return;
+}
+
+pub fnc run_suite(&TestSuite suite, &TestOptions options): RunSummary {
+  let int total = 0;
+  let int passed_count = 0;
+  let int failed_count = 0;
+  let int skipped_count = 0;
+  let int filtered_count = 0;
+  // Keep borrowed member types explicit at this module boundary.
+  let String suite_name = suite.name;
+  let List<TestCase> tests = suite.tests;
+  let String only = options.only;
+  let bool fail_fast = options.fail_fast;
+  let bool machine = options.machine;
+
+  for const test_case of tests do
+    let String full_name = suite_name + "/" + test_case.name;
+
+    if !selected(full_name, only); do
+      filtered_count = filtered_count + 1;
+      continue;
+    fi
+
+    total = total + 1;
+
+    if test_case.skipped; do
+      skipped_count = skipped_count + 1;
+      emit_status("SKIP", full_name, test_case.skip_reason, machine);
+      continue;
+    fi
+
+    let TestOutcome outcome = test_case.body();
+
+    if outcome.passed; do
+      passed_count = passed_count + 1;
+      emit_status("PASS", full_name, "", machine);
+    else
+      failed_count = failed_count + 1;
+      emit_status("FAIL", full_name, outcome.message, machine);
+
+      if fail_fast; do
+        let RunSummary early = new RunSummary(
+          total,
+          passed_count,
+          failed_count,
+          skipped_count,
+          filtered_count
+        );
+        emit_summary(&early, machine);
+        return early;
+      fi
+    fi
+  done
+
+  let RunSummary summary = new RunSummary(
+    total,
+    passed_count,
+    failed_count,
+    skipped_count,
+    filtered_count
+  );
+  emit_summary(&summary, machine);
+  return summary;
+}
+
+pub fnc require_success(&RunSummary summary): void {
+  let int failed_count = summary.failed;
+  if failed_count > 0; do
+    val Result<bool, String> failure = Err("one or more Oreslang tests failed");
+    failure.expect("native Oreslang test suite failed");
+  fi
+  return;
+}
+
+// Deterministic table/property helper. The caller owns the exact cases,
+// which makes failures reproducible by construction.
+pub fnc check_int_cases(
+  String property_name,
+  List<int> cases,
+  IntProperty property
+): TestOutcome {
+  for const value of cases do
+    let TestOutcome outcome = property(value);
+    if !outcome.passed; do
+      if outcome.message == ""; do
+        return fail("property failed: " + property_name);
+      else
+        return outcome;
+      fi
+    fi
+  done
+
+  return pass();
+}
+
+end

@@ -1,0 +1,10 @@
+pub fnc actor_label(bool shared): String {
+  return shared ? "shared" : "private";
+}
+
+
+define module actor_types as
+  pub define class CounterState as
+    pub let int value = 10;
+  end
+end

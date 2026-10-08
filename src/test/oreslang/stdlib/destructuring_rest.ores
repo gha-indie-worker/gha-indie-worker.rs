@@ -1,0 +1,95 @@
+import class {TestOutcome, TestCase, TestSuite, TestOptions, RunSummary} from "std/testing";
+import fnc {pass, fail, run_suite, require_success} from "std/testing";
+
+define class Vector<T> as
+  let List<T> items = arr[];
+
+  pub add(T value): void {
+    self.items.add(value);
+    return;
+  }
+
+  pub [Symbol.iterator](): List<T> {
+    return self.items;
+  }
+end
+
+type Row = {v: int, label: string, active: bool};
+
+fnc array_rest_contract(): TestOutcome {
+  val Array<int> values = arr[10, 20, 30];
+  const [first, ...rest] = values;
+
+  if first != 10; do
+    return fail("array prefix binding must preserve the first element");
+  fi
+  if rest[0] != 20 || rest[1] != 30; do
+    return fail("array rest must contain the exact remaining values");
+  fi
+  return pass();
+}
+
+fnc finite_tuple_rest_contract(): TestOutcome {
+  val [int, bool, string] values = [7, true, "tail"];
+  [const first, const ...rest] = values;
+  const [flag, label] = rest;
+
+  if first != 7 || flag != true || label != "tail"; do
+    return fail("finite tuple rest must preserve the statically remaining tuple slots");
+  fi
+  return pass();
+}
+
+fnc vector_rest_contract(): TestOutcome {
+  let Vector<int> values = new Vector<int>();
+  values.add(4);
+  values.add(5);
+  values.add(6);
+
+  const [first, ...rest] = values;
+  if first != 4; do
+    return fail("iterable/vector prefix binding must use the iterator snapshot");
+  fi
+  if rest[0] != 5 || rest[1] != 6; do
+    return fail("iterable/vector rest must use the statically typed iterator remainder");
+  fi
+  return pass();
+}
+
+fnc record_rest_prefix_contract(): TestOutcome {
+  val Row row = struct{v: int, label: string, active: bool}{v: 5, label: "alpha", active: true};
+  const {v, ...rest} = row;
+
+  if v != 5 || rest.label != "alpha" || rest.active != true; do
+    return fail("prefixed record rest must equal the static Omit remainder");
+  fi
+  return pass();
+}
+
+fnc record_rest_inline_kind_contract(): TestOutcome {
+  val Row row = struct{v: int, label: string, active: bool}{v: 8, label: "beta", active: false};
+  {const v, const ...rest} = row;
+
+  if v != 8 || rest.label != "beta" || rest.active != false; do
+    return fail("inline binding-kind record rest must equal the static Omit remainder");
+  fi
+  return pass();
+}
+
+pub routine main(): void {
+  val TestSuite suite = new TestSuite(
+    "core/destructuring-rest",
+    arr[
+      new TestCase("array", array_rest_contract, false, ""),
+      new TestCase("finite-tuple", finite_tuple_rest_contract, false, ""),
+      new TestCase("vector-iterable", vector_rest_contract, false, ""),
+      new TestCase("record-prefix", record_rest_prefix_contract, false, ""),
+      new TestCase("record-inline-kind", record_rest_inline_kind_contract, false, "")
+    ]
+  );
+
+  val TestOptions options = new TestOptions("", false, true);
+  val RunSummary summary = run_suite(&suite, &options);
+  require_success(&summary);
+  return;
+}

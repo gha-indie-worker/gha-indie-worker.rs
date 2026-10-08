@@ -1,0 +1,30 @@
+async generator fnc events() -> int {
+  yield 4;
+  yield 5;
+  yield 6;
+  return;
+}
+
+
+pub async routine main() -> void {
+  val Channel<int> output = Channel.new<int>(3);
+  for const value of [1, 2, 3] do
+    writech output, value;
+  done
+  for let i = 0; i < 3; i++ do
+    stdio.stdout.write(readch output);
+  done
+
+  val AsyncIterator<int> source = events();
+  for await const value of source {
+    await nb writech output, value;
+  }
+  for let i = 0; i < 3; i++ do
+    select {
+      case readch output: val value {
+        stdio.stdout.write(value);
+      }
+    }
+  done
+  return;
+}

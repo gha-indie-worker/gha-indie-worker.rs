@@ -1,0 +1,19 @@
+// Explicit cross-file dependencies used by private actor isolation fixtures.
+
+pub fnc make_shared_cell(): void {
+  val shared = SharedMutex.new(10);
+  stdio.println(shared.is_poisoned());
+  return;
+}
+
+type SharedCounterCell = SharedMutex<int>;
+
+define module private_actor_support as
+  pub define class Helpers as
+    pub static fnc make_shared(): void {
+      val shared = SharedMutex.new(11);
+      stdio.println(shared.is_poisoned());
+      return;
+    }
+  end
+end
