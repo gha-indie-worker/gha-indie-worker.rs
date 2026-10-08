@@ -640,18 +640,6 @@ public final class TreeShaker {
                 return List.of(new Ast.DestructureStmt(
                         destructure.kind(), destructure.bindings(), initializer));
             }
-            if (statement instanceof Ast.FailureStmt failed) {
-                return List.of(new Ast.FailureStmt(
-                        failed.kind(), rewriteExpression(failed.value(), module, locals)));
-            }
-            if (statement instanceof Ast.RecoverStmt recovered) {
-                LinkedHashMap<String, Object> handlerLocals = new LinkedHashMap<>(locals);
-                handlerLocals.put(recovered.errorName(), UNKNOWN);
-                return List.of(new Ast.RecoverStmt(
-                        rewriteStatements(recovered.body(), module, new LinkedHashMap<>(locals)),
-                        recovered.errorType(), recovered.errorName(),
-                        rewriteStatements(recovered.handler(), module, handlerLocals)));
-            }
             if (statement instanceof Ast.ReturnStmt returned) {
                 return List.of(new Ast.ReturnStmt(
                         rewriteExpression(returned.value(), module, locals)));
@@ -1145,14 +1133,6 @@ public final class TreeShaker {
                     for (Ast.DestructureBinding binding : destructure.bindings()) {
                         if (!binding.isDiscard()) locals.add(binding.name());
                     }
-                } else if (statement instanceof Ast.FailureStmt failed) {
-                    scanExpression(module, failed.value(), locals);
-                } else if (statement instanceof Ast.RecoverStmt recovered) {
-                    scanType(recovered.errorType());
-                    scanStatements(module, recovered.body(), new LinkedHashSet<>(locals));
-                    LinkedHashSet<String> handlerLocals = new LinkedHashSet<>(locals);
-                    handlerLocals.add(recovered.errorName());
-                    scanStatements(module, recovered.handler(), handlerLocals);
                 } else if (statement instanceof Ast.ReturnStmt returned) {
                     scanExpression(module, returned.value(), locals);
                 } else if (statement instanceof Ast.YieldStmt yielded) {

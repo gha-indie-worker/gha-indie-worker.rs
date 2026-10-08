@@ -69,6 +69,7 @@ import class ArrayList as JArrayList from "java:java.util.ArrayList";
 
 The selected name (`ArrayList`) must match the Java simple class name; `JArrayList` is only the Oreslang-local alias. Java imports never grant authority by themselves: runtime use additionally requires the `JAVA_INTEROP` capability and an exact host-class allowlist supplied by the launcher/embedder.
 
+
 ### Circular imports and file initialization
 
 Import cycles are legal. Oreslang does not reject a program merely because its
@@ -103,6 +104,43 @@ without observing an "unloaded module" state. If application state requires a
 specific sequencing relationship *between* two init hooks in the same cycle,
 that relationship should be made explicit in application code rather than
 inferred from the import edges.
+
+## Recursive structural types and circular references
+
+A type alias may form a finite recursive type when recursion passes through a
+runtime indirection/container such as `Option<T>`, `List<T>`, or a borrowed
+reference. The canonical record spelling is `struct{...}`:
+
+```oreslang
+type Node = struct{
+    value: int,
+    next: Option<Node>
+};
+
+type Tree<T> = struct{
+    value: T,
+    children: List<Tree<T>>
+};
+```
+
+A recursive alias is represented by a finite recursive type reference in the
+compiler rather than by repeated structural expansion. An alias cycle without
+indirection, for example `type Loop = Loop;` or
+`type Loop = struct{next: Loop};`, is rejected. Type arguments must not
+grow or change across recursive expansion.
+
+The compiler also accepts nominal self-referential class fields, such as
+`Option<Link>` within `define class Link`. Recursive type **definitions**
+do not themselves confer a right to create cyclic mutable **values**:
+self-referential assignments remain subject to Oreslang's ownership and borrow
+checker, and some graph constructions may be rejected. JVM GC can collect
+unreachable cycles that arise in permitted local object graphs.
+
+Actor mailbox transport and async argument detachment remain *separate
+ownership boundaries*: cyclic mutable graphs are rejected there instead of
+silently shared. Actor-reference capabilities are not ordinary mutable object
+graphs. Cross-boundary cyclic serialization, sharing and identity-preserving
+copy are **not yet implemented**; they require a distinct explicit protocol.
 
 ## Module contracts
 

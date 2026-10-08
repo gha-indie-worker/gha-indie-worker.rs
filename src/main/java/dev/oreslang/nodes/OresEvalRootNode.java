@@ -16,7 +16,6 @@ import dev.oreslang.runtime.NativeIo;
 import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
-import dev.oreslang.runtime.OresFailure;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
@@ -1253,15 +1252,6 @@ public final class OresEvalRootNode extends RootNode {
                         && expressionContainsPotentialSuspension(
                                 ret.value(), seen);
             }
-            if (stmt instanceof Ast.FailureStmt failed) {
-                return expressionContainsPotentialSuspension(failed.value(), seen);
-            }
-            if (stmt instanceof Ast.RecoverStmt recovered) {
-                return recovered.body().stream().anyMatch(
-                                nested -> statementContainsPotentialSuspension(nested, seen))
-                        || recovered.handler().stream().anyMatch(
-                                nested -> statementContainsPotentialSuspension(nested, seen));
-            }
             if (stmt instanceof Ast.ExprStmt expr) {
                 return expressionContainsPotentialSuspension(
                         expr.expression(), seen);
@@ -1616,7 +1606,7 @@ public final class OresEvalRootNode extends RootNode {
                     env.releaseMutexGuards(
                             initialFlow.kind() != SourceFlowKind.NORMAL);
                 } catch (RuntimeException | Error failure) {
-                    completed = reconcileSourceFlow(initialFlow, SourceFlow.throwing(failure));
+                    completed = SourceFlow.throwing(failure);
                 }
                 // The consumer owns any failure it throws. Do not call it twice.
                 continuation.accept(task, completed);
@@ -1629,22 +1619,6 @@ public final class OresEvalRootNode extends RootNode {
                     defers,
                     initialFlow,
                     continuation);
-        }
-
-        /** Apply the same cleanup precedence in suspended and synchronous execution. */
-        private SourceFlow reconcileSourceFlow(SourceFlow previous, SourceFlow cleanup) {
-            if (cleanup.kind() == SourceFlowKind.NORMAL) return previous;
-            if (previous.kind() == SourceFlowKind.NORMAL) return cleanup;
-            Throwable original = previous.failure();
-            Throwable newer = cleanup.failure();
-            if (original == null) return cleanup;
-            if (newer == null) return previous;
-            if (failurePriority(original) >= failurePriority(newer)) {
-                if (newer != original) original.addSuppressed(newer);
-                return previous;
-            }
-            if (original != newer) newer.addSuppressed(original);
-            return cleanup;
         }
 
         private void runOneDefer(
@@ -1660,7 +1634,7 @@ public final class OresEvalRootNode extends RootNode {
                     env.releaseMutexGuards(
                             currentFlow.kind() != SourceFlowKind.NORMAL);
                 } catch (RuntimeException | Error failure) {
-                    completed = reconcileSourceFlow(currentFlow, SourceFlow.throwing(failure));
+                    completed = SourceFlow.throwing(failure);
                 }
                 continuation.accept(task, completed);
                 return;
@@ -1672,11 +1646,14 @@ public final class OresEvalRootNode extends RootNode {
                     env,
                     (ignored, ignoredValue, failure) -> {
                         if (failure != null) {
+                            if (currentFlow.failure() != null) {
+                                failure.addSuppressed(currentFlow.failure());
+                            }
                             runOneDefer(
                                     task,
                                     env,
                                     defers,
-                                    reconcileSourceFlow(currentFlow, SourceFlow.throwing(failure)),
+                                    SourceFlow.throwing(failure),
                                     continuation);
                         } else {
                             runOneDefer(
@@ -1766,45 +1743,6 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(
                                             t,
                                             SourceFlow.throwing(failure2));
-                                }
-                            });
-                    return;
-                }
-
-                if (stmt instanceof Ast.FailureStmt failed) {
-                    evalSuspendableExpr(
-                            task,
-                            failed.value(),
-                            env,
-                            (t, value, failure) -> {
-                                if (failure != null) {
-                                    continuation.accept(t, SourceFlow.throwing(failure));
-                                } else {
-                                    Throwable raised = switch (failed.kind()) {
-                                        case THROW -> new OresFailure.Throw(value);
-                                        case RAISE -> new OresFailure.Raise(value);
-                                        case PANIC -> new OresFailure.Panic(value);
-                                    };
-                                    continuation.accept(t, SourceFlow.throwing(raised));
-                                }
-                            });
-                    return;
-                }
-
-                if (stmt instanceof Ast.RecoverStmt recovered) {
-                    runBlock(
-                            task,
-                            recovered.body(),
-                            env,
-                            (t, flow) -> {
-                                if (flow.failure() instanceof OresFailure.Raise raised
-                                        && raised.localToCurrentActorDomain()) {
-                                    Env recovery = new Env(env);
-                                    recovery.define(recovered.errorName(),
-                                            raised.value(), Ast.BindingKind.VAL);
-                                    runBlock(t, recovered.handler(), recovery, continuation);
-                                } else {
-                                    continuation.accept(t, flow);
                                 }
                             });
                     return;
@@ -1946,11 +1884,11 @@ public final class OresEvalRootNode extends RootNode {
                             attempted.body(),
                             env,
                             (t, flow) -> {
-                                if (flow.failure() instanceof OresFailure.Throw thrown) {
+                                if (flow.kind() == SourceFlowKind.THROW) {
                                     Env caught = new Env(env);
                                     caught.define(
                                             attempted.errorName(),
-                                            thrown.value(),
+                                            flow.failure(),
                                             Ast.BindingKind.VAL);
                                     runBlock(
                                             t,
@@ -1964,7 +1902,10 @@ public final class OresEvalRootNode extends RootNode {
                                                             (t3, finallyFlow) ->
                                                                     continuation.accept(
                                                                             t3,
-                                                                            reconcileSourceFlow(catchFlow, finallyFlow))));
+                                                                            finallyFlow.kind()
+                                                                                            != SourceFlowKind.NORMAL
+                                                                                    ? finallyFlow
+                                                                                    : catchFlow)));
                                 } else {
                                     runBlock(
                                             t,
@@ -1973,7 +1914,10 @@ public final class OresEvalRootNode extends RootNode {
                                             (t2, finallyFlow) ->
                                                     continuation.accept(
                                                             t2,
-                                                            reconcileSourceFlow(flow, finallyFlow)));
+                                                            finallyFlow.kind()
+                                                                            != SourceFlowKind.NORMAL
+                                                                    ? finallyFlow
+                                                                    : flow));
                                 }
                             });
                     return;
@@ -4418,11 +4362,11 @@ public final class OresEvalRootNode extends RootNode {
             }
             try {
                 return new OptionValue(true, callFunctionBodyUnchecked(fn, args));
-            } catch (OresFailure.Raise | OresFailure.Panic fatal) {
-                throw fatal;
+            } catch (OresPanic panic) {
+                throw panic;
             } catch (java.util.concurrent.CancellationException cancelled) {
                 throw cancelled;
-            } catch (OresFailure.Throw ordinaryFailure) {
+            } catch (RuntimeException ordinaryFailure) {
                 // trap is deliberately lossy: ordinary guest/runtime failure
                 // becomes None. Panic and scheduler cancellation remain distinct
                 // non-trappable control channels.
@@ -4544,64 +4488,26 @@ public final class OresEvalRootNode extends RootNode {
             executeBlock(statements, parent, false);
         }
 
-        private static int failurePriority(Throwable failure) {
-            if (failure == null) return 0;
-            if (failure instanceof VirtualMachineError
-                    || failure instanceof ThreadDeath
-                    || failure instanceof LinkageError) return 100;
-            if (failure instanceof ActorRuntime.ActorCancellationSignal
-                    || failure instanceof ActorRuntime.ActorTerminatedException
-                    || failure instanceof java.util.concurrent.CancellationException) return 90;
-            // Unexpected host faults must not be hidden by a guest raise.
-            if (!(failure instanceof OresFailure)
-                    && !(failure instanceof ReturnSignal)
-                    && !(failure instanceof BreakSignal)
-                    && !(failure instanceof ContinueSignal)
-                    && !(failure instanceof TailCallSignal)) return 85;
-            if (failure instanceof OresFailure.Panic) return 80;
-            if (failure instanceof OresFailure.Raise) return 70;
-            if (failure instanceof OresFailure.Throw) return 60;
-            return 10; // return/break/continue/tail transfer
-        }
-
-        private static boolean preservePendingEffect(Throwable inFlight, Throwable cleanup) {
-            return inFlight != null && failurePriority(inFlight) >= failurePriority(cleanup);
-        }
-
         private void executeBlock(List<Ast.Stmt> statements, Env parent, boolean inheritedTailBarrier) {
             Env env = new Env(parent);
             ArrayDeque<Ast.Expr> deferred = new ArrayDeque<>();
             boolean abnormalExit = false;
-            Throwable inFlight = null;
             try {
                 for (Ast.Stmt stmt : statements) executeStatement(stmt, env, deferred, inheritedTailBarrier);
             } catch (TailCallSignal signal) {
-                inFlight = signal;
                 throw signal;
             } catch (ReturnSignal | BreakSignal | ContinueSignal signal) {
-                inFlight = signal;
                 throw signal;
             } catch (RuntimeException | Error failure) {
-                inFlight = failure;
                 abnormalExit = true;
                 throw failure;
             } finally {
                 boolean deferredFailure = false;
                 try {
-                    while (!deferred.isEmpty()) {
-                        try {
-                            eval(deferred.pop(), env);
-                        } catch (RuntimeException | Error cleanup) {
-                            deferredFailure = true;
-                            if (preservePendingEffect(inFlight, cleanup)) {
-                                // Cleanup cannot downgrade a panic, raise, or cancellation.
-                                // Continue running other defers in LIFO order.
-                                if (cleanup != inFlight) inFlight.addSuppressed(cleanup);
-                            } else {
-                                throw cleanup;
-                            }
-                        }
-                    }
+                    while (!deferred.isEmpty()) eval(deferred.pop(), env);
+                } catch (RuntimeException | Error failure) {
+                    deferredFailure = true;
+                    throw failure;
                 } finally {
                     env.releaseMutexGuards(abnormalExit || deferredFailure);
                 }
@@ -4653,26 +4559,6 @@ public final class OresEvalRootNode extends RootNode {
                         ret.value(),
                         env,
                         inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
-            }
-            if (stmt instanceof Ast.FailureStmt failed) {
-                Object value = eval(failed.value(), env);
-                switch (failed.kind()) {
-                    case THROW -> throw new OresFailure.Throw(value);
-                    case RAISE -> throw new OresFailure.Raise(value);
-                    case PANIC -> throw new OresFailure.Panic(value);
-                }
-                throw new AssertionError(failed.kind());
-            }
-            if (stmt instanceof Ast.RecoverStmt recovered) {
-                try {
-                    executeBlock(recovered.body(), env, true);
-                } catch (OresFailure.Raise raised) {
-                    if (!raised.localToCurrentActorDomain()) throw raised;
-                    Env recovery = new Env(env);
-                    recovery.define(recovered.errorName(), raised.value(), Ast.BindingKind.VAL);
-                    executeBlock(recovered.handler(), recovery, true);
-                }
-                return;
             }
             if (stmt instanceof Ast.YieldStmt yielded) {
                 if (env.hasLiveMutexGuards()) {
@@ -4824,32 +4710,17 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (stmt instanceof Ast.TryStmt tried) {
-                // Only throw is caught. Strong effects still run finally, but
-                // a weaker cleanup throw must not hide raise/panic/cancellation.
-                Throwable inFlight = null;
-                try {
-                    try { executeBlock(tried.body(), env, true); }
-                    catch (TailCallSignal signal) { throw signal; }
-                    catch (ReturnSignal | BreakSignal | ContinueSignal signal) { throw signal; }
-                    catch (OresFailure.Throw failure) {
-                        Env catchEnv = new Env(env);
-                        catchEnv.define(tried.errorName(), failure.value(), Ast.BindingKind.VAL);
-                        executeBlock(tried.catchBody(), catchEnv, true);
-                    }
-                } catch (RuntimeException | Error failure) {
-                    inFlight = failure;
-                    throw failure;
-                } finally {
-                    try {
-                        executeBlock(tried.finallyBody(), env, true);
-                    } catch (RuntimeException | Error cleanup) {
-                        if (preservePendingEffect(inFlight, cleanup)) {
-                            if (cleanup != inFlight) inFlight.addSuppressed(cleanup);
-                        } else {
-                            throw cleanup;
-                        }
-                    }
-                }
+                // A call under catch/finally is not a proper tail call: the
+                // caller still owns exception/cleanup semantics after the call.
+                try { executeBlock(tried.body(), env, true); }
+                catch (TailCallSignal signal) { throw signal; }
+                catch (ReturnSignal | BreakSignal | ContinueSignal signal) { throw signal; }
+                catch (OresPanic panic) { throw panic; }
+                catch (RuntimeException failure) {
+                    Env catchEnv = new Env(env);
+                    catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
+                    executeBlock(tried.catchBody(), catchEnv, true);
+                } finally { executeBlock(tried.finallyBody(), env, true); }
                 return;
             }
             if (stmt instanceof Ast.ForOfDestructureStmt loop) {
@@ -6728,7 +6599,7 @@ public final class OresEvalRootNode extends RootNode {
                 case "is_none" -> (Invokable) args -> { requireZero(args, "Option.is_none"); return !option.present(); };
                 case "unwrap" -> (Invokable) args -> {
                     requireZero(args, "Option.unwrap");
-                    if (!option.present()) throw new OresFailure.Panic("called Option::unwrap() on a None value");
+                    if (!option.present()) throw new OresPanic("called Option::unwrap() on a None value");
                     return option.value();
                 };
                 case "unwrap_safe" -> (Invokable) args -> {
@@ -6739,7 +6610,7 @@ public final class OresEvalRootNode extends RootNode {
                 };
                 case "expect" -> (Invokable) args -> {
                     String message = requireStringArg(args, "Option.expect");
-                    if (!option.present()) throw new OresFailure.Panic(message);
+                    if (!option.present()) throw new OresPanic(message);
                     return option.value();
                 };
                 case "unwrap_or" -> (Invokable) args -> {
@@ -6757,7 +6628,7 @@ public final class OresEvalRootNode extends RootNode {
                 case "unwrap" -> (Invokable) args -> {
                     requireZero(args, "Result.unwrap");
                     if (!result.ok()) {
-                        throw new OresFailure.Panic("called Result::unwrap() on an Err value: " + display(result.value()));
+                        throw new OresPanic("called Result::unwrap() on an Err value: " + display(result.value()));
                     }
                     return result.value();
                 };
@@ -6767,7 +6638,7 @@ public final class OresEvalRootNode extends RootNode {
                 };
                 case "expect" -> (Invokable) args -> {
                     String message = requireStringArg(args, "Result.expect");
-                    if (!result.ok()) throw new OresFailure.Panic(message + ": " + display(result.value()));
+                    if (!result.ok()) throw new OresPanic(message + ": " + display(result.value()));
                     return result.value();
                 };
                 case "unwrap_or" -> (Invokable) args -> {
@@ -8811,8 +8682,11 @@ public final class OresEvalRootNode extends RootNode {
     private record OptionUnwrapError(String reason) {
         @Override public String toString(){return "OptionUnwrapError(" + reason + ")";}
     }
-    private static final class OresCastError extends OresFailure.Throw {
-        private OresCastError(String message) { super(message); }
+    private static final class OresPanic extends RuntimeException {
+        private OresPanic(String message) { super(message, null, true, false); }
+    }
+    private static final class OresCastError extends RuntimeException {
+        private OresCastError(String message) { super(message, null, false, false); }
     }
     private static List<Object> immutableIoStrings(List<Object> args) {
         // Only immutable host values may cross into an I/O worker.

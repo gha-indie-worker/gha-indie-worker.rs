@@ -459,7 +459,7 @@ public final class Ast {
     public enum BindingKind { CONST, VAL, LET }
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
-            BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt, FailureStmt, RecoverStmt,
+            BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
             ForOfStmt, ForOfDestructureStmt, ForStmt, LoopStmt, SelectStmt { }
 
     /** Binding rebinding and mutable access to the referent are independent capabilities. */
@@ -512,24 +512,6 @@ public final class Ast {
     }
 
     public record ReturnStmt(Expr value) implements Stmt { }
-    public enum FailureKind { THROW, RAISE, PANIC }
-    public record FailureStmt(FailureKind kind, Expr value) implements Stmt {
-        public FailureStmt {
-            java.util.Objects.requireNonNull(kind);
-            java.util.Objects.requireNonNull(value);
-        }
-    }
-    public record RecoverStmt(List<Stmt> body, TypeRef errorType,
-                              String errorName, List<Stmt> handler) implements Stmt {
-        public RecoverStmt {
-            body = List.copyOf(body);
-            handler = List.copyOf(handler);
-            java.util.Objects.requireNonNull(errorType);
-            if (errorName == null || errorName.isBlank()) {
-                throw new IllegalArgumentException("rt recover needs a binding");
-            }
-        }
-    }
     public record YieldStmt(Expr value, boolean delegated) implements Stmt {
         public YieldStmt(Expr value) {
             this(value, false);

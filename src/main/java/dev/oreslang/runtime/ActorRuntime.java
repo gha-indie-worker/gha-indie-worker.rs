@@ -283,12 +283,6 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    /**
-     * A failed fire-and-forget mailbox operation, never an actor death.
-     * Carry only immutable diagnostics across actors, not guest-owned payloads.
-     */
-    public record ActorMessageFailure(ActorId actorId, long sequence, String message) { }
-
     public record ActorId(UUID value) {
         public ActorId { Objects.requireNonNull(value); }
         public static ActorId create() { return new ActorId(UUID.randomUUID()); }
@@ -1551,8 +1545,6 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorId id;
         private final ActorKind kind;
         private final AtomicReference<Throwable> terminationCause = new AtomicReference<>();
-        private final AtomicLong messageFailureCount = new AtomicLong();
-        private final AtomicReference<ActorMessageFailure> lastMessageFailure = new AtomicReference<>();
         // Observer Futures are runtime-owned: awaiting is allowed, cancelling
         // either observer cannot cancel the actor or fabricate its lifecycle.
         private final OresFuture<Void> readyFuture =
@@ -1571,19 +1563,6 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
         public Optional<Throwable> failure() { return Optional.ofNullable(terminationCause.get()); }
-
-        /**
-         * Inspection-only observer for fire-and-forget guest throws.
-         * Request/reply calls separately reject their owning Future.
-         */
-        public long messageFailureCount() { return messageFailureCount.get(); }
-        public Optional<ActorMessageFailure> lastMessageFailure() {
-            return Optional.ofNullable(lastMessageFailure.get());
-        }
-        private void recordMessageFailure(long sequence, OresFailure.Throw thrown) {
-            lastMessageFailure.set(new ActorMessageFailure(id, sequence, thrown.getMessage()));
-            messageFailureCount.incrementAndGet();
-        }
 
         /**
          * Actor initialization barrier. Accessing ready starts an unstarted
@@ -6310,12 +6289,6 @@ public final class ActorRuntime implements AutoCloseable {
                             // object across turns.
                             validatePrivateBehaviorState(ref.id(), behavior);
                         }
-                    } catch (OresFailure.Throw ordinary) {
-                        // A guest throw aborts only its mailbox/continuation
-                        // operation. The actor, dispatcher carrier, and VM live
-                        // on; fire-and-forget callers can inspect the failure.
-                        // Do not retain guest-owned payload objects.
-                        ref.recordMessageFailure(envelope.sequence(), ordinary);
                     }
                     processed++;
 
@@ -6331,9 +6304,8 @@ public final class ActorRuntime implements AutoCloseable {
                 // failure. The actor was already marked stopped by the
                 // supervisor/cancel path; finally/endTurn completes teardown.
                 if (!(failure instanceof ActorCancellationSignal)) {
-                    // Raise, panic, and unexpected host/runtime failures remain
-                    // fail-stop. Guest throw is caught at the mailbox envelope
-                    // above; startup and infrastructure errors are fatal.
+                    // Fail-stop supervision for ordinary actor failures. Fatal
+                    // VM errors are cleaned up and then rethrown.
                     fail(failure);
                 }
                 if (failure instanceof VirtualMachineError fatal) throw fatal;

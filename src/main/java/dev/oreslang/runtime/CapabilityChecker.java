@@ -300,12 +300,6 @@ public final class CapabilityChecker {
                 checkExpr(s.initializer(), policy);
             }
             else if (stmt instanceof Ast.DestructureStmt s) checkExpr(s.initializer(), policy);
-            else if (stmt instanceof Ast.FailureStmt s) checkExpr(s.value(), policy);
-            else if (stmt instanceof Ast.RecoverStmt s) {
-                checkType(s.errorType(), policy);
-                checkStatements(s.body(), policy);
-                checkStatements(s.handler(), policy);
-            }
             else if (stmt instanceof Ast.ReturnStmt s && s.value() != null) checkExpr(s.value(), policy);
             else if (stmt instanceof Ast.YieldStmt s) checkExpr(s.value(), policy);
             else if (stmt instanceof Ast.ExprStmt s) checkExpr(s.expression(), policy);

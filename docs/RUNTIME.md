@@ -215,7 +215,7 @@ Shared actors keep ordinary mutable fields actor-owned and mailbox-serialized. C
 
 A private actor turn cannot create, snapshot, read, update, or close synchronized shared state even if trusted host code accidentally captured a cell handle. Source admission and runtime creation both require `SHARED_MEMORY`.
 
-Actor failures are differentiated by source-language effect. An uncaught Ores `throw` terminates only the current mailbox operation and increments `ActorRef.messageFailureCount()` with immutable `lastMessageFailure()` diagnostics. The actor stays alive. An unrecovered `raise`, a `panic`, and unclassified host/runtime faults remain fail-stop: the ref retains the termination cause, queued reservations are drained, and later sends receive an `ActorTerminatedException`. Guest-level actor isolation does not imply JVM-fatal or native-memory isolation; hostile code needs a separate revocable process/isolate.
+Actor failures are fail-stop in this layer. The actor ref retains the failure cause for diagnostics, queued reservations are drained, and later sends receive an `ActorTerminatedException` rather than silently targeting a dead mailbox.
 
 ## Private actor memory confinement
 

@@ -13,36 +13,6 @@ import static org.junit.jupiter.api.Assertions.*;
 final class SourceActorSpawnExecutionTest {
 
     @Test
-    void uncaughtSourceThrowDoesNotStopActorBeforeNextMessage() throws Exception {
-        String program = """
-                define actor Worker as
-                  receive(ActorMail<String> mail): void {
-                    if mail.value == "bad"; do
-                      throw "recoverable";
-                    fi
-                    self.send("survived");
-                    self.end();
-                    return;
-                  }
-                end
-
-                pub async routine main(): void {
-                  val worker = spawn Worker();
-                  await worker.ready;
-                  worker.send("bad");
-                  worker.send("good");
-                  val result = (await worker.outputs.next()).value.unwrap();
-                  stdio.stdout.write(result.value);
-                  await worker.done;
-                  return;
-                }
-                """;
-
-        assertEquals("survived",
-                run(program, "source-actor-throw-survives.ores"));
-    }
-
-    @Test
     void spawnRunsOnStartReceiveAndDoneAcrossActorKinds() throws Exception {
         String program = """
                 define actor SharedWorker as

@@ -291,22 +291,6 @@ public final class OwnershipChecker {
             if (loopDepth == 0) throw error("'continue' may only appear inside loop or for");
             return;
         }
-        if (stmt instanceof Ast.FailureStmt failed) {
-            ValueInfo payload = checkExpr(failed.value(), scope, false);
-            if (containsMutexGuardType(payload.type)) {
-                throw error("throw/raise/panic may not carry MutexGuard capability state");
-            }
-            return;
-        }
-        if (stmt instanceof Ast.RecoverStmt recovered) {
-            checkBlock(recovered.body(), scope, returnType);
-            Scope handler = new Scope(scope);
-            handler.define(recovered.errorName(),
-                    new VarState(Ast.TypeRef.inferred(), false, ValueKind.MOVE_ONLY, Origin.LOCAL));
-            checkBlock(recovered.handler(), handler, returnType);
-            handler.close();
-            return;
-        }
         if (stmt instanceof Ast.ReturnStmt ret) {
             if (discardingSelectReturn) {
                 // The returned expression is evaluated as a side effect only.
@@ -1835,13 +1819,6 @@ public final class OwnershipChecker {
                 for (Ast.DestructureBinding binding : destructure.bindings()) {
                     if (!binding.isDiscard()) blockLocals.add(binding.name());
                 }
-            } else if (stmt instanceof Ast.FailureStmt failed) {
-                scanExpr(failed.value(), blockLocals, outer, recursiveBinding, captures, false);
-            } else if (stmt instanceof Ast.RecoverStmt recovered) {
-                scanStatements(recovered.body(), blockLocals, outer, recursiveBinding, captures);
-                Set<String> handled = new HashSet<>(blockLocals);
-                handled.add(recovered.errorName());
-                scanStatements(recovered.handler(), handled, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.ReturnStmt ret && ret.value() != null) {
                 scanExpr(ret.value(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.YieldStmt yielded) {
