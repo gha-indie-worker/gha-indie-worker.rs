@@ -1,0 +1,70 @@
+name: Build log sidecar end-to-end
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-log-sidecar-e2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  REFERENCE_SIDECAR_REVISION: 53d822af7d9e485c2c2753f7aa66cfc796593a5c
+
+jobs:
+  worker-to-sidecar:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out exact worker candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Check out exact merged reference sidecar
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: gha-indie-worker/gha-indie-worker-sidecar.rs
+          ref: ${{ env.REFERENCE_SIDECAR_REVISION }}
+          path: reference-sidecar
+          persist-credentials: false
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Set up Rust 1.90
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: '1.90.0'
+          components: rustfmt, clippy
+
+      - name: Prove exact worker and sidecar revisions
+        shell: bash
+        env:
+          EXPECTED_WORKER_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_WORKER_SHA"
+          test "$(git -C reference-sidecar rev-parse HEAD)" = "$REFERENCE_SIDECAR_REVISION"
+
+      - name: Check end-to-end harness formatting
+        run: rustfmt --edition 2021 --config skip_children=true --check tests/build_log_sidecar_e2e.rs
+
+      - name: Clippy end-to-end harness
+        run: cargo clippy --locked --test build_log_sidecar_e2e -- -D warnings
+
+      - name: Build merged reference sidecar
+        run: cargo build --locked --manifest-path reference-sidecar/Cargo.toml --bin ghaiw-sidecar
+
+      - name: Stream real worker bytes through real reference sidecar
+        shell: bash
+        env:
+          GHAIW_REFERENCE_SIDECAR_BIN: ${{ github.workspace }}/reference-sidecar/target/debug/ghaiw-sidecar
+        run: |
+          set -euo pipefail
+          cargo test --locked --test build_log_sidecar_e2e -- --nocapture
