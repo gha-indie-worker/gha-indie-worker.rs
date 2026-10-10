@@ -1,0 +1,11 @@
+[package]
+name = "oreslang-proxy-actor-protocol"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Transport-neutral state and fencing contract for Oreslang ProxyActor"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]

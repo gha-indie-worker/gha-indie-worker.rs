@@ -1,0 +1,21 @@
+name: proxy-actor-protocol
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  native-protocol:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Verify ProxyActor Rust protocol model
+        run: |
+          cargo test --manifest-path tools/proxy-actor-protocol/Cargo.toml --offline --all-targets
