@@ -1,0 +1,108 @@
+{
+  "schema_version": "1.0.0",
+  "java_reference": "9d189677471398c98eb0995e15b711e1d08966ac",
+  "llvm_reference": "24043787e460388ef18a93b867c2803e29ec43f4",
+  "cases": [
+    {
+      "id": "int.literal-42",
+      "feature": "arithmetic.literal",
+      "file": "fixtures/literal-42.ores",
+      "admission": "accept",
+      "backends": {
+        "llvm": "required",
+        "graal": "required"
+      }
+    },
+    {
+      "id": "int.precedence",
+      "feature": "arithmetic.precedence",
+      "file": "fixtures/precedence.ores",
+      "admission": "accept",
+      "backends": {
+        "llvm": "required",
+        "graal": "required"
+      }
+    },
+    {
+      "id": "fn.forward-call",
+      "feature": "function.forward-call",
+      "file": "fixtures/forward-call.ores",
+      "admission": "accept",
+      "backends": {
+        "llvm": "required",
+        "graal": "required"
+      }
+    },
+    {
+      "id": "module.simple",
+      "feature": "module.simple",
+      "file": "fixtures/module.ores",
+      "admission": "accept",
+      "backends": {
+        "llvm": "required",
+        "graal": "required"
+      }
+    },
+    {
+      "id": "lexer.nested-comments",
+      "feature": "lexer.nested-comments",
+      "file": "fixtures/nested-comments.ores",
+      "admission": "accept",
+      "backends": {
+        "llvm": "required",
+        "graal": "required"
+      }
+    },
+    {
+      "id": "sema.unknown-name",
+      "feature": "semantic.unknown-name",
+      "file": "fixtures/reject-unknown.ores",
+      "admission": "reject",
+      "backends": {
+        "llvm": "required",
+        "graal": "required"
+      }
+    },
+    {
+      "id": "sema.wrong-arity",
+      "feature": "semantic.call-arity",
+      "file": "fixtures/reject-arity.ores",
+      "admission": "reject",
+      "backends": {
+        "llvm": "required",
+        "graal": "required"
+      }
+    },
+    {
+      "id": "sema.duplicate-name",
+      "feature": "semantic.duplicate-function",
+      "file": "fixtures/reject-duplicate.ores",
+      "admission": "reject",
+      "backends": {
+        "llvm": "required",
+        "graal": "required"
+      }
+    },
+    {
+      "id": "lexer.unclosed-comment",
+      "feature": "lexer.unclosed-comment",
+      "file": "fixtures/reject-unclosed.ores",
+      "admission": "reject",
+      "backends": {
+        "llvm": "required",
+        "graal": "required"
+      }
+    },
+    {
+      "id": "actor.unary-basic",
+      "feature": "actor.unary",
+      "file": "fixtures/actor-unary.ores",
+      "admission": "accept",
+      "backends": {
+        "llvm": "pending",
+        "graal": "pending"
+      },
+      "pending_reason": "Actor ABI fixture reserved until Java and LLVM actor admission are pinned to a verified common form."
+    }
+  ]
+}

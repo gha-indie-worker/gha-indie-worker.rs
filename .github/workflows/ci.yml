@@ -33,6 +33,10 @@ jobs:
         run: mvn -B -ntp -Dores.runtime.carriers=native verify
       - name: Run showcase
         run: mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/showcase.ores"
+      - name: Load native stdlib through the modular JVM launcher
+        run: |
+          mvn -B -ntp -DskipTests dependency:build-classpath -Dmdep.outputFile=target/classpath.txt
+          java --enable-native-access=ALL-UNNAMED -p "target/classes:$(cat target/classpath.txt)" -m dev.oreslang/dev.oreslang.launcher.OresMain examples/native-core-library.ores
       - name: Compile and run shared Oreslang program
         run: mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/together.ores"
       - name: Run native Oreslang test framework
@@ -63,6 +67,8 @@ jobs:
         run: mvn -B -ntp -Pnative-aot -DskipTests package
       - name: Run AOT image
         run: ./target/ores-aot --mode=aot --platform=linux examples/together.ores
+      - name: Load packaged native stdlib under AOT
+        run: ./target/ores-aot --mode=aot --platform=linux examples/native-core-library.ores
       - name: Run AOT proper tail-call stress
         run: |
           ./target/ores-aot --mode=aot --platform=linux examples/proper-tail-call.ores | tee /tmp/ores-aot-tail.out
@@ -95,6 +101,8 @@ jobs:
         run: mvn -B -ntp -Pnative-hybrid -DskipTests package
       - name: Run hybrid image
         run: ./target/ores-hybrid --mode=hybrid --platform=linux examples/together.ores
+      - name: Load packaged native stdlib under hybrid
+        run: ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-core-library.ores
       - name: Run hybrid proper tail-call stress
         run: |
           ./target/ores-hybrid --mode=hybrid --platform=linux examples/proper-tail-call.ores | tee /tmp/ores-hybrid-tail.out
@@ -133,8 +141,10 @@ jobs:
           test -n "$lib"
           echo "path=$PWD/$lib" >> "$GITHUB_OUTPUT"
       - name: Run strict program in Oreslang polyglot isolate
-        run: timeout 180s mvn -B -ntp -Dpolyglot.engine.IsolateLibrary="${{ steps.isolate.outputs.path }}" -DskipTests exec:java -Dexec.args="--strict-isolate --mode=jit --platform=linux examples/together.ores"
+        run: timeout 180s mvn -B -ntp -Dpolyglot.engine.IsolateLibrary="${{ steps.isolate.outputs.path }}" -DskipTests exec:java -Dexec.args="--strict-isolate --mode=hybrid --platform=linux examples/together.ores"
+      - name: Load packaged native stdlib under strict isolate
+        run: timeout 180s mvn -B -ntp -Dpolyglot.engine.IsolateLibrary="${{ steps.isolate.outputs.path }}" -DskipTests exec:java -Dexec.args="--strict-isolate --mode=hybrid --platform=linux examples/native-core-library.ores"
       - name: Resume root await inside strict isolate JNI scope
         run: |
-          timeout 180s mvn -B -ntp -Dpolyglot.engine.IsolateLibrary="${{ steps.isolate.outputs.path }}" -DskipTests exec:java -Dexec.args="--strict-isolate --mode=jit --platform=linux examples/strict-root-await.ores" | tee /tmp/ores-strict-root-await.out
+          timeout 180s mvn -B -ntp -Dpolyglot.engine.IsolateLibrary="${{ steps.isolate.outputs.path }}" -DskipTests exec:java -Dexec.args="--strict-isolate --mode=hybrid --platform=linux examples/strict-root-await.ores" | tee /tmp/ores-strict-root-await.out
           grep -x "42" /tmp/ores-strict-root-await.out

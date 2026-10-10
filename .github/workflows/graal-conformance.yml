@@ -1,0 +1,60 @@
+name: Graal conformance contract
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify conformance runner failure handling
+        run: |
+          python3 contracts/v1/test_runner.py -v
+          python3 contracts/v1/semantics/test_runner.py -v
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: graalvm/setup-graalvm@v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Compile TypeSpec contracts
+        run: npm --prefix contracts/v1 install --no-audit --no-fund && npm --prefix contracts/v1 run build && ./contracts/v1/node_modules/.bin/tsp compile contracts/v1/semantics && ./contracts/v1/node_modules/.bin/tsp compile contracts/v1/semantics/traces
+      - name: Schema validator
+        run: python3 -m pip install --break-system-packages 'jsonschema>=4.20,<5'
+      - name: Verify metamorphic generator and adversarial actor trace contracts
+        run: |
+          python3 contracts/v1/semantics/metamorphic.py --self-test --count 64
+          python3 contracts/v1/semantics/test_metamorphic.py -v
+          python3 contracts/v1/semantics/traces/validate.py --schema-only
+          python3 contracts/v1/semantics/traces/test_trace.py -v
+      - name: Validate fixture registry
+        run: |
+          python3 contracts/v1/run.py --validate
+          python3 contracts/v1/semantics/run.py --validate
+      - name: Compile Java compiler and resolve runtime dependencies
+        run: |
+          mvn -B -ntp -DskipTests package
+          mvn -B -ntp -q dependency:build-classpath -Dmdep.outputFile=target/conformance-classpath.txt
+      - name: Validate Java compiler admission
+        run: python3 contracts/v1/run.py --backend graal --command 'python3 contracts/v1/java_probe.py {source}' --report target/conformance-graal.json
+      - name: Validate Java borrow and semantic diagnostic cases
+        run: python3 contracts/v1/semantics/run.py --backend graal --command 'python3 contracts/v1/java_probe.py {source}' --revision "${{ github.sha }}" --report target/semantics-graal.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: graal-conformance-report
+          path: |
+            target/conformance-graal.json
+            target/semantics-graal.json
+          if-no-files-found: ignore

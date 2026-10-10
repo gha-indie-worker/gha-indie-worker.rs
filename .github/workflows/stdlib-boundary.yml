@@ -1,0 +1,27 @@
+name: Native Oreslang stdlib boundary
+on:
+  pull_request:
+    paths:
+      - 'stdlib/**'
+      - 'tools/stdlib-boundary-audit/**'
+      - '.github/workflows/stdlib-boundary.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'stdlib/**'
+      - 'tools/stdlib-boundary-audit/**'
+      - '.github/workflows/stdlib-boundary.yml'
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Rust tests
+        run: cargo test --locked --manifest-path tools/stdlib-boundary-audit/Cargo.toml --all-targets
+      - name: Clippy
+        run: cargo clippy --locked --manifest-path tools/stdlib-boundary-audit/Cargo.toml --all-targets -- -D warnings
+      - name: Native stdlib boundary check
+        run: cargo run --locked --manifest-path tools/stdlib-boundary-audit/Cargo.toml -- stdlib
