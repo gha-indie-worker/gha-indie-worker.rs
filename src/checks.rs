@@ -28,6 +28,26 @@ const MAX_OUTPUT_TEXT: usize = 60_000;
 const CHECK_RUN_PAGE_SIZE: usize = 100;
 const MAX_CHECK_RUNS_FOR_RECOVERY: u64 = 10_000;
 
+/// Bounded per-logical-attempt creation gates. We intentionally hash attempts
+/// into a fixed set of stripes instead of retaining an unbounded mutex map.
+/// Collision may delay unrelated creation but cannot authorize duplicates.
+static CREATE_STRIPES: std::sync::OnceLock<[tokio::sync::Mutex<()>; 64]> =
+    std::sync::OnceLock::new();
+
+fn create_stripe(target: &CheckTarget, external_id: &str) -> &'static tokio::sync::Mutex<()> {
+    use sha2::{Digest, Sha256};
+    let mut digest = Sha256::new();
+    digest.update(target.owner.to_ascii_lowercase().as_bytes());
+    digest.update([0]);
+    digest.update(target.repo.to_ascii_lowercase().as_bytes());
+    digest.update([0]);
+    digest.update(target.head_sha.as_bytes());
+    digest.update([0]);
+    digest.update(external_id.as_bytes());
+    let index = usize::from(digest.finalize()[0]) % 64;
+    &CREATE_STRIPES.get_or_init(|| std::array::from_fn(|_| tokio::sync::Mutex::new()))[index]
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CheckTarget {
     pub owner: String,
@@ -644,6 +664,12 @@ pub(crate) async fn report_started(
 ) -> Option<u64> {
     match reporter_for(state.config.as_ref(), target) {
         Reporter::CheckRun => {
+            // #80: serialize discovery/reservation/creation for the logical
+            // attempt. The journal mutex alone cannot guard a network POST.
+            // Durable reservation also protects the crash-after-POST window.
+            let attempt_id = crate::report_intent::logical_attempt_for_job(state, job_id).await;
+            let key = format!("indiebuild:{attempt_id}@{}", target.head_sha);
+            let _creation_guard = create_stripe(target, &key).lock().await;
             let mut intent = match crate::report_intent::begin(state, target, job_id).await {
                 Ok(Some(intent)) => intent,
                 Ok(None) => return None,
@@ -653,20 +679,38 @@ pub(crate) async fn report_started(
                 }
             };
             let external_id = crate::report_intent::external_id(&intent);
-            let check_run_id = match find_check_run_by_external_id(state, target, &external_id).await {
-                Ok(Some(id)) => Some(id),
-                Ok(None) => create_check_run(state, target, job_id, &external_id).await,
-                Err(error) => {
-                    tracing::error!("authoritative Check Run discovery failed: {error}");
-                    None
+            let check_run_id = if let Some(id) = intent.check_run_id {
+                match observe_check_run(state, target, id, &external_id).await {
+                    Ok(_) => Some(id),
+                    Err(error) => {
+                        tracing::error!("existing authoritative Check Run failed identity validation: {error}");
+                        None
+                    }
+                }
+            } else {
+                match find_check_run_by_external_id(state, target, &external_id).await {
+                    Ok(Some(id)) => Some(id),
+                    Ok(None) => {
+                        match crate::report_intent::reserve_check_creation(state, &mut intent).await {
+                            Ok(true) => create_check_run(state, target, job_id, &external_id).await,
+                            Ok(false) => {
+                                tracing::warn!("authoritative check creation already attempted; awaiting recovery");
+                                None
+                            }
+                            Err(error) => {
+                                tracing::error!("could not reserve authoritative Check Run creation: {error}");
+                                None
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        tracing::error!("authoritative Check Run discovery failed: {error}");
+                        None
+                    }
                 }
             };
             if let Some(id) = check_run_id {
                 if let Err(error) = crate::report_intent::record_check_id(state, &mut intent, id).await {
-                    // The pre-create intent and deterministic external id remain
-                    // enough for restart reconciliation. Do not discard the id
-                    // in this process, but trusted success will still require a
-                    // later durable terminal transition.
                     tracing::error!("authoritative Check Run id was not persisted: {error}");
                 }
             }
@@ -784,7 +828,9 @@ pub(crate) async fn report_finished(
         );
     }
     if reporter == Reporter::CheckRun {
-        crate::report_intent::record_delivery(state, target, check_run_id, delivery).await;
+        crate::report_intent::record_delivery(
+            state, target, check_run_id, delivery, effective_succeeded,
+        ).await;
     }
     delivery
 }

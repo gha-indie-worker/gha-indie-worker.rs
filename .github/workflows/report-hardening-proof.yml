@@ -1,0 +1,39 @@
+name: Report-intent safety core
+on:
+  push:
+    branches:
+      - hardening/reconciled-report-intents-78-80-20261012
+  pull_request:
+    paths:
+      - 'src/report_admission_core.rs'
+      - 'src/report_intent.rs'
+      - 'src/checks.rs'
+      - 'src/main.rs'
+      - '.github/workflows/report-hardening-proof.yml'
+permissions:
+  contents: read
+jobs:
+  exact-source-core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Verify installed Rust compiler
+        run: |
+          rustc --version
+          rustfmt --version
+      - name: Parse all changed Rust sources
+        run: |
+          for file in src/report_admission_core.rs src/report_intent.rs src/checks.rs src/main.rs; do
+            rustfmt --edition 2021 --emit stdout "$file" > /dev/null
+          done
+      - name: Run actual standalone Rust security predicates
+        run: |
+          rustc --edition 2021 --test src/report_admission_core.rs -o /tmp/report-admission-tests
+          /tmp/report-admission-tests --nocapture
+      - name: Explain wider verification boundary
+        run: |
+          echo 'This lane checks the exact source syntax and the dependency-free admission core.'
+          echo 'Full worker Cargo tests need unmerged parent and monorepo path dependencies.'

@@ -58,6 +58,13 @@ pub(crate) struct ReportIntent {
     pub(crate) reporter_app_id: String,
     pub(crate) installation_candidate: Option<u64>,
     pub(crate) check_run_id: Option<u64>,
+    /// Persisted before submitting a create call. A lost response must never
+    /// cause an automatic second authoritative Check Run for this attempt.
+    // Old journal files were written before this marker existed. Assume
+    // creation MAY already have happened: choosing false on legacy entries
+    // reopens the crash-after-POST duplicate-run vulnerability.
+    #[serde(default = "legacy_create_may_have_happened")]
+    pub(crate) check_create_attempted: bool,
     pub(crate) execution_state: ExecutionState,
     pub(crate) execution_finished_at_ms: Option<u64>,
     pub(crate) desired_conclusion: Option<String>,
@@ -66,6 +73,10 @@ pub(crate) struct ReportIntent {
     pub(crate) last_report_error_class: Option<String>,
     pub(crate) last_report_attempt_at_ms: Option<u64>,
     pub(crate) last_observed_check_state: Option<String>,
+}
+
+fn legacy_create_may_have_happened() -> bool {
+    true
 }
 
 fn now_ms() -> u64 {
@@ -249,7 +260,10 @@ async fn persist(state: &AppState, intent: &ReportIntent) -> Result<(), String> 
         return Err("report intent exceeds size bound".to_string());
     }
 
-    let mut file = fs::File::create(&temp)
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)
         .await
         .map_err(|error| format!("could not create report intent: {error}"))?;
     file.write_all(&bytes)
@@ -260,13 +274,14 @@ async fn persist(state: &AppState, intent: &ReportIntent) -> Result<(), String> 
         .map_err(|error| format!("could not fsync report intent: {error}"))?;
     drop(file);
 
-    if let Err(first_error) = fs::rename(&temp, &path).await {
-        // Windows cannot atomically replace an existing destination. Keep the
-        // compatibility fallback bounded and never leave a partial temp file.
-        if fs::remove_file(&path).await.is_err() || fs::rename(&temp, &path).await.is_err() {
-            let _ = fs::remove_file(&temp).await;
-            return Err(format!("could not publish report intent: {first_error}"));
-        }
+    if let Err(error) = fs::rename(&temp, &path).await {
+        // #80: NEVER unlink the existing durable journal to make a Windows
+        // rename work. A crash between unlink and rename destroys the only
+        // authoritative evidence. Reject this update without changing the
+        // durable prior version. The production Windows adapter needs
+        // ReplaceFileW or a transactional database, not delete-and-rename.
+        let _ = fs::remove_file(&temp).await;
+        return Err(format!("atomic report-intent replacement unavailable: {error}"));
     }
     sync_parent_directory(&root)?;
     Ok(())
@@ -285,6 +300,13 @@ async fn read_intent_path(path: &Path) -> Result<ReportIntent, String> {
     let intent: ReportIntent = serde_json::from_slice(&bytes)
         .map_err(|error| format!("invalid report-intent JSON: {error}"))?;
     validate(&intent)?;
+    let expected_name = intent_path(
+        path.parent().ok_or_else(|| "missing report-intent parent".to_string())?,
+        &intent,
+    );
+    if path != expected_name {
+        return Err("report-intent filename does not match logical attempt".to_string());
+    }
     Ok(intent)
 }
 
@@ -298,7 +320,7 @@ async fn load_durable_intent(state: &AppState, expected: &ReportIntent) -> Resul
     Ok(current)
 }
 
-async fn logical_attempt_for_job(state: &AppState, job_id: &str) -> String {
+pub(crate) async fn logical_attempt_for_job(state: &AppState, job_id: &str) -> String {
     let jobs = state.jobs.read().await;
     jobs.get(job_id)
         .and_then(|job| job.request.request_id.as_deref())
@@ -342,6 +364,7 @@ pub(crate) async fn begin(
         reporter_app_id: app_id,
         installation_candidate: target.installation_id,
         check_run_id: None,
+        check_create_attempted: false,
         execution_state: ExecutionState::Active,
         execution_finished_at_ms: None,
         desired_conclusion: None,
@@ -369,6 +392,32 @@ pub(crate) async fn begin(
     }
     persist(state, &intent).await?;
     Ok(Some(intent))
+}
+
+/// Reserve the single allowed GitHub create attempt in the durable journal
+/// before touching the Checks API. If creation is ambiguous, the reconciler
+/// must recover by deterministic external_id (or fail closed); it must never
+/// blindly create another App-owned check. The process-local striped lock in
+/// checks.rs serializes discovery + reservation + create for each attempt.
+pub(crate) async fn reserve_check_creation(
+    state: &AppState,
+    intent: &mut ReportIntent,
+) -> Result<bool, String> {
+    let _guard = REPORT_JOURNAL_LOCK.lock().await;
+    let mut current = load_durable_intent(state, intent).await?;
+    if !crate::report_admission_core::may_reserve_create(
+        current.check_run_id,
+        current.check_create_attempted,
+        current.report_delivery_state == ReportDeliveryState::Pending,
+        current.execution_state == ExecutionState::Active,
+    ) {
+        *intent = current;
+        return Ok(false);
+    }
+    current.check_create_attempted = true;
+    persist(state, &current).await?;
+    *intent = current;
+    Ok(true)
 }
 
 pub(crate) async fn record_check_id(
@@ -443,6 +492,7 @@ pub(crate) async fn record_delivery(
     target: &CheckTarget,
     check_run_id: Option<u64>,
     delivery: Delivery,
+    reported_success: bool,
 ) {
     if state.config.reporting_mode != ReportingMode::AppRequired {
         return;
@@ -478,12 +528,24 @@ pub(crate) async fn record_delivery(
         }
     }
     match delivery {
-        Delivery::CheckRun => {
+        Delivery::CheckRun if crate::report_admission_core::may_mark_delivered(
+            intent.check_run_id,
+            check_run_id,
+            intent.execution_state != ExecutionState::Active,
+            intent.desired_conclusion.is_some(),
+        ) && crate::report_admission_core::conclusion_matches(
+            intent.desired_conclusion.as_deref(),
+            reported_success,
+        ) =>
+        {
             intent.report_delivery_state = ReportDeliveryState::Delivered;
             intent.last_report_error_class = None;
             intent.last_observed_check_state = Some(
                 format!("completed:{}", intent.desired_conclusion.as_deref().unwrap_or("unknown")),
             );
+        }
+        Delivery::CheckRun => {
+            intent.last_report_error_class = Some("delivery_mismatch_or_unproven_terminal".to_string());
         }
         Delivery::Undelivered | Delivery::NotConfigured => {
             intent.last_report_error_class = Some("undelivered".to_string());
@@ -562,6 +624,41 @@ fn authority_still_matches(state: &AppState, intent: &ReportIntent) -> bool {
         && state.config.github_app_id.as_deref() == Some(intent.reporter_app_id.as_str())
 }
 
+/// A journal is keyed by the exact verified source and one logical attempt.
+/// The ephemeral job map is NOT trusted to supply an outcome merely because
+/// it contains a matching job_id; webhook redelivery can replace/reuse data.
+fn job_matches_intent(intent: &ReportIntent, job: &crate::types::BuildJobRecord) -> bool {
+    if job.id != intent.job_id {
+        return false;
+    }
+    let Some(target) = crate::checks::target_from_request(
+        &job.request.repo_url,
+        job.request.commit_sha.as_deref(),
+        job.request.github_installation_id,
+    ) else {
+        return false;
+    };
+    use crate::report_admission_core::{same_attempt, AttemptIdentity};
+    same_attempt(
+        AttemptIdentity {
+            owner: &intent.owner,
+            repo: &intent.repo,
+            head_sha: &intent.head_sha,
+            attempt_id: &intent.logical_attempt_id,
+            installation_id: intent.installation_candidate,
+        },
+        AttemptIdentity {
+            owner: &target.owner,
+            repo: &target.repo,
+            head_sha: &target.head_sha,
+            attempt_id: job.request.request_id.as_deref()
+                .filter(|value| safe_attempt_id(value))
+                .unwrap_or(&job.id),
+            installation_id: target.installation_id,
+        },
+    )
+}
+
 async fn reconcile_one(state: &AppState, intent: &mut ReportIntent) {
     // Every non-Pending state is terminal. In particular PermanentFailure must
     // never later become Reconciled merely because a subsequent API call works.
@@ -579,7 +676,16 @@ async fn reconcile_one(state: &AppState, intent: &mut ReportIntent) {
     if intent.execution_state == ExecutionState::Active {
         let current = state.jobs.read().await.get(&intent.job_id).cloned();
         if let Some(job) = current {
-            match job.status {
+            if !job_matches_intent(intent, &job) {
+                // #78: never import success from an unbound job. An identity
+                // mismatch is an UNKNOWN execution outcome, but the stored
+                // Check Run can still be closed with a non-success verdict.
+                // PermanentFailure here would orphan an in_progress Check Run.
+                let _ = apply_terminal_execution(intent, false, now_ms());
+                intent.last_report_error_class = Some("execution_identity_mismatch".to_string());
+                intent.last_observed_check_state = Some("untrusted_job_identity".to_string());
+            } else {
+                match job.status {
                 BuildStatus::Queued | BuildStatus::Running => return,
                 BuildStatus::Succeeded => {
                     if apply_terminal_execution(
@@ -608,6 +714,7 @@ async fn reconcile_one(state: &AppState, intent: &mut ReportIntent) {
                         intent.report_delivery_state = ReportDeliveryState::PermanentFailure;
                         intent.last_report_error_class = Some("execution_outcome_conflict".to_string());
                     }
+                }
                 }
             }
         } else {
@@ -784,6 +891,7 @@ mod tests {
             reporter_app_id: "42".to_string(),
             installation_candidate: Some(7),
             check_run_id: None,
+        check_create_attempted: false,
             execution_state: ExecutionState::Active,
             execution_finished_at_ms: None,
             desired_conclusion: None,
@@ -874,6 +982,21 @@ mod tests {
         assert!(binding_changed || execution_changed);
         assert_eq!(intent.check_run_id, Some(7));
         assert_eq!(intent.execution_finished_at_ms, Some(10));
+    }
+
+    #[test]
+    fn create_attempt_reservation_remains_default_off_for_legacy_journal() {
+        let mut intent = test_intent();
+        assert!(!intent.check_create_attempted);
+        let wire = serde_json::to_string(&intent).expect("serialize");
+        assert!(wire.contains("check_create_attempted"));
+        let mut old: serde_json::Value = serde_json::from_str(&wire).expect("json");
+        old.as_object_mut().expect("object").remove("check_create_attempted");
+        let recovered: ReportIntent = serde_json::from_value(old).expect("legacy journal");
+        assert!(recovered.check_create_attempted,
+            "legacy journal must never blindly repeat an ambiguous GitHub POST");
+        intent.check_create_attempted = true;
+        assert!(validate(&intent).is_ok());
     }
 
     #[test]
