@@ -120,6 +120,17 @@ today and `TaggedMessageContracts.verify` must still reject them.
 Only separately verified wire shapes can enter typed actor mailboxes.
 Adding a local enum payload must never silently change an actor schema.
 
+A local enum may also **nest another local enum** that carries such a
+non-wire width (including through a homogeneous `List<Inner>`), even when
+the inner enum is forward-declared. This does not promote either case to a
+portable actor codec; the outer case retains `payload == null` in the wire
+registry while retaining its source payload type. Recursive list-backed
+enums are accepted as finite local values with bounded graph validation.
+Direct/unboxed recursive enum cycles remain rejected by the dependency
+checker. An explicit `Box<T>` is not yet proof of an executable boxed
+value: allocation, move/drop and serialization still need implementations.
+
+
 Named enums/patterns may not shadow builtin or ordinary declaration type
 identities, and they are not implicitly generic. Unsupported source enum
 payloads (including `Option<T>`/`Result<T,E>` *nested inside a user enum*,

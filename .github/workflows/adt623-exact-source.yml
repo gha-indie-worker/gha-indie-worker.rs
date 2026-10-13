@@ -21,8 +21,8 @@ jobs:
         run: |
           git rm -q --cached -- .github/workflows/adt623-exact-source.yml
           actual="$(git write-tree)"
-          test "$actual" = "025314531561f9ba58322194364e2263c7503c71"
-          echo "Source PR: 613ec7ce66498b513a271ad45232ed773f2efcf9"
+          test "$actual" = "796708cdca1963f638b4af7d01daa4e8e2b70abd"
+          echo "Source PR: 104dd110f84d050670af851169242a1061047ad8"
           echo "Verified source tree: $actual"
       - name: Set up GraalVM 25
         uses: graalvm/setup-graalvm@v1
