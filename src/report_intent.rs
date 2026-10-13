@@ -956,10 +956,9 @@ mod tests {
         assert!(!intent.check_create_attempted);
         let wire = serde_json::to_string(&intent).expect("serialize");
         assert!(wire.contains("check_create_attempted"));
-        let recovered: ReportIntent = serde_json::from_str(
-            &wire.replace("\\"check_create_attempted\\":false,", "")
-                 .replace(",\\"check_create_attempted\\":false", "")
-        ).expect("legacy journal");
+        let mut old: serde_json::Value = serde_json::from_str(&wire).expect("json");
+        old.as_object_mut().expect("object").remove("check_create_attempted");
+        let recovered: ReportIntent = serde_json::from_value(old).expect("legacy journal");
         assert!(!recovered.check_create_attempted);
         intent.check_create_attempted = true;
         assert!(validate(&intent).is_ok());
