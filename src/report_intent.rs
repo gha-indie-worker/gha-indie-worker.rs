@@ -60,7 +60,10 @@ pub(crate) struct ReportIntent {
     pub(crate) check_run_id: Option<u64>,
     /// Persisted before submitting a create call. A lost response must never
     /// cause an automatic second authoritative Check Run for this attempt.
-    #[serde(default)]
+    // Old journal files were written before this marker existed. Assume
+    // creation MAY already have happened: choosing false on legacy entries
+    // reopens the crash-after-POST duplicate-run vulnerability.
+    #[serde(default = "legacy_create_may_have_happened")]
     pub(crate) check_create_attempted: bool,
     pub(crate) execution_state: ExecutionState,
     pub(crate) execution_finished_at_ms: Option<u64>,
@@ -70,6 +73,10 @@ pub(crate) struct ReportIntent {
     pub(crate) last_report_error_class: Option<String>,
     pub(crate) last_report_attempt_at_ms: Option<u64>,
     pub(crate) last_observed_check_state: Option<String>,
+}
+
+fn legacy_create_may_have_happened() -> bool {
+    true
 }
 
 fn now_ms() -> u64 {
@@ -982,7 +989,8 @@ mod tests {
         let mut old: serde_json::Value = serde_json::from_str(&wire).expect("json");
         old.as_object_mut().expect("object").remove("check_create_attempted");
         let recovered: ReportIntent = serde_json::from_value(old).expect("legacy journal");
-        assert!(!recovered.check_create_attempted);
+        assert!(recovered.check_create_attempted,
+            "legacy journal must never blindly repeat an ambiguous GitHub POST");
         intent.check_create_attempted = true;
         assert!(validate(&intent).is_ok());
     }
