@@ -1,0 +1,18 @@
+define enum Outer as
+    Wrapped: Inner
+    Empty
+end
+define enum Inner as
+    Byte: u8
+    None
+end
+fnc classify(Outer value): int {
+    match value over
+        on Outer.Wrapped(inner) -> { return 8; }
+        on Outer.Empty -> { return 0; }
+    end
+}
+pub fnc main(): void {
+    stdio.println(classify(Outer.Wrapped(Inner.Byte(255))));
+    return;
+}

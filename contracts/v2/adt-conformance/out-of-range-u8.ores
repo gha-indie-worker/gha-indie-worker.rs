@@ -1,0 +1,6 @@
+define enum Status as
+    Active: u8
+end
+fnc invalid(): Status {
+    return Status.Active(256);
+}

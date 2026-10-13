@@ -1,0 +1,17 @@
+define enum State as
+    Ready
+    Flag: bool
+end
+fnc classify(State state): int {
+    match state over
+        on State.Ready -> { return 0; }
+        on State.Flag(true) -> { return 1; }
+        on State.Flag(false) -> { return 2; }
+    end
+}
+pub fnc main(): void {
+    stdio.println(classify(State.Ready()));
+    stdio.println(classify(State.Flag(true)));
+    stdio.println(classify(State.Flag(false)));
+    return;
+}

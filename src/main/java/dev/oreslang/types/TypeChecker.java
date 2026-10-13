@@ -4685,6 +4685,12 @@ public final class TypeChecker {
      * An unknown/infinite/oversized domain returns null and uses the
      * conservative proof below. No proof may rely on a truncated domain.
      */
+    private static boolean allTrue(boolean[] values) {
+        for (boolean value : values) if (!value) return false;
+        return true;
+    }
+
+    private static final int MAX_ADT_MATCH_ARMS = 4096;
     private static final int MAX_ADT_MATCH_WITNESSES = 4096;
     private record FiniteAdtCase(String name, List<Object> fields) {
         FiniteAdtCase { fields = List.copyOf(fields); }
@@ -5019,6 +5025,17 @@ public final class TypeChecker {
             Type expectedReturn,
             Type self) {
         List<Ast.MatchArm> arms = matched.arms();
+        if (arms.size() > MAX_ADT_MATCH_ARMS) {
+            throw new IllegalArgumentException("match exceeds " + MAX_ADT_MATCH_ARMS
+                    + " arms; split the decision into smaller match expressions");
+        }
+
+        // Build finite witnesses once. Re-enumerating them for each arm and
+        // re-testing every earlier arm produced an avoidable quadratic/cubic
+        // proof cost for large enums or tuple products.
+        List<Object> finiteWitnesses = finiteAdtWitnesses(subject, generics, self, 0);
+        boolean[] coveredByUnguarded = finiteWitnesses == null
+                ? null : new boolean[finiteWitnesses.size()];
         for (int i = 0; i < arms.size(); i++) {
             Ast.MatchArm arm = arms.get(i);
 
@@ -5029,55 +5046,44 @@ public final class TypeChecker {
             }
             checkBlock(arm.body(), armEnv, generics, expectedReturn, self);
 
-            // In a small finite ADT, *multiple* preceding unguarded arms
-            // can collectively make a later arm unreachable, even when no
-            // individual predecessor subsumes it. Guarded arms cannot be
-            // used in this proof: their conditions might be false at runtime.
-            if (i > 0) {
-                List<Object> witnesses = finiteAdtWitnesses(subject, generics, self, 0);
-                if (witnesses != null) {
-                    boolean acceptsAny = false;
-                    boolean coveredBefore = true;
-                    for (Object witness : witnesses) {
-                        if (!patternAcceptsFiniteWitness(
-                                arm.pattern(), witness, subject, generics, self)) continue;
-                        acceptsAny = true;
-                        boolean earlierCovers = false;
-                        for (int j = 0; j < i; j++) {
-                            Ast.MatchArm earlier = arms.get(j);
-                            if (earlier.guard() == null && patternAcceptsFiniteWitness(
-                                    earlier.pattern(), witness, subject, generics, self)) {
-                                earlierCovers = true;
-                                break;
-                            }
-                        }
-                        if (!earlierCovers) {
-                            coveredBefore = false;
-                            break;
-                        }
+            if (finiteWitnesses != null) {
+                boolean acceptsAny = false;
+                boolean acceptsUncovered = false;
+                for (int k = 0; k < finiteWitnesses.size(); k++) {
+                    if (!patternAcceptsFiniteWitness(
+                            arm.pattern(), finiteWitnesses.get(k), subject, generics, self)) {
+                        continue;
                     }
-                    if (acceptsAny && coveredBefore) {
-                        throw new IllegalArgumentException("unreachable match arm " + (i + 1)
-                                + ": all its finite-domain values are covered by earlier unguarded arms");
-                    }
+                    acceptsAny = true;
+                    if (!coveredByUnguarded[k]) acceptsUncovered = true;
+                    // Guards can be false; they never discharge the proof.
+                    if (arm.guard() == null) coveredByUnguarded[k] = true;
                 }
-            }
-
-            // Match is ordered. Overlap is valid, but an earlier unguarded arm
-            // that completely contains a later pattern makes that arm dead.
-            for (int j = 0; j < i; j++) {
-                Ast.MatchArm previous = arms.get(j);
-                if (previous.guard() != null) continue;
-                if (patternSubsumes(previous.pattern(), arm.pattern(), subject, generics, self)) {
-                    throw new IllegalArgumentException(
-                            "unreachable match arm " + (i + 1)
-                                    + ": earlier arm " + (j + 1)
-                                    + " already matches every value accepted by it");
+                if (i > 0 && acceptsAny && !acceptsUncovered) {
+                    throw new IllegalArgumentException("unreachable match arm " + (i + 1)
+                            + ": all its finite-domain values are covered by earlier unguarded arms");
+                }
+            } else {
+                // For infinite/unknown domains retain the conservative
+                // pairwise subsumption proof. Never infer completeness from
+                // an arbitrarily truncated finite witness set.
+                for (int j = 0; j < i; j++) {
+                    Ast.MatchArm previous = arms.get(j);
+                    if (previous.guard() != null) continue;
+                    if (patternSubsumes(previous.pattern(), arm.pattern(), subject, generics, self)) {
+                        throw new IllegalArgumentException(
+                                "unreachable match arm " + (i + 1)
+                                        + ": earlier arm " + (j + 1)
+                                        + " already matches every value accepted by it");
+                    }
                 }
             }
         }
 
-        if (!matchProvablyExhaustive(arms, subject, generics, self)) {
+        boolean exhaustive = coveredByUnguarded != null
+                ? allTrue(coveredByUnguarded)
+                : matchProvablyExhaustive(arms, subject, generics, self);
+        if (!exhaustive) {
             throw new IllegalArgumentException(
                     "non-exhaustive match for " + subject
                             + "; add an unguarded 'on _ -> { ... }' arm or cover every provable case");

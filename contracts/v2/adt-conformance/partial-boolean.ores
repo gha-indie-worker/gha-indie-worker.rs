@@ -1,0 +1,6 @@
+fnc incorrect(Option<bool> value): int {
+    match value over
+        on Some(true) -> { return 1; }
+        on None -> { return 0; }
+    end
+}

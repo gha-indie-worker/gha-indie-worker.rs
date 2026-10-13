@@ -1,0 +1,12 @@
+define enum Alpha as
+    Ready
+end
+define enum Beta as
+    Ready
+end
+fnc invalid(Alpha input): int {
+    match input over
+        on Beta.Ready -> { return 1; }
+        on _ -> { return 0; }
+    end
+}

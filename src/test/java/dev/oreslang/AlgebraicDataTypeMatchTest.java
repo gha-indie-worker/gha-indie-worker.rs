@@ -262,6 +262,50 @@ final class AlgebraicDataTypeMatchTest {
     }
 
     @Test
+    void maximumFiniteBooleanProductProofIsCompleteAndDetectsDeadArms() {
+        // 12 bools = 4096 distinct values, exactly the proof quota.
+        // The two leading-bit patterns partition the entire product.
+        String members = String.join(", ", java.util.Collections.nCopies(12, "bool"));
+        String suffix = ", " + String.join(", ", java.util.Collections.nCopies(11, "_"));
+        String prefix = "fnc classify(Tuple[" + members + "] input): int {\\n"
+                + "match input over\\n";
+        String arms = "on (true" + suffix + ") -> { return 1; }\\n"
+                + "on (false" + suffix + ") -> { return 0; }\\n";
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                prefix + arms + "end\\n}")));
+        assertTrue(rejects(prefix + arms
+                + "on _ -> { return -1; }\\nend\\n}")
+                .getMessage().contains("unreachable match arm"));
+    }
+
+    @Test
+    void overflowedFiniteDomainCannotProveAFalseExhaustivenessClaim() {
+        // 13 bools = 8192 values; do not truncate to the first 4096.
+        String members = String.join(", ", java.util.Collections.nCopies(13, "bool"));
+        String suffix = ", " + String.join(", ", java.util.Collections.nCopies(12, "_"));
+        String prefix = "fnc classify(Tuple[" + members + "] input): int {\\n"
+                + "match input over\\n";
+        String arms = "on (true" + suffix + ") -> { return 1; }\\n"
+                + "on (false" + suffix + ") -> { return 0; }\\n";
+        assertTrue(rejects(prefix + arms + "end\\n}")
+                .getMessage().contains("non-exhaustive match"));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                prefix + arms + "on _ -> { return -1; }\\nend\\n}")));
+    }
+
+    @Test
+    void oversizedMatchArmMatrixFailsBeforeQuadraticProofWork() {
+        StringBuilder source = new StringBuilder(
+                "fnc classify(bool input): int {\\nmatch input over\\n");
+        for (int i = 0; i <= 4096; i++) {
+            source.append("on true -> { return 1; }\\n");
+        }
+        source.append("end\\n}");
+        assertTrue(rejects(source.toString())
+                .getMessage().contains("match exceeds 4096 arms"));
+    }
+
+    @Test
     void guestRuntimeDispatchAgreesWithFiniteExhaustivenessProof() throws Exception {
         String sourceText = """
                 define enum Tiny as

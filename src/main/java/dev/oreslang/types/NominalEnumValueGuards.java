@@ -23,6 +23,15 @@ public final class NominalEnumValueGuards {
                                       TaggedMessageContracts.Case variant, Object payload) {
         Objects.requireNonNull(types, "enum registry");
         Objects.requireNonNull(variant, "enum variant");
+        // A caller-supplied Case record is not a declaration capability.
+        // Reject forged case tags, payload contracts, and wire descriptors
+        // before considering the claimed case's payload value.
+        TaggedMessageContracts.Case declared =
+                types.requireCase(variant.qualifiedName());
+        if (!declared.equals(variant)) {
+            throw new IllegalArgumentException(
+                    "unregistered or forged enum case contract: " + variant.qualifiedName());
+        }
         if (variant.sourcePayload() == null) {
             if (payload != null) throw new IllegalArgumentException(
                     "payloadless enum case cannot carry data: " + variant.qualifiedName());

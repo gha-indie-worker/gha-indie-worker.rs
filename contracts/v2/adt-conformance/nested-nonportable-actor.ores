@@ -1,0 +1,12 @@
+define enum Inner as
+    Byte: u8
+end
+define enum Outer as
+    Wrapped: Inner
+end
+define actor Receiver as
+    receive(ActorMail<Outer> mail): void {
+        self.end();
+        return;
+    }
+end

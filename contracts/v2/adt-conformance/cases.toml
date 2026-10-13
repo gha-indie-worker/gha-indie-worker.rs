@@ -1,0 +1,93 @@
+# Canonical Java/Graal and LLVM ADT differential corpus.
+schema = "oreslang.adt.conformance.v2"
+version = 1
+
+[[case]]
+id = "enum.basic"
+source = "enum-basic.ores"
+kind = "run"
+java = "required"
+llvm = "pending"
+description = "Nominal nullary and payload variants"
+expected_stdout = "0\n7\n9\n"
+
+[[case]]
+id = "enum.boolean.partition"
+source = "enum-bool-partition.ores"
+kind = "run"
+java = "required"
+llvm = "pending"
+description = "Combined exhaustive finite case partitions"
+expected_stdout = "0\n1\n2\n"
+
+[[case]]
+id = "builtin.option.result"
+source = "option-result.ores"
+kind = "run"
+java = "required"
+llvm = "pending"
+description = "Finite Option and Result sum exhaustiveness"
+expected_stdout = "1\n0\n3\n6\n"
+
+[[case]]
+id = "enum.nested.local.width"
+source = "nested-local-width.ores"
+kind = "run"
+java = "required"
+llvm = "pending"
+description = "Nested local non-wire exact-width payload"
+expected_stdout = "8\n"
+
+[[case]]
+id = "reject.missing.variant"
+source = "missing-case.ores"
+kind = "reject"
+java = "required"
+llvm = "pending"
+description = "All enum cases are required"
+diagnostic_contains = "non-exhaustive match"
+
+[[case]]
+id = "reject.partial.option"
+source = "partial-boolean.ores"
+kind = "reject"
+java = "required"
+llvm = "pending"
+description = "Some(true) does not cover Some(false)"
+diagnostic_contains = "non-exhaustive match"
+
+[[case]]
+id = "reject.foreign.case"
+source = "foreign-case.ores"
+kind = "reject"
+java = "required"
+llvm = "pending"
+description = "Do not match foreign nominal cases"
+diagnostic_contains = "not in match subject domain"
+
+[[case]]
+id = "reject.exact.width"
+source = "out-of-range-u8.ores"
+kind = "reject"
+java = "required"
+llvm = "pending"
+description = "Source numeric width must not be erased"
+diagnostic_contains = "out of range"
+
+[[case]]
+id = "reject.nonportable.mailbox"
+source = "nested-nonportable-actor.ores"
+kind = "reject"
+java = "required"
+llvm = "pending"
+description = "Local nested u8 enum is not portable actor mail"
+diagnostic_contains = "portable"
+
+[[case]]
+id = "reject.guarded.coverage"
+source = "guarded-not-exhaustive.ores"
+kind = "reject"
+java = "required"
+llvm = "pending"
+description = "Guarded arms cannot prove completeness"
+diagnostic_contains = "non-exhaustive match"

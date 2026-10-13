@@ -94,6 +94,28 @@ final class EnumScalarPayloadRangeHardeningTest {
     }
 
     @Test
+    void runtimeCannotTrustForgedCaseDescriptorsEvenWithValidPayload() {
+        var types = registry("u8");
+        var declared = types.requireCase("Value.Payload");
+        var forgedTag = new TaggedMessageContracts.Case(
+                declared.owner(), declared.name(), declared.tag() + 1,
+                declared.sourcePayload(), declared.payload());
+        var forgedType = new TaggedMessageContracts.Case(
+                declared.owner(), declared.name(), declared.tag(),
+                dev.oreslang.ast.Ast.TypeRef.simple("string"), declared.payload());
+        var forgedShape = new TaggedMessageContracts.Case(
+                declared.owner(), declared.name(), declared.tag(),
+                declared.sourcePayload(),
+                dev.oreslang.runtime.MessagePackCollectionCodec.string());
+        assertDoesNotThrow(() ->
+                NominalEnumValueGuards.requirePayload(types, declared, 17L));
+        for (var forged : List.of(forgedTag, forgedType, forgedShape)) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> NominalEnumValueGuards.requirePayload(types, forged, 17L));
+        }
+    }
+
+    @Test
     void scalarRuntimeGuardsRejectHostForgedValues() {
         passes("bool", true);
         rejects("bool", 1L);

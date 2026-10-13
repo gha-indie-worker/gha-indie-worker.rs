@@ -1,0 +1,7 @@
+fnc invalid(Option<bool> value): int {
+    match value over
+        on Some(true) when true -> { return 1; }
+        on Some(false) -> { return 2; }
+        on None -> { return 0; }
+    end
+}

@@ -1,0 +1,9 @@
+define enum Stage as
+    Waiting
+    Running
+end
+fnc incorrect(Stage stage): int {
+    match stage over
+        on Stage.Waiting -> { return 0; }
+    end
+}

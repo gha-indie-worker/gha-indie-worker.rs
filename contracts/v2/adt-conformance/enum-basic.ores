@@ -1,0 +1,18 @@
+define enum Status as
+    Waiting
+    Active: int
+    Done
+end
+fnc classify(Status status): int {
+    match status over
+        on Status.Waiting -> { return 0; }
+        on Status.Active(value) -> { return value; }
+        on Status.Done -> { return 9; }
+    end
+}
+pub fnc main(): void {
+    stdio.println(classify(Status.Waiting()));
+    stdio.println(classify(Status.Active(7)));
+    stdio.println(classify(Status.Done()));
+    return;
+}

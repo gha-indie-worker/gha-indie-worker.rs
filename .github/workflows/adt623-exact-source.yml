@@ -21,8 +21,8 @@ jobs:
         run: |
           git rm -q --cached -- .github/workflows/adt623-exact-source.yml
           actual="$(git write-tree)"
-          test "$actual" = "796708cdca1963f638b4af7d01daa4e8e2b70abd"
-          echo "Source PR: 104dd110f84d050670af851169242a1061047ad8"
+          test "$actual" = "da630c81a6d59bafc82b8f2720d34b38ccaaa69f"
+          echo "Source PR: c1f371b7852efeee4c3c3818218e2355c5889858"
           echo "Verified source tree: $actual"
       - name: Set up GraalVM 25
         uses: graalvm/setup-graalvm@v1
@@ -33,6 +33,6 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
       - name: ADT targeted JUnit
-        run: mvn -B -ntp -Dores.runtime.carriers=native -Dtest=AlgebraicDataTypeMatchTest,EnumScalarPayloadRangeHardeningTest,EnumOwnershipMatchTest,NestedEnumLocalValueTest test
+        run: mvn -B -ntp -Dores.runtime.carriers=native -Dtest=AdtConformanceCorpusTest,AlgebraicDataTypeMatchTest,EnumScalarPayloadRangeHardeningTest,EnumOwnershipMatchTest,NestedEnumLocalValueTest test
       - name: Full Java verify
         run: mvn -B -ntp -Dores.runtime.carriers=native verify
