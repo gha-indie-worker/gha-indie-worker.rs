@@ -492,6 +492,7 @@ pub(crate) async fn record_delivery(
     target: &CheckTarget,
     check_run_id: Option<u64>,
     delivery: Delivery,
+    reported_success: bool,
 ) {
     if state.config.reporting_mode != ReportingMode::AppRequired {
         return;
@@ -532,6 +533,9 @@ pub(crate) async fn record_delivery(
             check_run_id,
             intent.execution_state != ExecutionState::Active,
             intent.desired_conclusion.is_some(),
+        ) && crate::report_admission_core::conclusion_matches(
+            intent.desired_conclusion.as_deref(),
+            reported_success,
         ) =>
         {
             intent.report_delivery_state = ReportDeliveryState::Delivered;
@@ -541,7 +545,7 @@ pub(crate) async fn record_delivery(
             );
         }
         Delivery::CheckRun => {
-            intent.last_report_error_class = Some("delivery_before_terminal_execution".to_string());
+            intent.last_report_error_class = Some("delivery_mismatch_or_unproven_terminal".to_string());
         }
         Delivery::Undelivered | Delivery::NotConfigured => {
             intent.last_report_error_class = Some("undelivered".to_string());
