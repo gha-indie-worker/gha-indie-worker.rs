@@ -667,9 +667,7 @@ pub(crate) async fn report_started(
             // #80: serialize discovery/reservation/creation for the logical
             // attempt. The journal mutex alone cannot guard a network POST.
             // Durable reservation also protects the crash-after-POST window.
-            let attempt_id = state.jobs.read().await.get(job_id)
-                .and_then(|job| job.request.request_id.clone())
-                .unwrap_or_else(|| job_id.to_string());
+            let attempt_id = crate::report_intent::logical_attempt_for_job(state, job_id).await;
             let key = format!("indiebuild:{attempt_id}@{}", target.head_sha);
             let _creation_guard = create_stripe(target, &key).lock().await;
             let mut intent = match crate::report_intent::begin(state, target, job_id).await {
