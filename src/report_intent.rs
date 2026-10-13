@@ -398,10 +398,12 @@ pub(crate) async fn reserve_check_creation(
 ) -> Result<bool, String> {
     let _guard = REPORT_JOURNAL_LOCK.lock().await;
     let mut current = load_durable_intent(state, intent).await?;
-    if current.check_run_id.is_some() || current.check_create_attempted
-        || current.report_delivery_state != ReportDeliveryState::Pending
-        || current.execution_state != ExecutionState::Active
-    {
+    if !crate::report_admission_core::may_reserve_create(
+        current.check_run_id,
+        current.check_create_attempted,
+        current.report_delivery_state == ReportDeliveryState::Pending,
+        current.execution_state == ExecutionState::Active,
+    ) {
         *intent = current;
         return Ok(false);
     }
