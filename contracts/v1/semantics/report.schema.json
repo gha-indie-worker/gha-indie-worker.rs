@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oreslang.dev/conformance/semantic-report-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "backend",
+    "suite_sha256",
+    "source_revision",
+    "results"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.1.0"
+    },
+    "backend": {
+      "enum": [
+        "llvm",
+        "graal"
+      ]
+    },
+    "suite_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "source_revision": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{40}$"
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "status"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 3
+          },
+          "status": {
+            "enum": [
+              "pass",
+              "fail",
+              "pending"
+            ]
+          },
+          "observed_exit": {
+            "type": "integer",
+            "minimum": -255,
+            "maximum": 255
+          },
+          "diagnostic_class": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string",
+            "maxLength": 700
+          }
+        }
+      }
+    }
+  }
+}

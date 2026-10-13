@@ -26,7 +26,7 @@ final class SourceActorOutputStreamExecutionTest {
 
                 pub async routine main(): void {
                   val worker = spawn Worker();
-                  await worker.ready;
+                  await worker.get_ready();
                   worker.send("go");
 
                   val firstStep = await worker.outputs.next();
@@ -49,7 +49,7 @@ final class SourceActorOutputStreamExecutionTest {
                   stdio.stdout.write(":");
                   stdio.stdout.write(third.sequence);
 
-                  await worker.done;
+                  await worker.get_done();
 
                   val terminal = await worker.outputs.next();
                   stdio.stdout.write("|");
@@ -78,14 +78,14 @@ final class SourceActorOutputStreamExecutionTest {
 
                 pub async routine main(): void {
                   val worker = spawn Worker();
-                  await worker.ready;
+                  await worker.get_ready();
                   worker.send("go");
 
                   for await const output of worker.outputs {
                     stdio.stdout.write(output.value);
                   }
 
-                  await worker.done;
+                  await worker.get_done();
                   return;
                 }
                 """;

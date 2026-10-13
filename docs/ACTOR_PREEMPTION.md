@@ -87,6 +87,61 @@ Untrusted actor fuel/wall/CPU accounting must also survive any future
 cooperative handoff before automatic preemption is enabled for untrusted code;
 a handoff must never reset a logical task's quota.
 
+## Automatic loop cooperation in heap-owned source tasks
+
+The source interpreter now lowers `for`, `for-of`, destructuring `for-of`,
+and `loop` back-edges **inside an existing `SourceTask`** into an iterative
+callback trampoline. No `await` or explicit `rt cooperate` is needed in such
+a loop. Every 32 back-edges, a trusted source task polls cancellation and runtime
+state; an UNTRUSTED task charges fuel at **every** back-edge.
+It cooperates after a nominal 2 ms soft quantum or at most 512 back-edges,
+whichever is reached first at a poll. The continuation preserves loop indices,
+iterator cursors, locals, and pending callbacks. A new physical dispatch can
+start only after the previous guest turn fully unwinds.
+
+This is a **soft** scheduling quantum, not a 2 ms deadline guarantee. Long
+single iteration bodies, synchronous helper calls, host/FFI calls, JIT pauses,
+GC pauses, and OS scheduling delays may exceed it. The bounded back-edge count
+also prevents deep recursive Java interpreter stacks. Nested loops in
+`if`/`match`/`switch`/`try`/block contexts are lowered when the enclosing
+source task is already continuation-backed. The runtime does not cooperate
+while an enclosing lexical environment holds a live `MutexGuard`; these
+no-yield regions must remain bounded or the carrier can still starve. Successful
+source loop cooperation decisions are counted in
+`process.descriptor.source_loop_cooperates`.
+
+**Synchronous actor receive special case:** even if a source-defined
+`receive(ActorMail<T>)` method contains no `await` or explicit `rt cooperate`,
+the actor mailbox dispatcher starts it in a heap-owned `SourceTask` when a
+loop is present. This preserves the external `void` receive protocol, gates
+later user mailbox turns until the source Future completes, and permits CPU
+loop cooperation inside the continuation. The actor's `on_start` still runs
+synchronously as part of the ready/initialization boundary.
+
+**Not automatically suspendable yet:** normal synchronous function calls,
+startup callbacks, host Java/FFI executions, and other actor `run`/method
+bodies not transformed into a source task. Their `schedulerSafepoint()`
+remains a cancellation/quota checkpoint and cannot capture the host Java stack.
+Do not make arbitrary synchronous functions implicitly async merely because
+they contain a loop; that changes callable types and actor protocol semantics.
+A future compiler transformation must produce explicit continuations while
+preserving the externally synchronous contract where appropriate.
+
+**UNTRUSTED gate:** automatic loop cooperation is deliberately disabled
+inside UNTRUSTED actor turns while their logical task quota continuity is
+unproven (issue #402 / draft PR #461). They still run the periodic quota
+and cancellation checks, without resetting fuel, CPU, or wall budgets through
+a scheduler handoff. Before enabling cooperation for UNTRUSTED, validate
+all source and callback continuation paths and cross-carrier CPU charges.
+
+**Hard real-time:** no worst-case execution-time or hard deadline guarantee is
+provided on the managed JVM/GraalVM runtime. A hard deadline would require
+bounded allocation/GC, JIT/AOT choices, bounded critical sections, scheduler
+priority/reservation admission, interrupt/native execution boundaries, a
+suitable OS, and WCET plus end-to-end latency proof. Non-cooperating trusted
+code cannot be safely suspended by `Thread.yield()`, Java interruption, or
+a timer; forceful revocation requires a dedicated isolated execution boundary.
+
 ## Required invariants
 
 1. **No source-line semantics.** Preemption occurs only at VM-defined resumable

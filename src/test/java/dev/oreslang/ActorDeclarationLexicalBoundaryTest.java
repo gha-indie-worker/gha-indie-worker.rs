@@ -422,9 +422,9 @@ final class ActorDeclarationLexicalBoundaryTest {
 
                 pub async routine main(): void {
                   val worker = spawn Worker();
-                  await worker.ready;
+                  await worker.get_ready();
                   worker.send("start");
-                  await worker.done;
+                  await worker.get_done();
                   return;
                 }
                 """)));

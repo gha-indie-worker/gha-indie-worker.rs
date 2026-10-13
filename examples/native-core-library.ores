@@ -1,0 +1,10 @@
+import module core from "std/core";
+
+pub routine main(): void {
+  stdio.stdout.write(core.min_int(9007199254740993, 9007199254740992));
+  stdio.stdout.write("|");
+  stdio.stdout.write(core.max_int(-999999999999999999, -1000000000000000000));
+  stdio.stdout.write("|");
+  stdio.stdout.println(core.clamp_int(15, 0, 10));
+  return;
+}

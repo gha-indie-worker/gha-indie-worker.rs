@@ -1,0 +1,4 @@
+// CONTRACT NOT ACTIVE in either backend yet; test is currently pending.
+define actor Worker as
+  fnc run(int value): int { return value; }
+end

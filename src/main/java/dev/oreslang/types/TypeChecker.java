@@ -45,6 +45,7 @@ public final class TypeChecker {
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
     private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
+    private TaggedMessageContracts.Registry taggedMessages;
     private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
 
     private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
@@ -58,16 +59,6 @@ public final class TypeChecker {
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
-    /** Depth at which a type alias is first expanded; recursion needs an indirection. */
-    private final IdentityHashMap<Ast.TypeAliasDecl, Integer> aliasEntryDepths = new IdentityHashMap<>();
-    /** Reject polymorphic recursion that changes generic arguments at each expansion. */
-    private final IdentityHashMap<Ast.TypeAliasDecl, List<Ast.TypeRef>> aliasEntryArguments = new IdentityHashMap<>();
-    private int typeIndirectionDepth;
-    private record AssignmentPair(Type actual, Type expected) { }
-    private final Set<AssignmentPair> assignmentsInProgress = new HashSet<>();
-    private final Set<Named> checkingSharedRecursiveAliases = new HashSet<>();
-    private final Set<Named> checkingActorRecursiveAliases = new HashSet<>();
-    private static final String RECURSIVE_ALIAS_PREFIX = "$recursive_alias$";
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
     // Unlike private-member access, declaration origin must survive nlex.
@@ -77,6 +68,7 @@ public final class TypeChecker {
     private String currentLexicalModule;
     private boolean currentGenerator;
     private boolean currentAsyncCallable;
+    private boolean currentMaySuspend;
     private int loopDepth;
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
@@ -101,7 +93,11 @@ public final class TypeChecker {
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
         program = AnnotationExpander.expand(program);
+        // Reject invalid tag assignments, unknown nominal cases and pattern
+        // dependencies before creating any executable actor/schema bindings.
+        TaggedMessageContracts.Registry tagged = TaggedMessageContracts.forTypes(program);
         TypeChecker checker = new TypeChecker();
+        checker.taggedMessages = tagged;
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
@@ -111,7 +107,7 @@ public final class TypeChecker {
     private void validateImports(Ast.Program program) {
         Set<String> exposed = new HashSet<>();
         Set<String> localNames = new HashSet<>(Set.of(
-                "stdio", "process", "actor", "fs", "File", "network", "net", "http", "env",
+                "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
                 "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
@@ -128,6 +124,8 @@ public final class TypeChecker {
                 else if (declaration instanceof Ast.InterfaceDecl iface) localNames.add(iface.name());
                 else if (declaration instanceof Ast.FieldDecl field) localNames.add(field.name());
                 else if (declaration instanceof Ast.TypeAliasDecl alias) localNames.add(alias.name());
+                else if (declaration instanceof Ast.EnumDecl enumeration) localNames.add(enumeration.name());
+                else if (declaration instanceof Ast.PatternDecl pattern) localNames.add(pattern.name());
             }
         }
 
@@ -232,9 +230,7 @@ public final class TypeChecker {
                     else if (decl instanceof Ast.InterfaceDecl iface) checkInterface(iface);
                     else if (decl instanceof Ast.TypeAliasDecl alias) {
                         Set<String> aliasGenerics = uniqueGenerics(alias.genericParameters(), "type alias " + alias.name());
-                        resolve(new Ast.TypeRef(alias.name(),
-                                alias.genericParameters().stream().map(Ast.TypeRef::simple).toList(), false),
-                                aliasGenerics, null);
+                        resolve(alias.target(), aliasGenerics, null);
                     }
                     else if (decl instanceof Ast.FieldDecl field) checkModuleBinding(field);
                 }
@@ -460,7 +456,16 @@ public final class TypeChecker {
                 Ast.BindingKind.CONST);
     }
 
+    private void requireSuspendableCall(boolean suspends, String label) {
+        if (suspends && !currentMaySuspend)
+            throw new IllegalArgumentException(
+                    "suspends " + label + " requires an async or suspends caller");
+    }
+
     private void checkFunction(String module, Ast.FunctionDecl fn) {
+        if (fn.name().endsWith("_blocking") && !fn.suspends())
+            throw new IllegalArgumentException(
+                    "*_blocking function '" + fn.name() + "' must declare suspends");
         if (fn.trapped()) {
             if (fn.async()) {
                 throw new IllegalArgumentException("async trap callables are not enabled until the trap boundary spans every await");
@@ -476,6 +481,7 @@ public final class TypeChecker {
             Ast.TypeRef initReturn = fn.returnType();
             if (fn.visibility() != Ast.Visibility.PRIVATE
                     || fn.async()
+                    || fn.suspends()
                     || fn.generator()
                     || fn.structural()
                     || fn.nonLexical()
@@ -580,12 +586,15 @@ public final class TypeChecker {
         currentActorKind = fn.actorKind();
         currentGenerator = fn.generator();
         currentAsyncCallable = fn.async();
+        boolean previousMaySuspend = currentMaySuspend;
+        currentMaySuspend = fn.async() || fn.suspends();
         try {
             checkBlock(fn.body(), env, generics, returns, null);
         } finally {
             currentActorKind = previousActorKind;
             currentGenerator = previousGenerator;
             currentAsyncCallable = previousAsync;
+            currentMaySuspend = previousMaySuspend;
         }
 
         if (!fn.generator() && returns != Primitive.VOID && !definitelyReturns(fn.body())) {
@@ -634,11 +643,24 @@ public final class TypeChecker {
                 if (local.isStatic() != staticNamespace || !local.overloadIdentity().equals(entry.getKey())) continue;
                 for (MethodOrigin origin : entry.getValue()) {
                     for (Ast.MethodDecl parentMethod : origin.owner().methods()) {
-                        if (parentMethod.isStatic() == staticNamespace
-                                && parentMethod.overloadIdentity().equals(entry.getKey())
-                                && parentMethod.genericParameters().size() != local.genericParameters().size()) {
+                        if (parentMethod.isStatic() != staticNamespace
+                                || !parentMethod.overloadIdentity().equals(entry.getKey())) continue;
+                        if (parentMethod.genericParameters().size() != local.genericParameters().size()) {
                             throw new IllegalArgumentException("incompatible generic arity for method slot '"
                                     + klass.name() + "." + local.name() + "' with arity " + local.arity());
+                        }
+                        // Dispatch selects the child's declaration, but inherited public
+                        // contracts still advertise this slot to callers (including through
+                        // a base-typed receiver). A private override would typecheck as
+                        // public and then fail runtime access checks.
+                        if (parentMethod.visibility() == Ast.Visibility.PUBLIC
+                                && local.visibility() != Ast.Visibility.PUBLIC) {
+                            String kind = staticNamespace ? "static function" : "method";
+                            throw new IllegalArgumentException("private " + kind + " '"
+                                    + klass.name() + "." + local.name() + "' with arity " + local.arity()
+                                    + " cannot override inherited public " + kind + " from "
+                                    + methodOriginLabel(origin)
+                                    + "; keep the overriding declaration public");
                         }
                     }
                 }
@@ -996,7 +1018,7 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "actor lifecycle hook '" + klass.name() + ".on_start' must have an implementation");
                 }
-                if (method.async()) {
+                if (method.async() || method.suspends()) {
                     throw new IllegalArgumentException(
                             "actor lifecycle hook '" + klass.name() + ".on_start' must be synchronous; "
                                     + "readiness settles only after startup completes on the actor execution domain");
@@ -1040,6 +1062,9 @@ public final class TypeChecker {
                 }
             }
 
+            if (method.name().endsWith("_blocking") && !method.suspends())
+                throw new IllegalArgumentException(
+                        "*_blocking method '" + method.name() + "' must declare suspends");
             if (method.async() && !method.isStatic()) {
                 throw new IllegalArgumentException(
                         "async instance method '" + klass.name() + "." + method.name()
@@ -1128,6 +1153,13 @@ public final class TypeChecker {
                             klass.actorKind(),
                             false,
                             "mailbox payload of actor '" + klass.name() + ".receive'");
+                    requireSerializableActorMessageType(
+                            mail.arguments().getFirst(),
+                            "mailbox payload of actor '" + klass.name() + ".receive'");
+                    requirePortableActorMailTypeSpellings(
+                            param.type(),
+                            new LinkedHashSet<>(),
+                            "mailbox payload of actor '" + klass.name() + ".receive'");
                 }
                 env.define(param.name(), parameterType, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
@@ -1153,12 +1185,15 @@ public final class TypeChecker {
             currentActorKind = method.isStatic() ? Ast.ActorKind.NONE : klass.actorKind();
             currentClassOwner = klass;
             lexicalClassOrigin = klass;
+            boolean previousMaySuspend = currentMaySuspend;
+            currentMaySuspend = method.async() || method.suspends();
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
             } finally {
                 currentActorKind = previousActorKind;
                 currentClassOwner = previousClassOwner;
                 lexicalClassOrigin = previousLexicalClass;
+                currentMaySuspend = previousMaySuspend;
             }
             if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
                 String label = method.isStatic() ? "static function" : "method";
@@ -1695,6 +1730,7 @@ public final class TypeChecker {
                 return local.type();
             }
             if (name.name().equals("stdio")
+                    || name.name().equals("std")
                     || name.name().equals("process")
                     || name.name().equals("actor")
                     || name.name().equals("fs")
@@ -1806,6 +1842,24 @@ public final class TypeChecker {
             return Primitive.BOOL;
         }
         if (expr instanceof Ast.CastExpr cast) {
+            TaggedMessageContracts.Case variant = taggedCaseOrNull(cast.targetType().name());
+            if (variant != null) {
+                if (cast.mode() != Ast.CastMode.CHECKED) {
+                    throw new IllegalArgumentException("enum variant construction uses 'as', not 'as?'");
+                }
+                if (variant.sourcePayload() == null) {
+                    throw new IllegalArgumentException("payloadless enum variant cannot be constructed from a value");
+                }
+                Type actual = deref(typeOf(cast.value(), env, generics, self));
+                requireAssignable(actual, resolve(variant.sourcePayload(), generics, self),
+                        "payload for " + variant.qualifiedName());
+                if (cast.value() instanceof Ast.LiteralExpr literal
+                        && EXACT_WIDTH_ENUM_SCALARS.contains(variant.sourcePayload().name())) {
+                    NominalEnumValueGuards.requireValue(
+                            taggedMessages, variant.sourcePayload(), literal.value());
+                }
+                return new Named(variant.qualifiedName(), List.of());
+            }
             requireRuntimeReifiableType(cast.targetType(), cast.mode() == Ast.CastMode.OPTIONAL ? "as?" : "as");
             Type source = deref(typeOf(cast.value(), env, generics, self));
             Type target = deref(resolve(cast.targetType(), generics, self));
@@ -1819,8 +1873,22 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.UnaryExpr unary) {
             Type operand = typeOf(unary.operand(), env, generics, self);
-            if (unary.operator().equals("&")) return new Borrow(operand, false);
-            if (unary.operator().equals("&mut")) return new Borrow(operand, true);
+            if (unary.operator().equals("&")) {
+                // Reborrow an existing loan; borrowing the wrapper must not
+                // create Borrow<Borrow<T>> or erase the source lifetime.
+                if (operand instanceof Borrow existing)
+                    return new Borrow(existing.target(), false);
+                return new Borrow(operand, false);
+            }
+            if (unary.operator().equals("&mut")) {
+                if (operand instanceof Borrow existing) {
+                    // Shared loans cannot be escalated into exclusive loans.
+                    if (!existing.mutable())
+                        throw new IllegalArgumentException("cannot mutably reborrow a shared borrow");
+                    return new Borrow(existing.target(), true);
+                }
+                return new Borrow(operand, true);
+            }
             if (unary.operator().equals("!")) {
                 requireAssignable(operand, Primitive.BOOL, "! operand");
                 return Primitive.BOOL;
@@ -1939,6 +2007,35 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr variantMember
+                    && variantMember.receiver() instanceof Ast.NameExpr variantEnum) {
+                TaggedMessageContracts.Case enumCase = taggedCaseOrNull(
+                        variantEnum.name() + "." + variantMember.member());
+                if (enumCase != null) {
+                    if (call.typeArgumentsPresent()) throw new IllegalArgumentException(
+                            "enum constructors cannot take type arguments");
+                    int expected = enumCase.sourcePayload() == null ? 0 : 1;
+                    if (call.arguments().size() != expected) throw new IllegalArgumentException(
+                            "enum constructor " + enumCase.qualifiedName()
+                                    + " expects " + expected + " argument(s)");
+                    if (expected == 1) {
+                        Type actual = deref(typeOf(call.arguments().getFirst(), env, generics, self));
+                        requireAssignable(actual, resolve(enumCase.sourcePayload(), generics, self),
+                                "payload for " + enumCase.qualifiedName());
+                        // The present numeric Type IR erases u8/i16/u32 width.
+                        // Do not accept a visibly out-of-range constant and
+                        // defer a guaranteed failure until the runtime.
+                        if (call.arguments().getFirst() instanceof Ast.LiteralExpr literal
+                                && Set.of("i8", "i16", "i32", "u8", "u16",
+                                        "u32", "u64", "uint").contains(
+                                        enumCase.sourcePayload().name())) {
+                            NominalEnumValueGuards.requirePayload(
+                                    taggedMessages, enumCase, literal.value());
+                        }
+                    }
+                    return new Named(enumCase.qualifiedName(), List.of());
+                }
+            }
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
@@ -2000,6 +2097,7 @@ public final class TypeChecker {
                             null,
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
+                    requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
             }
@@ -2037,6 +2135,7 @@ public final class TypeChecker {
                             null,
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
+                    requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
             }
@@ -2277,9 +2376,14 @@ public final class TypeChecker {
                                     false,
                                     "ActorRef.send mailbox value");
                             Type expectedPayload = actorMailboxPayloadType(actorRef);
-                            requireAssignable(
+                            if (!isTaggedVariantAssignable(payload, expectedPayload)) {
+                                requireAssignable(
+                                        payload,
+                                        expectedPayload,
+                                        "ActorRef.send mailbox value for actor '" + actorClass.name() + "'");
+                            }
+                            requireSerializableActorMessageType(
                                     payload,
-                                    expectedPayload,
                                     "ActorRef.send mailbox value for actor '" + actorClass.name() + "'");
                             yield Primitive.VOID;
                         }
@@ -2298,7 +2402,17 @@ public final class TypeChecker {
                             }
                             yield Primitive.BOOL;
                         }
-                        case "ready", "done", "outputs", "id", "kind" ->
+                        case "get_ready", "get_done" -> {
+                            if (!call.arguments().isEmpty()) {
+                                throw new IllegalArgumentException(
+                                        "ActorRef." + member.member()
+                                                + " expects no arguments");
+                            }
+                            yield new Named("Future", List.of(Primitive.VOID));
+                        }
+                        case "ready", "done" -> throw new IllegalArgumentException(
+                                "ActorRef lifecycle futures are methods: use get_ready() or get_done()");
+                        case "outputs", "id", "kind" ->
                                 throw new IllegalArgumentException(
                                         "ActorRef." + member.member()
                                                 + " is a property and is not callable");
@@ -2531,6 +2645,7 @@ public final class TypeChecker {
                             null,
                             explicitGenericBindings(fn.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
+                    requireSuspendableCall(fn.suspends(), "static function '" + fn.name() + "'");
                     return callableResult(fn.async(), false, result);
                 }
                 if (receiver instanceof Named named) {
@@ -2621,6 +2736,7 @@ public final class TypeChecker {
                                             + " on " + named.name());
                         }
                         Ast.MethodDecl method = target.method();
+                        requireSuspendableCall(method.suspends(), "method '" + method.name() + "'");
                         Ast.ClassDecl owner = target.owner();
                         Named ownerType = target.ownerType();
                         requireClassMemberVisible(method.visibility(), owner, "method", method.name());
@@ -2744,6 +2860,19 @@ public final class TypeChecker {
                 Ast.ClassDecl memberClass = classes.get(namespace.name() + "." + member.member());
                 if (memberClass != null) return new ClassNamespace(qualifiedClassName(memberClass));
             }
+            if (member.receiver() instanceof Ast.NameExpr stdName && stdName.name().equals("std")
+                    && env.lookup("std") == null && member.member().equals("process")) {
+                return new Named("process", List.of());
+            }
+            if (member.member().equals("exit")
+                    && ((member.receiver() instanceof Ast.NameExpr processName
+                             && processName.name().equals("process") && env.lookup("process") == null)
+                        || (member.receiver() instanceof Ast.MemberExpr namespace
+                             && namespace.member().equals("process")
+                             && namespace.receiver() instanceof Ast.NameExpr root
+                             && root.name().equals("std") && env.lookup("std") == null))) {
+                return new Function(List.of(Primitive.INT), Primitive.VOID);
+            }
             if (member.receiver() instanceof Ast.NameExpr idName && idName.name().equals("process")
                     && env.lookup("process") == null && member.member().equals("unique_id")) {
                 return new Function(List.of(), Primitive.STRING);
@@ -2760,7 +2889,7 @@ public final class TypeChecker {
                 if (member.member().equals("stdin")) return new Named("stdio.stdin", List.of());
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
-            Type sumReceiver = unfoldRecursiveAlias(receiverDispatchType(deref(receiver)));
+            Type sumReceiver = receiverDispatchType(deref(receiver));
             // Channels are actor-local capabilities, but their lifecycle can
             // be controlled by the owning source code without Java interop.
             if (sumReceiver instanceof Named channelType
@@ -2783,7 +2912,13 @@ public final class TypeChecker {
                     && actorRef.name().equals("ActorRef")) {
                 actorClassForRef(actorRef);
                 return switch (member.member()) {
-                    case "ready", "done" -> new Named("Future", List.of(Primitive.VOID));
+                    case "get_ready", "get_done" ->
+                            throw new IllegalArgumentException(
+                                    "ActorRef." + member.member()
+                                            + " is a method; invoke it with ()");
+                    case "ready", "done" ->
+                            throw new IllegalArgumentException(
+                                    "ActorRef lifecycle futures are methods: use get_ready() or get_done()");
                     case "outputs" -> new Named(
                             "ActorOutputStream",
                             List.of(Unknown.INSTANCE));
@@ -2851,10 +2986,15 @@ public final class TypeChecker {
             }
             Type collectionMember = builtinCollectionMember(sumReceiver, member.member());
             if (isStringLike(sumReceiver)) {
-                if (member.member().equals("replace_literal")) {
-                    return new Function(List.of(Primitive.STRING, Primitive.STRING), Primitive.STRING);
-                }
-                throw new IllegalArgumentException("unknown string member '" + member.member() + "'");
+                return switch (member.member()) {
+                    case "replace_literal" -> new Function(List.of(Primitive.STRING, Primitive.STRING), Primitive.STRING);
+                    case "split_literal" -> new Function(List.of(Primitive.STRING), new ListType(Primitive.STRING));
+                    case "trim" -> new Function(List.of(), Primitive.STRING);
+                    case "is_identifier", "is_route_segment" -> new Function(List.of(), Primitive.BOOL);
+                    case "starts_with", "ends_with", "contains_literal" ->
+                            new Function(List.of(Primitive.STRING), Primitive.BOOL);
+                    default -> throw new IllegalArgumentException("unknown string member '" + member.member() + "'");
+                };
             }
             if (collectionMember != null) return collectionMember;
             if (sumReceiver instanceof ListType || sumReceiver instanceof Tuple) {
@@ -3101,8 +3241,15 @@ public final class TypeChecker {
                     && named.arguments().size() == 1) {
                 return named.arguments().getFirst();
             }
+            if (awaitedType instanceof Named actorRef
+                    && actorRef.name().equals("ActorRef")) {
+                // await spawn Actor() is a readiness barrier, not a termination
+                // barrier. The expression retains its ActorRef<T> type.
+                actorClassForRef(actorRef);
+                return actorRef;
+            }
             throw new IllegalArgumentException(
-                    "await requires Future<T>; got " + awaitedType);
+                    "await requires Future<T> or ActorRef<T>; got " + awaitedType);
         }
         if (expr instanceof Ast.ChannelOpExpr channelOp) {
             Type element = channelElementType(
@@ -4025,27 +4172,6 @@ public final class TypeChecker {
         return type instanceof Borrow borrow ? borrow.target() : type;
     }
 
-    private Type unfoldRecursiveAlias(Type type) {
-        if (!(type instanceof Named named)
-                || !named.name().startsWith(RECURSIVE_ALIAS_PREFIX)) return type;
-        String name = named.name().substring(RECURSIVE_ALIAS_PREFIX.length());
-        Ast.TypeAliasDecl alias = typeAliases.get(name);
-        if (alias == null || alias.genericParameters().size() != named.arguments().size()) {
-            throw new IllegalArgumentException("unknown recursive type alias '" + name + "'");
-        }
-        // Resolve the alias body in its declaration module, not whichever
-        // module happened to request a member or sendability check.
-        String previousModule = currentLexicalModule;
-        try {
-            currentLexicalModule = typeAliasOwners.get(alias);
-            Type shape = resolve(alias.target(), Set.copyOf(alias.genericParameters()), null);
-            return substituteGenerics(shape,
-                    genericBindings(alias.genericParameters(), named.arguments(), "recursive type " + name));
-        } finally {
-            currentLexicalModule = previousModule;
-        }
-    }
-
     /** Nominal/structural view used only to resolve members on a polymorphic receiver. */
     private Type receiverDispatchType(Type type) {
         return type instanceof SelfType receiverSelf ? receiverSelf.bound() : type;
@@ -4146,6 +4272,27 @@ public final class TypeChecker {
 
     private static Type builtinIoMember(Type receiver, String name) {
         if (!(receiver instanceof Named named)) return null;
+        if (named.name().equals("fs") || named.name().equals("File")) {
+            Type string = Primitive.STRING;
+            Type booleanType = Primitive.BOOL;
+            switch (name) {
+                case "list_dir": return new Function(List.of(string), new ListType(string));
+                case "is_dir", "is_symlink", "exists": return new Function(List.of(string), booleanType);
+                case "read_text": return new Function(List.of(string), string);
+                case "write_text", "write_text_atomic", "append_text":
+                    return new Function(List.of(string, string), Primitive.VOID);
+                case "remove", "mkdir_all": return new Function(List.of(string), Primitive.VOID);
+                default: break;
+            }
+        }
+        if (named.name().equals("env")) {
+            switch (name) {
+                case "get": return new Function(List.of(Primitive.STRING),
+                        new Named("Option", List.of(Primitive.STRING)));
+                case "has": return new Function(List.of(Primitive.STRING), Primitive.BOOL);
+                default: break;
+            }
+        }
         Type result;
         List<Type> parameters;
         switch (named.name()) {
@@ -4256,8 +4403,8 @@ public final class TypeChecker {
         } else {
             rawReceiver = typeOf(member.receiver(), env, generics, self);
         }
-        Type receiver = unfoldRecursiveAlias(receiverDispatchType(
-                unwrapMutexGuard(deref(rawReceiver))));
+        Type receiver = receiverDispatchType(
+                unwrapMutexGuard(deref(rawReceiver)));
         if (writing && receiver instanceof Record record && record.readOnly()) {
             throw new IllegalArgumentException(
                     "cannot mutate a infer struct value; inferred structs are closed and readonly");
@@ -4308,15 +4455,6 @@ public final class TypeChecker {
             Ast.ActorKind actorKind,
             boolean returnPosition,
             String where) {
-        if (type instanceof Named named && named.name().startsWith(RECURSIVE_ALIAS_PREFIX)) {
-            if (!checkingActorRecursiveAliases.add(named)) return;
-            try {
-                validateActorCallableBoundaryType(unfoldRecursiveAlias(named), actorKind, returnPosition, where);
-            } finally {
-                checkingActorRecursiveAliases.remove(named);
-            }
-            return;
-        }
         if (returnPosition && type == Primitive.VOID) return;
         if (type == Primitive.VOID) {
             throw new IllegalArgumentException(where + " cannot be void");
@@ -4413,15 +4551,350 @@ public final class TypeChecker {
                         + "or an explicit serialization/copy contract");
     }
 
-    private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen, Map<String, Type> genericBindings) {
-        if (type instanceof Named named && named.name().startsWith(RECURSIVE_ALIAS_PREFIX)) {
-            if (!checkingSharedRecursiveAliases.add(named)) return true;
+    /**
+     * A mailbox payload must have an unambiguous, data-only wire representation.
+     *
+     * This is deliberately stricter than "sendable" or "shared-safe": runtime
+     * capabilities, opaque named objects and mutable identity-bearing class
+     * instances cannot cross the source-level mailbox boundary merely because
+     * a JVM process could freeze or share them locally.
+     *
+     * This gate admits only the closed built-in structural subset whose schema
+     * can be generated without user-defined codecs. A future @Serializable
+     * derivation can add nominal types only after executable codecs and native
+     * parity are available; never treat annotation presence as proof of a codec.
+     */
+    /**
+     * The current type resolver intentionally normalizes integer and float
+     * widths, and collapses Vector/Slice and Array/List into ListType.
+     * The standalone wire codec supports only a signed i64 and finite f64,
+     * with no Vector/Slice identity; reject source spellings whose ABI cannot
+     * be reconstructed from resolved Primitive/ListType.
+     *
+     * This is a conservative admission fence while a shape-preserving typed
+     * IR is being designed. Future codecs can explicitly add wider integer
+     * types without changing their original source-level meaning.
+     */
+    private void requirePortableActorMailTypeSpellings(
+            Ast.TypeRef declared,
+            Set<Ast.TypeAliasDecl> aliases,
+            String where) {
+        if (Set.of("i8", "i16", "i32", "u8", "u16", "u32", "u64",
+                    "uint", "bigint", "f32", "complex64", "complex128",
+                    "Vector", "Slice").contains(declared.name())) {
+            throw new IllegalArgumentException(
+                    where + " requires a Serializable portable wire codec for type '"
+                    + declared.name() + "'; numeric width, signedness and collection kind "
+                    + "must not be erased at the actor boundary");
+        }
+        Ast.TypeAliasDecl alias = findTypeAlias(declared.name());
+        if (alias != null) {
+            if (!aliases.add(alias)) {
+                throw new IllegalArgumentException(where + " recursive mailbox type alias '"
+                        + alias.name() + "'");
+            }
             try {
-                return isSharedSafe(unfoldRecursiveAlias(named), seen, genericBindings);
+                requirePortableActorMailTypeSpellings(alias.target(), aliases, where);
             } finally {
-                checkingSharedRecursiveAliases.remove(named);
+                aliases.remove(alias);
             }
         }
+        for (Ast.TypeRef argument : declared.arguments()) {
+            requirePortableActorMailTypeSpellings(argument, aliases, where);
+        }
+    }
+
+    private TaggedMessageContracts.Case taggedCaseOrNull(String qualified) {
+        if (taggedMessages == null) return null;
+        int dot = qualified.indexOf('.');
+        if (dot < 1 || dot == qualified.length() - 1) return null;
+        var owner = taggedMessages.enums().get(qualified.substring(0, dot));
+        if (owner == null) return null;
+        for (var c : owner.cases()) {
+            if (c.name().equals(qualified.substring(dot + 1))) return c;
+        }
+        return null;
+    }
+
+    /**
+     * Closed finite case domain for enum and named match-pattern scrutinees.
+     * A value already narrowed to Enum.Case has a singleton domain.
+     */
+    private TaggedMessageContracts.Domain matchCaseDomain(Type subject) {
+        if (!(subject instanceof Named named) || !named.arguments().isEmpty()
+                || taggedMessages == null) return null;
+        if (taggedMessages.enums().containsKey(named.name())
+                || taggedMessages.patterns().containsKey(named.name())) {
+            return taggedMessages.requireDomain(named.name());
+        }
+        TaggedMessageContracts.Case singleton = taggedCaseOrNull(named.name());
+        return singleton == null ? null
+                : new TaggedMessageContracts.Domain(named.name(), List.of(singleton));
+    }
+
+    private static final Set<String> EXACT_WIDTH_ENUM_SCALARS = Set.of(
+            "i8", "i16", "i32", "u8", "u16", "u32", "u64", "uint");
+
+    /**
+     * Check payload literal patterns against the *source* integer width.
+     * The normalized type IR currently erases signedness and size. Without
+     * this fence, e.g. on Status.Byte(256) could appear reachable for u8.
+     */
+    private void validateEnumLiteralPattern(Ast.Pattern pattern, Ast.TypeRef expected) {
+        if (expected == null || pattern == null) return;
+        if (pattern instanceof Ast.LiteralPattern literal
+                && EXACT_WIDTH_ENUM_SCALARS.contains(expected.name())) {
+            NominalEnumValueGuards.requireValue(taggedMessages, expected, literal.value());
+            return;
+        }
+        if (pattern instanceof Ast.TuplePattern tuple) {
+            if (!(expected.isTupleType() || expected.name().equals("Tuple"))) return;
+            List<Ast.TypeRef> slots = expected.arguments().size() == 1
+                    && expected.arguments().getFirst().isSequenceShape()
+                    ? expected.arguments().getFirst().arguments() : expected.arguments();
+            if (slots.size() != tuple.elements().size()) return;
+            for (int i = 0; i < slots.size(); i++) {
+                validateEnumLiteralPattern(tuple.elements().get(i), slots.get(i));
+            }
+        }
+    }
+
+    private boolean constructorCoversPayload(
+            Ast.ConstructorPattern pattern, Type payload,
+            Set<String> generics, Type self) {
+        if (payload == null) return pattern.arguments().isEmpty();
+        return pattern.arguments().size() == 1
+                && patternCoversType(pattern.arguments().getFirst(),
+                        payload, generics, self);
+    }
+
+    private boolean hasCompleteConstructorArm(
+            List<Ast.MatchArm> arms, String constructor,
+            Type payload, Set<String> generics, Type self) {
+        return arms.stream().anyMatch(arm -> arm.guard() == null
+                && arm.pattern() instanceof Ast.ConstructorPattern candidate
+                && candidate.constructor().equals(constructor)
+                && constructorCoversPayload(candidate, payload, generics, self));
+    }
+
+    /**
+     * Small finite ADT domains can be proved exhaustively by enumerating
+     * semantic witnesses instead of requiring one irrefutable arm per
+     * constructor. This admits combinations such as Some(true), Some(false),
+     * None without confusing Some(7) with all Some(int) values.
+     * An unknown/infinite/oversized domain returns null and uses the
+     * conservative proof below. No proof may rely on a truncated domain.
+     */
+    private static final int MAX_ADT_MATCH_WITNESSES = 4096;
+    private record FiniteAdtCase(String name, List<Object> fields) {
+        FiniteAdtCase { fields = List.copyOf(fields); }
+    }
+
+    private List<Object> finiteAdtWitnesses(
+            Type type, Set<String> generics, Type self, int depth) {
+        if (depth > 16) return null;
+        if (type == Primitive.BOOL) return List.of(Boolean.FALSE, Boolean.TRUE);
+        if (type instanceof Tuple tuple && tuple.kind() == TupleKind.TUPLE) {
+            List<Object> result = new ArrayList<>();
+            result.add(List.of());
+            for (Type member : tuple.elements()) {
+                // A zero-inhabitant component makes the whole product empty.
+                // Avoid dividing by zero on the next component.
+                if (result.isEmpty()) return List.of();
+                List<Object> choices = finiteAdtWitnesses(member, generics, self, depth + 1);
+                if (choices == null || choices.size() > MAX_ADT_MATCH_WITNESSES / result.size()) {
+                    return null;
+                }
+                List<Object> next = new ArrayList<>();
+                for (Object prefix : result) for (Object choice : choices) {
+                    List<Object> combination = new ArrayList<>((List<?>) prefix);
+                    combination.add(choice);
+                    next.add(List.copyOf(combination));
+                }
+                result = next;
+            }
+            return List.copyOf(result);
+        }
+        if (type instanceof Union union) {
+            List<Object> values = new ArrayList<>();
+            for (Type member : union.options()) {
+                List<Object> choices = finiteAdtWitnesses(member, generics, self, depth + 1);
+                if (choices == null || choices.size() > MAX_ADT_MATCH_WITNESSES - values.size()) {
+                    return null;
+                }
+                values.addAll(choices);
+            }
+            return List.copyOf(values);
+        }
+        if (!(type instanceof Named named)) return null;
+        if (named.name().equals("Option") && named.arguments().size() == 1) {
+            List<Object> payloads = finiteAdtWitnesses(
+                    named.arguments().getFirst(), generics, self, depth + 1);
+            if (payloads == null || payloads.size() >= MAX_ADT_MATCH_WITNESSES) return null;
+            List<Object> values = new ArrayList<>();
+            values.add(new FiniteAdtCase("None", List.of()));
+            for (Object payload : payloads) values.add(
+                    new FiniteAdtCase("Some", List.of(payload)));
+            return List.copyOf(values);
+        }
+        if (named.name().equals("Result") && named.arguments().size() == 2) {
+            List<Object> oks = finiteAdtWitnesses(
+                    named.arguments().get(0), generics, self, depth + 1);
+            List<Object> errs = finiteAdtWitnesses(
+                    named.arguments().get(1), generics, self, depth + 1);
+            if (oks == null || errs == null
+                    || oks.size() > MAX_ADT_MATCH_WITNESSES - errs.size()) return null;
+            List<Object> values = new ArrayList<>();
+            for (Object value : oks) values.add(new FiniteAdtCase("Ok", List.of(value)));
+            for (Object value : errs) values.add(new FiniteAdtCase("Err", List.of(value)));
+            return List.copyOf(values);
+        }
+        TaggedMessageContracts.Domain domain = matchCaseDomain(type);
+        if (domain == null) return null;
+        List<Object> values = new ArrayList<>();
+        for (TaggedMessageContracts.Case variant : domain.cases()) {
+            if (variant.sourcePayload() == null) {
+                values.add(new FiniteAdtCase(variant.qualifiedName(), List.of()));
+            } else {
+                Type payloadType = deref(resolve(variant.sourcePayload(), generics, self));
+                List<Object> payloads = finiteAdtWitnesses(
+                        payloadType, generics, self, depth + 1);
+                if (payloads == null
+                        || payloads.size() > MAX_ADT_MATCH_WITNESSES - values.size()) return null;
+                for (Object payload : payloads) values.add(
+                        new FiniteAdtCase(variant.qualifiedName(), List.of(payload)));
+            }
+        }
+        return List.copyOf(values);
+    }
+
+    private Type finiteConstructorPayloadType(
+            Type subject, String constructor, Set<String> generics, Type self) {
+        if (subject instanceof Named named) {
+            if (named.name().equals("Option") && constructor.equals("Some")
+                    && named.arguments().size() == 1) return named.arguments().getFirst();
+            if (named.name().equals("Result") && named.arguments().size() == 2) {
+                if (constructor.equals("Ok")) return named.arguments().get(0);
+                if (constructor.equals("Err")) return named.arguments().get(1);
+            }
+        }
+        TaggedMessageContracts.Case variant = taggedCaseOrNull(constructor);
+        return variant != null && variant.sourcePayload() != null
+                ? deref(resolve(variant.sourcePayload(), generics, self)) : null;
+    }
+
+    private boolean patternAcceptsFiniteWitness(
+            Ast.Pattern pattern, Object value, Type subject,
+            Set<String> generics, Type self) {
+        if (pattern instanceof Ast.WildcardPattern || pattern instanceof Ast.BindingPattern) return true;
+        if (pattern instanceof Ast.LiteralPattern literal) {
+            return java.util.Objects.equals(literal.value(), value);
+        }
+        if (pattern instanceof Ast.TypePattern || pattern instanceof Ast.StructuralPattern) {
+            // Conservative: only a statically universal type pattern proves
+            // coverage of this finite witness. Partial type tests never
+            // accidentally count as complete coverage.
+            return patternCoversType(pattern, subject, generics, self);
+        }
+        if (pattern instanceof Ast.TuplePattern tuplePattern
+                && value instanceof List<?> values
+                && subject instanceof Tuple tuple
+                && tuple.kind() == TupleKind.TUPLE
+                && values.size() == tuplePattern.elements().size()
+                && values.size() == tuple.elements().size()) {
+            for (int i = 0; i < values.size(); i++) {
+                if (!patternAcceptsFiniteWitness(tuplePattern.elements().get(i),
+                        values.get(i), tuple.elements().get(i), generics, self)) return false;
+            }
+            return true;
+        }
+        if (pattern instanceof Ast.ConstructorPattern constructor
+                && value instanceof FiniteAdtCase finite
+                && constructor.constructor().equals(finite.name())
+                && constructor.arguments().size() == finite.fields().size()) {
+            if (finite.fields().isEmpty()) return true;
+            Type payload = finiteConstructorPayloadType(
+                    subject, finite.name(), generics, self);
+            return payload != null && patternAcceptsFiniteWitness(
+                    constructor.arguments().getFirst(), finite.fields().getFirst(),
+                    payload, generics, self);
+        }
+        return false;
+    }
+
+    private boolean isTaggedVariantAssignable(Type actual, Type expected) {
+        if (!(actual instanceof Named variant) || !(expected instanceof Named domain)
+                || !variant.arguments().isEmpty() || !domain.arguments().isEmpty()
+                || taggedMessages == null) return false;
+        var declared = taggedMessages.patterns().get(domain.name());
+        if (declared == null && taggedMessages.enums().containsKey(domain.name())) {
+            var all = taggedMessages.enums().get(domain.name());
+            declared = new TaggedMessageContracts.Domain(domain.name(), all.cases());
+        }
+        if (declared == null) return false;
+        for (var member : declared.cases()) {
+            if (member.qualifiedName().equals(variant.name())) return true;
+        }
+        throw new IllegalArgumentException("enum variant '" + variant.name()
+                + "' is not allowed by actor message domain '" + domain.name() + "'");
+    }
+
+    private static void requirePortableEnumCase(
+            TaggedMessageContracts.Case candidate, String where) {
+        if (candidate.sourcePayload() != null && candidate.payload() == null) {
+            throw new IllegalArgumentException(where
+                    + " cannot use " + candidate.qualifiedName()
+                    + ": nested enum payload has no portable actor wire codec");
+        }
+    }
+
+    private void requireSerializableActorMessageType(Type type, String where) {
+        if (type instanceof Named named && named.arguments().isEmpty()
+                && taggedMessages != null) {
+            TaggedMessageContracts.Case variant = taggedCaseOrNull(named.name());
+            if (variant != null) {
+                requirePortableEnumCase(variant, where);
+                return;
+            }
+            if (taggedMessages.enums().containsKey(named.name())
+                    || taggedMessages.patterns().containsKey(named.name())) {
+                for (var candidate : taggedMessages.requireDomain(named.name()).cases()) {
+                    requirePortableEnumCase(candidate, where);
+                }
+                return;
+            }
+        }
+        if (type instanceof Primitive primitive) {
+            if (primitive != Primitive.INT && primitive != Primitive.FLOAT
+                    && primitive != Primitive.BOOL && primitive != Primitive.STRING) {
+                throw new IllegalArgumentException(where
+                        + " requires Serializable data; primitive " + primitive
+                        + " has no portable actor-message codec yet");
+            }
+            return;
+        }
+        if (type instanceof StringLiteral) return;
+        if (type instanceof ListType list) {
+            requireSerializableActorMessageType(list.element(), where + " element");
+            return;
+        }
+        if (type instanceof Tuple tuple) {
+            for (int i = 0; i < tuple.elements().size(); i++) {
+                requireSerializableActorMessageType(tuple.elements().get(i), where + " tuple " + i);
+            }
+            return;
+        }
+        // Tagged union/pattern alternatives need a stable alternative ID.
+        // Unannotated records, Option/Result and named classes need generated
+        // schema descriptors. All must fail closed until binary codecs exist.
+        // Recursive admission here proves only the executable scalar/sequence
+        // subset, not general structural sendability.
+        throw new IllegalArgumentException(where + " requires Serializable data; "
+                + "non-serializable, opaque, borrowed, executable and capability types "
+                + "cannot be sent in an actor mailbox: " + type);
+    }
+
+    private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen, Map<String, Type> genericBindings) {
         if (type == Unknown.INSTANCE || type instanceof SelfType || type instanceof Borrow
                 || type instanceof Function || type instanceof ClassNamespace) return false;
         if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
@@ -4556,6 +5029,40 @@ public final class TypeChecker {
             }
             checkBlock(arm.body(), armEnv, generics, expectedReturn, self);
 
+            // In a small finite ADT, *multiple* preceding unguarded arms
+            // can collectively make a later arm unreachable, even when no
+            // individual predecessor subsumes it. Guarded arms cannot be
+            // used in this proof: their conditions might be false at runtime.
+            if (i > 0) {
+                List<Object> witnesses = finiteAdtWitnesses(subject, generics, self, 0);
+                if (witnesses != null) {
+                    boolean acceptsAny = false;
+                    boolean coveredBefore = true;
+                    for (Object witness : witnesses) {
+                        if (!patternAcceptsFiniteWitness(
+                                arm.pattern(), witness, subject, generics, self)) continue;
+                        acceptsAny = true;
+                        boolean earlierCovers = false;
+                        for (int j = 0; j < i; j++) {
+                            Ast.MatchArm earlier = arms.get(j);
+                            if (earlier.guard() == null && patternAcceptsFiniteWitness(
+                                    earlier.pattern(), witness, subject, generics, self)) {
+                                earlierCovers = true;
+                                break;
+                            }
+                        }
+                        if (!earlierCovers) {
+                            coveredBefore = false;
+                            break;
+                        }
+                    }
+                    if (acceptsAny && coveredBefore) {
+                        throw new IllegalArgumentException("unreachable match arm " + (i + 1)
+                                + ": all its finite-domain values are covered by earlier unguarded arms");
+                    }
+                }
+            }
+
             // Match is ordered. Overlap is valid, but an earlier unguarded arm
             // that completely contains a later pattern makes that arm dead.
             for (int j = 0; j < i; j++) {
@@ -4650,6 +5157,33 @@ public final class TypeChecker {
             return;
         }
         if (pattern instanceof Ast.ConstructorPattern constructor) {
+            TaggedMessageContracts.Case variant = taggedCaseOrNull(constructor.constructor());
+            if (variant != null) {
+                TaggedMessageContracts.Domain domain = matchCaseDomain(subject);
+                if (domain == null || domain.cases().stream().noneMatch(
+                        candidate -> candidate.qualifiedName().equals(variant.qualifiedName()))) {
+                    throw new IllegalArgumentException("enum case " + variant.qualifiedName()
+                            + " is not in match subject domain " + subject);
+                }
+                int arity = variant.sourcePayload() == null ? 0 : 1;
+                if (constructor.arguments().size() != arity) {
+                    throw new IllegalArgumentException("enum case pattern "
+                            + variant.qualifiedName() + " expects " + arity
+                            + " payload pattern(s), got " + constructor.arguments().size());
+                }
+                if (arity == 1) {
+                    validateEnumLiteralPattern(
+                            constructor.arguments().getFirst(), variant.sourcePayload());
+                    checkPattern(constructor.arguments().getFirst(),
+                            deref(resolve(variant.sourcePayload(), generics, self)),
+                            bindings, generics, self);
+                }
+                return;
+            }
+            if (constructor.constructor().contains(".")) {
+                throw new IllegalArgumentException(
+                        "unknown enum case in match pattern " + constructor.constructor());
+            }
             if (!(subject instanceof Named named)) {
                 throw new IllegalArgumentException("constructor pattern " + constructor.constructor() + " requires a sum/constructor type, got " + subject);
             }
@@ -4897,6 +5431,27 @@ public final class TypeChecker {
             }
         }
 
+        List<Object> finiteWitnesses = finiteAdtWitnesses(subject, generics, self, 0);
+        if (finiteWitnesses != null) {
+            // An arm with a guard can fail for a witness, even when the
+            // pattern itself matches it. Never use guarded arms in a proof.
+            return finiteWitnesses.stream().allMatch(witness ->
+                    arms.stream().anyMatch(arm -> arm.guard() == null
+                            && patternAcceptsFiniteWitness(
+                                    arm.pattern(), witness, subject, generics, self)));
+        }
+
+        // A nominal enum or closed match-pattern domain is a disjoint
+        // union of CASES, not a union of their raw payload shapes.
+        TaggedMessageContracts.Domain enumDomain = matchCaseDomain(subject);
+        if (enumDomain != null) {
+            return enumDomain.cases().stream().allMatch(variant ->
+                    hasCompleteConstructorArm(arms, variant.qualifiedName(),
+                            variant.sourcePayload() == null ? null
+                                    : deref(resolve(variant.sourcePayload(), generics, self)),
+                            generics, self));
+        }
+
         // Finite unions are exhaustively covered when every alternative is
         // completely covered by at least one unguarded arm.
         if (subject instanceof Union union) {
@@ -4915,21 +5470,16 @@ public final class TypeChecker {
             }
             return yes && no;
         }
-        if (subject instanceof Named named && named.name().equals("Option")) {
-            boolean some = false, none = false;
-            for (Ast.MatchArm arm : arms) if (arm.guard() == null && arm.pattern() instanceof Ast.ConstructorPattern c) {
-                some |= c.constructor().equals("Some");
-                none |= c.constructor().equals("None");
-            }
-            return some && none;
+        if (subject instanceof Named named && named.name().equals("Option")
+                && named.arguments().size() == 1) {
+            // Some(42) only covers one payload, NOT every Some(int).
+            return hasCompleteConstructorArm(arms, "Some", named.arguments().getFirst(), generics, self)
+                    && hasCompleteConstructorArm(arms, "None", null, generics, self);
         }
-        if (subject instanceof Named named && named.name().equals("Result")) {
-            boolean ok = false, err = false;
-            for (Ast.MatchArm arm : arms) if (arm.guard() == null && arm.pattern() instanceof Ast.ConstructorPattern c) {
-                ok |= c.constructor().equals("Ok");
-                err |= c.constructor().equals("Err");
-            }
-            return ok && err;
+        if (subject instanceof Named named && named.name().equals("Result")
+                && named.arguments().size() == 2) {
+            return hasCompleteConstructorArm(arms, "Ok", named.arguments().get(0), generics, self)
+                    && hasCompleteConstructorArm(arms, "Err", named.arguments().get(1), generics, self);
         }
         return false;
     }
@@ -6882,18 +7432,9 @@ public final class TypeChecker {
         }
     }
 
-    private Type resolveIndirect(Ast.TypeRef ref, Set<String> generics, Type self, boolean allowNullMarker) {
-        typeIndirectionDepth++;
-        try {
-            return resolve(ref, generics, self, allowNullMarker);
-        } finally {
-            typeIndirectionDepth--;
-        }
-    }
-
     private Type resolve(Ast.TypeRef ref, Set<String> generics, Type self, boolean allowNullMarker) {
         if (ref == null) return Unknown.INSTANCE;
-        if (ref.isBorrow()) return new Borrow(resolveIndirect(ref.borrowedTarget(), generics, self, allowNullMarker), ref.mutableBorrow());
+        if (ref.isBorrow()) return new Borrow(resolve(ref.borrowedTarget(), generics, self, allowNullMarker), ref.mutableBorrow());
         if (ref.isStringLiteral()) return new StringLiteral(ref.stringLiteralValue());
         if (ref.name().equals("$infer$")) return Unknown.INSTANCE;
         if (ref.name().equals("self")) {
@@ -6936,25 +7477,7 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("type alias '" + alias.name() + "' expects " + alias.genericParameters().size()
                         + " type argument(s), got " + ref.arguments().size());
             }
-            Integer entryDepth = aliasEntryDepths.get(alias);
-            if (entryDepth != null) {
-                if (!aliasEntryArguments.get(alias).equals(ref.arguments())) {
-                    throw new IllegalArgumentException(
-                            "polymorphic recursive type alias changes type arguments: '" + alias.name() + "'");
-                }
-                if (typeIndirectionDepth <= entryDepth) {
-                    throw new IllegalArgumentException("unguarded type alias cycle involving '" + alias.name() + "'");
-                }
-                // Use an explicit finite knot rather than infinitely expanding structural records.
-                String owner = typeAliasOwners.get(alias);
-                String qualified = owner == null || owner.equals(Parser.ROOT_MODULE)
-                        ? alias.name() : owner + "." + alias.name();
-                return new Named(RECURSIVE_ALIAS_PREFIX + qualified,
-                        ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
-            }
-            aliasEntryDepths.put(alias, typeIndirectionDepth);
-            aliasEntryArguments.put(alias, List.copyOf(ref.arguments()));
-            resolvingAliases.add(alias);
+            if (!resolvingAliases.add(alias)) throw new IllegalArgumentException("type alias cycle involving '" + alias.name() + "'");
             try {
                 Map<String, Ast.TypeRef> substitutions = new HashMap<>();
                 for (int i = 0; i < alias.genericParameters().size(); i++) {
@@ -6963,8 +7486,6 @@ public final class TypeChecker {
                 return resolve(substituteAliasType(alias.target(), substitutions), generics, self, allowNullMarker);
             } finally {
                 resolvingAliases.remove(alias);
-                aliasEntryArguments.remove(alias);
-                aliasEntryDepths.remove(alias);
             }
         }
 
@@ -6989,14 +7510,6 @@ public final class TypeChecker {
                     validateGenericArity(ref, declared.genericParameters(), "class " + declared.name());
                     yield new Named(qualifiedClassName(declared),
                             ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
-                }
-                if (Set.of("Array", "List", "Vector", "Slice").contains(ref.name())) {
-                    typeIndirectionDepth++;
-                    try {
-                        yield resolveCollectionType(ref, generics, self, allowNullMarker);
-                    } finally {
-                        typeIndirectionDepth--;
-                    }
                 }
                 yield resolveCollectionType(ref, generics, self, allowNullMarker);
             }
@@ -7028,7 +7541,7 @@ public final class TypeChecker {
             }
             case "Option" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Option requires exactly one explicit type argument");
-                Type element = resolveIndirect(ref.arguments().getFirst(), generics, self, true);
+                Type element = resolve(ref.arguments().getFirst(), generics, self, true);
                 yield new Named("Option", List.of(element));
             }
             case "Result" -> {
@@ -7036,8 +7549,8 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("Result requires exactly two explicit type arguments");
                 }
                 yield new Named("Result", List.of(
-                        resolveIndirect(ref.arguments().get(0), generics, self, false),
-                        resolveIndirect(ref.arguments().get(1), generics, self, false)));
+                        resolve(ref.arguments().get(0), generics, self),
+                        resolve(ref.arguments().get(1), generics, self)));
             }
             case "MutexGuard" -> throw new IllegalArgumentException(
                     "MutexGuard<T> is compiler-managed and cannot be named in source declarations; acquire it from lock()/try_lock()/lock_async()");
@@ -7093,6 +7606,15 @@ public final class TypeChecker {
                 yield new Function(args.subList(0, args.size() - 1), args.getLast());
             }
             default -> {
+                if (taggedMessages != null
+                        && (taggedMessages.enums().containsKey(ref.name())
+                            || taggedMessages.patterns().containsKey(ref.name()))) {
+                    if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                        throw new IllegalArgumentException("enum/match pattern type '"
+                                + ref.name() + "' is not generic");
+                    }
+                    yield new Named(ref.name(), List.of());
+                }
                 Ast.ClassDecl knownClass = findClass(ref.name());
                 if (knownClass != null) {
                     validateGenericArity(ref, knownClass.genericParameters(), "class " + knownClass.name());
@@ -7142,33 +7664,6 @@ public final class TypeChecker {
     }
 
     private boolean assignable(Type actual, Type expected) {
-        // Coinductive comparison terminates on an already-proven recursive pair,
-        // while still checking every distinct field on first encounter.
-        if (actual.equals(expected)) return true;
-        AssignmentPair pair = new AssignmentPair(actual, expected);
-        if (!assignmentsInProgress.add(pair)) return true;
-        try {
-            if (actual instanceof Named a && a.name().startsWith(RECURSIVE_ALIAS_PREFIX)) {
-                return assignable(unfoldRecursiveAlias(a), expected);
-            }
-            if (expected instanceof Named e && e.name().startsWith(RECURSIVE_ALIAS_PREFIX)) {
-                return assignable(actual, unfoldRecursiveAlias(e));
-            }
-            if (actual instanceof Named a && expected instanceof Named e
-                    && a.name().equals(e.name()) && a.arguments().size() == e.arguments().size()) {
-                for (int i = 0; i < a.arguments().size(); i++) {
-                    Type left = a.arguments().get(i), right = e.arguments().get(i);
-                    if (!assignable(left, right) || !assignable(right, left)) return false;
-                }
-                return true;
-            }
-            return assignableNonRecursive(actual, expected);
-        } finally {
-            assignmentsInProgress.remove(pair);
-        }
-    }
-
-    private boolean assignableNonRecursive(Type actual, Type expected) {
         if (expected instanceof SelfType expectedSelf) {
             if (!(actual instanceof SelfType actualSelf)) return false;
             return assignable(actualSelf.bound(), expectedSelf.bound())
@@ -7210,6 +7705,13 @@ public final class TypeChecker {
             return structuralRecordAssignable(sourceShape, targetShape);
         }
 
+        // A constructed enum case is a value of its nominal owner enum,
+        // never an alias of that case's numeric tag or payload shape.
+        if (actual instanceof Named caseType && expected instanceof Named enumType
+                && caseType.arguments().isEmpty() && enumType.arguments().isEmpty()) {
+            TaggedMessageContracts.Case variant = taggedCaseOrNull(caseType.name());
+            if (variant != null && variant.owner().equals(enumType.name())) return true;
+        }
         if (Types.isAssignable(actual, expected)) return true;
 
         if (actual instanceof Named actualNamed && expected instanceof Record targetShape) {

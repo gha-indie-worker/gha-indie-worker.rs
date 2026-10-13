@@ -1,0 +1,8 @@
+// Byte-identical guest Oreslang request-handler logic in LLVM and GraalVM.
+// Trusted HTTP socket adapters dispatch requests to counter_response(count).
+pub fnc counter_response(int count): int {
+  return count * 43;
+}
+pub fnc main(): int {
+  return counter_response(1);
+}

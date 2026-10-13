@@ -53,17 +53,17 @@ final class SourceActorSpawnExecutionTest {
                   val privateWorker = spawn PrivateWorker();
                   val sandboxed = spawn SandboxedWorker();
 
-                  await shared.ready;
-                  await privateWorker.ready;
-                  await sandboxed.ready;
+                  await shared.get_ready();
+                  await privateWorker.get_ready();
+                  await sandboxed.get_ready();
 
                   shared.send("stop");
                   privateWorker.send("stop");
                   sandboxed.send("stop");
 
-                  await shared.done;
-                  await privateWorker.done;
-                  await sandboxed.done;
+                  await shared.get_done();
+                  await privateWorker.get_done();
+                  await sandboxed.get_done();
 
                   stdio.stdout.write("actors-done");
                   return;
@@ -96,8 +96,8 @@ final class SourceActorSpawnExecutionTest {
                   val left = spawn Counter();
                   val right = spawn Counter();
 
-                  await left.ready;
-                  await right.ready;
+                  await left.get_ready();
+                  await right.get_ready();
 
                   left.send("go");
                   right.send("go");
@@ -109,8 +109,8 @@ final class SourceActorSpawnExecutionTest {
                   stdio.stdout.write("|");
                   stdio.stdout.write(rightOut.value);
 
-                  await left.done;
-                  await right.done;
+                  await left.get_done();
+                  await right.get_done();
                   return;
                 }
                 """;
@@ -139,7 +139,7 @@ final class SourceActorSpawnExecutionTest {
 
                 pub async routine main(): void {
                   val worker = spawn Worker();
-                  await worker.ready;
+                  await worker.get_ready();
                   return;
                 }
                 """;
@@ -194,7 +194,7 @@ final class SourceActorSpawnExecutionTest {
 
                 pub async routine main(): void {
                   val worker = spawn Worker();
-                  await worker.ready;
+                  await worker.get_ready();
 
                   // Queue both messages before the first receive cooperates.
                   worker.send("first");
@@ -209,7 +209,7 @@ final class SourceActorSpawnExecutionTest {
                   stdio.stdout.write("|");
                   stdio.stdout.write(c.value);
 
-                  await worker.done;
+                  await worker.get_done();
                   return;
                 }
                 """;
@@ -217,6 +217,200 @@ final class SourceActorSpawnExecutionTest {
         assertEquals(
                 "before|after|second",
                 run(program, "source-actor-suspending-receive.ores"));
+    }
+
+    @Test
+    void awaitSpawnIsAReadinessBarrierThatReturnsTheActorRef() throws Exception {
+        String program = """
+                define actor WorkerActor as
+                  let int initialized;
+
+                  on_start(): void {
+                    self.initialized = 1;
+                    return;
+                  }
+
+                  receive(ActorMail<String> mail): void {
+                    if self.initialized == 1; do
+                      self.send("ready");
+                    fi
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = await spawn WorkerActor();
+                  worker.send("run");
+                  val result = (await worker.outputs.next()).value.unwrap();
+                  stdio.stdout.write(result.value);
+                  await worker.get_done();
+                  return;
+                }
+                """;
+        assertEquals("ready", run(program, "source-await-spawn-ref.ores"));
+    }
+
+    @Test
+    void awaitSpawnFailsWhenOnStartFails() throws Exception {
+        String program = """
+                define actor WorkerActor as
+                  val int required;
+
+                  on_start(): void {
+                    return;
+                  }
+
+                  receive(ActorMail<String> mail): void {
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = await spawn WorkerActor();
+                  worker.send("unreachable");
+                  return;
+                }
+                """;
+        PolyglotException error = assertThrows(
+                PolyglotException.class,
+                () -> run(program, "source-await-spawn-failure.ores"));
+        assertTrue(error.getMessage().contains("did not initialize field 'required'"),
+                error.getMessage());
+    }
+
+    @Test
+    void actorLifecycleMethodsReturnAwaitableFuturesAndRejectPropertyAccess() throws Exception {
+        String valid = """
+                define actor Worker as
+                  receive(ActorMail<String> message): void {
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  val initialized = worker.get_ready();
+                  await initialized;
+                  worker.send("finish");
+                  val finalized = worker.get_done();
+                  await finalized;
+                  stdio.stdout.write("finished");
+                  return;
+                }
+                """;
+        assertEquals("finished", run(valid, "source-actor-future-getters.ores"));
+
+        for (String forbidden : java.util.List.of(
+                "await worker.ready;",
+                "await worker.done;",
+                "await worker.get_ready(1);",
+                "await worker.get_done(1);",
+                "await worker.get_ready;",
+                "await worker.get_done;")) {
+            String source = """
+                    define actor Worker as
+                      receive(ActorMail<String> message): void {
+                        self.end();
+                        return;
+                      }
+                    end
+                    pub async routine main(): void {
+                      val worker = spawn Worker();
+                      """ + forbidden + """
+                      
+                      worker.stop();
+                      return;
+                    }
+                    """;
+            assertThrows(PolyglotException.class,
+                    () -> run(source, "source-actor-bad-lifecycle-access.ores"),
+                    forbidden + " must not be accepted");
+        }
+    }
+
+    @Test
+    void sourceActorMailboxUsesCompilerBoundBinaryMessagePackForListAndTuple() throws Exception {
+        String source = """
+                define actor ListWorker as
+                  receive(ActorMail<List<string>> mail): void {
+                    if mail.value[0] == "from-list"; do
+                      self.send("list-ok");
+                    else
+                      self.send("list-wrong");
+                    fi
+                    self.end();
+                    return;
+                  }
+                end
+
+                define isoactor TupleWorker as
+                  receive(ActorMail<Tuple[bool, string]> mail): void {
+                    if mail.value[1] == "from-tuple"; do
+                      self.send("tuple-ok");
+                    else
+                      self.send("tuple-wrong");
+                    fi
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val listWorker = spawn ListWorker();
+                  val tupleWorker = spawn TupleWorker();
+                  await listWorker.get_ready();
+                  await tupleWorker.get_ready();
+
+                  listWorker.send(["from-list"]);
+                  tupleWorker.send((true, "from-tuple"));
+
+                  val a = (await listWorker.outputs.next()).value.unwrap();
+                  val b = (await tupleWorker.outputs.next()).value.unwrap();
+                  stdio.stdout.write(a.value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(b.value);
+                  await listWorker.get_done();
+                  await tupleWorker.get_done();
+                  return;
+                }
+                """;
+        assertEquals("list-ok|tuple-ok",
+                run(source, "source-actor-msgpack-v2-collections.ores"));
+    }
+
+    @Test
+    void taggedEnumPatternMessagesCrossActorBoundaryInBinary() throws Exception {
+        String source = """
+                define enum Status as
+                  Message1: Tuple[bool, string] = 1
+                  Message2: string = 2
+                  Ready = 3
+                end
+
+                define pattern Messages as
+                  Status.Message1
+                  Status.Message2
+                end
+
+                define isoactor Worker as
+                  receive(ActorMail<Messages> mail): void {
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = await spawn Worker();
+                  worker.send("hello" as Status.Message2);
+                  await worker.get_done();
+                  stdio.stdout.write("tagged-done");
+                  return;
+                }
+                """;
+        assertEquals("tagged-done", run(source, "source-actor-nominal-tags.ores"));
     }
 
     private static String run(String sourceText, String name) throws Exception {

@@ -35,7 +35,7 @@ public final class Ast {
         public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) { this(name, annotations, List.of(), declarations); }
     }
 
-    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
+    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl, EnumDecl, PatternDecl { }
 
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
@@ -198,6 +198,7 @@ public final class Ast {
             CallableKind kind,
             Visibility visibility,
             boolean async,
+            boolean suspends,
             boolean generator,
             boolean structural,
             boolean nonLexical,
@@ -208,6 +209,16 @@ public final class Ast {
             TypeRef returnType,
             List<Annotation> annotations,
             List<Stmt> body) implements Decl {
+        /** Preserve all existing AST construction sites without an explicit effect. */
+        public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
+                            boolean generator, boolean structural, boolean nonLexical, boolean trapped,
+                            ActorKind actorKind, List<String> genericParameters,
+                            List<Param> parameters, TypeRef returnType,
+                            List<Annotation> annotations, List<Stmt> body) {
+            this(name, kind, visibility, async, false, generator, structural, nonLexical,
+                    trapped, actorKind, genericParameters, parameters, returnType, annotations, body);
+        }
+
         public FunctionDecl {
             genericParameters = List.copyOf(genericParameters);
             parameters = List.copyOf(parameters);
@@ -400,6 +411,7 @@ public final class Ast {
             boolean isStatic,
             boolean isAbstract,
             boolean async,
+            boolean suspends,
             boolean structural,
             TypeRef explicitReceiverType,
             List<String> genericParameters,
@@ -407,6 +419,16 @@ public final class Ast {
             TypeRef returnType,
             List<Annotation> annotations,
             List<Stmt> body) {
+        /** Preserve all existing AST construction sites without an explicit effect. */
+        public MethodDecl(String name, Visibility visibility, boolean isStatic,
+                          boolean isAbstract, boolean async, boolean structural,
+                          TypeRef explicitReceiverType, List<String> genericParameters,
+                          List<Param> parameters, TypeRef returnType,
+                          List<Annotation> annotations, List<Stmt> body) {
+            this(name, visibility, isStatic, isAbstract, async, false, structural,
+                    explicitReceiverType, genericParameters, parameters, returnType, annotations, body);
+        }
+
         public MethodDecl {
             genericParameters = List.copyOf(genericParameters);
             parameters = List.copyOf(parameters);
@@ -450,6 +472,19 @@ public final class Ast {
             if (name == null || name.isBlank()) throw new IllegalArgumentException("method name cannot be blank");
             if (arity < 0) throw new IllegalArgumentException("method arity cannot be negative");
         }
+    }
+
+    /** A nominal enum case. tag is a stable positive wire tag, not the case value. */
+    public record EnumCase(String name, TypeRef payload, int tag) { }
+
+    /** Enum values are tagged, constructible and carry a schema-checked payload. */
+    public record EnumDecl(String name, List<EnumCase> cases) implements Decl {
+        public EnumDecl { cases = List.copyOf(cases); }
+    }
+
+    /** Pattern is a nonconstructible, closed set of qualified enum cases. */
+    public record PatternDecl(String name, List<String> alternatives) implements Decl {
+        public PatternDecl { alternatives = List.copyOf(alternatives); }
     }
 
     public record TypeAliasDecl(String name, List<String> genericParameters, TypeRef target) implements Decl {

@@ -34,6 +34,7 @@ public final class OwnershipChecker {
     private record ResolvedMethod(Ast.ClassDecl owner, Ast.TypeRef ownerType, Ast.MethodDecl method) { }
     private record ResolvedField(Ast.ClassDecl owner, Ast.TypeRef ownerType, Ast.FieldDecl field) { }
     private record CallSignature(List<Ast.Param> parameters, Ast.TypeRef result) { }
+    private final TaggedMessageContracts.Registry taggedMessages;
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Set<String> modules = new HashSet<>();
@@ -44,6 +45,7 @@ public final class OwnershipChecker {
     private boolean currentAsyncGenerator;
 
     private OwnershipChecker(Ast.Program program) {
+        taggedMessages = TaggedMessageContracts.forTypes(program);
         index(program);
     }
 
@@ -412,9 +414,17 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.SelectStmt selected) {
-            if (selected.mode() != Ast.WaitMode.IMMEDIATE
+            if (selected.mode() == Ast.WaitMode.BLOCKING
+                    && selected.arms().stream().noneMatch(arm ->
+                            arm.operation() == Ast.ChannelOperation.DEFAULT)) {
+                // Without a default arm, the mailbox lane can yield while
+                // waiting for a winner. A default arm makes the selection
+                // immediately decidable, so no borrow-suspension ban is needed.
+                checkSuspensionBorrows(scope, "select");
+            } else if (selected.mode() == Ast.WaitMode.NONBLOCKING
                     && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard())) {
-                throw error("cannot suspend or arm nb select while holding a MutexGuard");
+                // An armed callback can re-enter the same actor on a later turn.
+                throw error("cannot arm nb select while holding a MutexGuard");
             }
 
             // Case operands are evaluated once when the selection is armed.
@@ -956,9 +966,11 @@ public final class OwnershipChecker {
             return awaitedValue;
         }
         if (expr instanceof Ast.ChannelOpExpr channelOp) {
-            if (channelOp.mode() != Ast.WaitMode.IMMEDIATE
+            if (channelOp.mode() == Ast.WaitMode.BLOCKING) {
+                checkSuspensionBorrows(scope, "readch/writech");
+            } else if (channelOp.mode() == Ast.WaitMode.NONBLOCKING
                     && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard())) {
-                throw error("cannot suspend or register a channel waiter while holding a MutexGuard");
+                throw error("cannot register a channel waiter while holding a MutexGuard");
             }
             ValueInfo channel = checkExpr(channelOp.channel(), scope, false);
             Ast.TypeRef element = channelElementType(channel.type);
@@ -973,6 +985,26 @@ public final class OwnershipChecker {
                 }
                 if (isBorrowValue(payload)) {
                     throw error("writech cannot transport a borrowed reference; channel payloads must own/copy/share their data");
+                }
+                if (channelOp.callback()) {
+                    // nb cb writech returns to the enclosing actor turn before
+                    // running its callback. Transfer captures now, not when the
+                    // asynchronous writer eventually settles.
+                    CaptureSet captured = new CaptureSet();
+                    scanStatements(channelOp.callbackBody(), Set.of(), scope, null, captured);
+                    validateDeferredCaptures(captured);
+                    Scope callbackScope = deferredSelectArmScope(captured);
+                    int savedLoopDepth = loopDepth;
+                    boolean savedDiscard = discardingSelectReturn;
+                    loopDepth = 0;
+                    discardingSelectReturn = false;
+                    try {
+                        checkBlock(channelOp.callbackBody(), callbackScope, Ast.TypeRef.simple("void"));
+                    } finally {
+                        loopDepth = savedLoopDepth;
+                        discardingSelectReturn = savedDiscard;
+                        callbackScope.close();
+                    }
                 }
                 Ast.TypeRef result = switch (channelOp.mode()) {
                     case BLOCKING -> Ast.TypeRef.simple("void");
@@ -991,9 +1023,11 @@ public final class OwnershipChecker {
             return new ValueInfo(result, kindOfType(result), null);
         }
         if (expr instanceof Ast.DynamicSelectExpr selected) {
-            if (selected.mode() != Ast.WaitMode.IMMEDIATE
+            if (selected.mode() == Ast.WaitMode.BLOCKING) {
+                checkSuspensionBorrows(scope, "select from cases");
+            } else if (selected.mode() == Ast.WaitMode.NONBLOCKING
                     && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard())) {
-                throw error("cannot suspend or register dynamic select while holding a MutexGuard");
+                throw error("cannot register dynamic select while holding a MutexGuard");
             }
             checkExpr(selected.cases(), scope, false);
             Ast.TypeRef selectedResult = Ast.TypeRef.simple("SelectResult");
@@ -1120,6 +1154,7 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of());
+                if (fn.suspends()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
                 checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name());
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
@@ -1133,6 +1168,7 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of());
+                if (fn.suspends()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
                 checkArguments(
                         call.arguments(),
                         signature.parameters(),
@@ -1197,6 +1233,7 @@ public final class OwnershipChecker {
                             call,
                             scope,
                             Map.of());
+                    if (staticFunction.suspends()) checkSuspensionBorrows(scope, "suspends call " + staticFunction.name());
                     checkArguments(
                             call.arguments(),
                             signature.parameters(),
@@ -1347,6 +1384,7 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         allGenerics, method.genericParameters(),
                         method.parameters(), method.returnType(), call, scope, ownerBindings);
+                if (method.suspends()) checkSuspensionBorrows(scope, "suspends call " + method.name());
                 checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name());
                 if (protectedReceiver && !isCopyType(signature.result())
                         && !signature.result().name().equals("void")) {
@@ -1657,7 +1695,16 @@ public final class OwnershipChecker {
                 throw error("cannot mutably borrow infer struct value '" + owner.debugName
                         + "'; inferred structs are permanently readonly");
             }
-            if (!owner.mutable) throw error("cannot mutably borrow immutable owner '" + owner.debugName + "'");
+            if (owner.kind == ValueKind.IMM_BORROW)
+                throw error("cannot mutably reborrow a shared borrow '" + owner.debugName + "'");
+            // An incoming exclusive loan may be reborrowed for a call, even
+            // though its parameter binding itself cannot be reassigned.
+            // This does not grant mutability to an owned immutable binding
+            // or to any shared loan, and all live-loan conflict checks below
+            // still apply.
+            if (!owner.mutable && !(owner.origin == Origin.PARAM
+                    && owner.kind == ValueKind.MUT_BORROW))
+                throw error("cannot mutably borrow immutable owner '" + owner.debugName + "'");
             if (root.mutableBorrowed || root.immutableBorrows > 0) throw error("cannot mutably borrow '" + owner.debugName + "' while another borrow is active");
         } else if (root.mutableBorrowed) {
             throw error("cannot immutably borrow '" + owner.debugName + "' while a mutable borrow is active");
@@ -1956,6 +2003,11 @@ public final class OwnershipChecker {
             if (e.value() != null) {
                 scanExpr(e.value(), locals, outer, recursiveBinding, captures, false);
             }
+            // Callback-bearing writes keep their own future activation alive.
+            // Nested deferred callbacks therefore contribute transitive captures.
+            if (e.callback()) {
+                scanStatements(e.callbackBody(), locals, outer, recursiveBinding, captures);
+            }
         }
         else if (expr instanceof Ast.DynamicSelectExpr e) {
             scanExpr(e.cases(), locals, outer, recursiveBinding, captures, false);
@@ -2036,10 +2088,17 @@ public final class OwnershipChecker {
             return;
         }
         if (pattern instanceof Ast.TuplePattern tuple) {
-            List<Ast.TypeRef> elementTypes =
-                    subjectType != null && subjectType.isTupleType()
-                            ? subjectType.arguments()
-                            : List.of();
+            List<Ast.TypeRef> elementTypes = List.of();
+            if (subjectType != null) {
+                if (subjectType.isTupleType()) {
+                    elementTypes = subjectType.arguments();
+                } else if (subjectType.name().equals("Tuple")) {
+                    elementTypes = subjectType.arguments().size() == 1
+                            && subjectType.arguments().getFirst().isSequenceShape()
+                            ? subjectType.arguments().getFirst().arguments()
+                            : subjectType.arguments();
+                }
+            }
             for (int i = 0; i < tuple.elements().size(); i++) {
                 Ast.TypeRef elementType =
                         i < elementTypes.size()
@@ -2048,7 +2107,7 @@ public final class OwnershipChecker {
                 definePatternAliases(
                         tuple.elements().get(i),
                         elementType,
-                        source,
+                        isCopyType(elementType) ? null : source,
                         destination);
             }
             return;
@@ -2057,13 +2116,34 @@ public final class OwnershipChecker {
             List<Ast.TypeRef> argTypes = constructorPatternTypes(constructor.constructor(), subjectType);
             for (int i = 0; i < constructor.arguments().size(); i++) {
                 Ast.TypeRef argType = i < argTypes.size() ? argTypes.get(i) : Ast.TypeRef.inferred();
-                definePatternAliases(constructor.arguments().get(i), argType, source, destination);
+                // A Copy payload can be extracted without moving its enum
+                // owner. Move-only payloads retain the original ownership
+                // root so destructuring cannot manufacture a second owner.
+                definePatternAliases(constructor.arguments().get(i), argType,
+                        isCopyType(argType) ? null : source, destination);
             }
         }
     }
 
     private List<Ast.TypeRef> constructorPatternTypes(String constructor, Ast.TypeRef subjectType) {
         if (subjectType == null) return List.of();
+        if (constructor.indexOf('.') > 0) {
+            TaggedMessageContracts.Case variant = taggedMessages.requireCase(constructor);
+            Ast.TypeRef domainType = subjectType.isBorrow()
+                    ? subjectType.borrowedTarget() : subjectType;
+            if (!domainType.arguments().isEmpty()) {
+                throw error("enum match domain cannot have type parameters: "
+                        + domainType.name());
+            }
+            TaggedMessageContracts.Domain domain = taggedMessages.requireDomain(domainType.name());
+            if (domain.cases().stream().noneMatch(c ->
+                    c.qualifiedName().equals(variant.qualifiedName()))) {
+                throw error("enum case " + constructor
+                        + " does not belong to match subject " + domainType.name());
+            }
+            return variant.sourcePayload() == null
+                    ? List.of() : List.of(variant.sourcePayload());
+        }
         if (constructor.equals("Some") && subjectType.name().equals("Option") && subjectType.arguments().size() == 1) {
             return List.of(subjectType.arguments().getFirst());
         }
@@ -2650,15 +2730,28 @@ public final class OwnershipChecker {
             }
         }
 
+        validateDeferredCaptures(union);
+        return List.copyOf(perArm);
+    }
+
+    private static boolean isDirectActorSelfCapture(Capture capture) {
+        // Caller additionally validates actor confinement. A user-created
+        // alias rooted at self is still an ordinary borrowed local and must
+        // never acquire mailbox self's extended lifetime.
+        return capture.name.equals("self")
+                && capture.source.origin == Origin.PARAM
+                && capture.source.kind == ValueKind.MUT_BORROW;
+    }
+
+    private void validateDeferredCaptures(CaptureSet union) {
         for (Capture capture : union.values.values()) {
             VarState source = capture.source;
             source.debugName = capture.name;
             requireUsable(source, capture.name, capture.write);
 
-            // self is a runtime-owned actor borrow. The continuation is
-            // guaranteed to re-enter the same actor under its single-turn
-            // execution lease, so this borrow may span the deferred arm.
-            if (isActorConfinedBorrow(source)) continue;
+            // Only the canonical actor self capability can cross actor turns.
+            // Borrowed aliases of self follow ordinary lexical lifetime rules.
+            if (isDirectActorSelfCapture(capture) && isActorConfinedBorrow(source)) continue;
 
             if (source.kind == ValueKind.IMM_BORROW
                     || source.kind == ValueKind.MUT_BORROW
@@ -2687,8 +2780,6 @@ public final class OwnershipChecker {
                 move(source, capture.name);
             }
         }
-
-        return List.copyOf(perArm);
     }
 
     private Scope deferredSelectArmScope(CaptureSet captures) {
@@ -2696,7 +2787,7 @@ public final class OwnershipChecker {
         for (Capture capture : captures.values.values()) {
             VarState source = capture.source;
 
-            if (isActorConfinedBorrow(source)) {
+            if (isDirectActorSelfCapture(capture) && isActorConfinedBorrow(source)) {
                 VarState self = new VarState(
                         source.type,
                         false,

@@ -1,0 +1,23 @@
+define class Counter as
+  pub let int value = 1;
+end
+fnc multiply_ten(borrow mut Counter c): void {
+  c.value = c.value * 10;
+  return;
+}
+fnc add_one(borrow mut Counter c): void {
+  c.value = c.value + 1;
+  return;
+}
+fnc tick(borrow mut Counter c, int guard): int {
+  defer add_one(rt borrow mut c);
+  defer multiply_ten(rt borrow mut c);
+  if (guard eq 0) { return 0; } fi
+  return 1;
+}
+pub fnc main(): int {
+  let mut Counter c = new Counter();
+  tick(rt borrow mut c, 0);
+  tick(rt borrow mut c, 1);
+  return c.value;
+}

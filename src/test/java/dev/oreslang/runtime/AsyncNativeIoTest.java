@@ -61,10 +61,10 @@ class AsyncNativeIoTest {
               }
             end
             pub async routine main(): void {
-              val worker = spawn Worker(); await worker.ready;
+              val worker = spawn Worker(); await worker.get_ready();
               worker.send("%s");
               for await const output of worker.outputs { stdio.println(output.value); }
-              await worker.done; return;
+              await worker.get_done(); return;
             }
             """.formatted(path), RuntimePermissions.denyAll().withAllowed(
                 RuntimePermissions.Permission.WRITE, root.toString()), new ByteArrayOutputStream()));
@@ -150,12 +150,12 @@ class AsyncNativeIoTest {
                   }
                 end
                 pub async routine main(): void {
-                  val reader = spawn Reader(); await reader.ready;
-                  val probe = spawn Probe(); await probe.ready;
+                  val reader = spawn Reader(); await reader.get_ready();
+                  val probe = spawn Probe(); await probe.get_ready();
                   reader.send("go");
                   await reader.outputs.next();
                   probe.send("go");
-                  await reader.done; await probe.done; return;
+                  await reader.get_done(); await probe.get_done(); return;
                 }
                 """.formatted(server.getLocalPort());
             run(program, RuntimePermissions.denyAll().withAllowed(RuntimePermissions.Permission.NET,

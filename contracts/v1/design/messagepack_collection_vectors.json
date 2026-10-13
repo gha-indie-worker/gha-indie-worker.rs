@@ -1,0 +1,119 @@
+{
+  "schema": "oreslang.messagepack.collections.v2",
+  "format": "MessagePack",
+  "status": "Java standalone codec v2 implemented and exact-source CI pending; native and actor-runtime transport parity pending",
+  "envelope": [
+    "wire_format_version_i64_2",
+    "schema_id_utf8",
+    "sha256_canonical_shape_descriptor_as_bin32",
+    "schema_guided_payload"
+  ],
+  "spec": "https://github.com/msgpack/msgpack/blob/master/spec.md",
+  "scalar_subset": [
+    "bool",
+    "signed_i64",
+    "finite_float64",
+    "utf8_string"
+  ],
+  "limits": {
+    "max_bytes": 1048576,
+    "max_nodes": 100000,
+    "max_depth": 64,
+    "max_sequence_elements": 100000,
+    "max_schema_id_ascii_bytes": 256
+  },
+  "kind_rule": "Decoder verifies SHA-256 over oreslang.actor.shape.v2/ + canonical collection type grammar (B,I,F,S,T[...],FA[...],FL[...],A[...],L[...]); caller schema ID alone is never trusted.",
+  "ownership_rule": "Serialize at send call; snapshot immutable mailbox value; no writable aliases. rt copy is an optional semantically equivalent local optimization after executable benchmarks.",
+  "vectors": [
+    {
+      "schema_id": "demo.TupleBoolString.v1",
+      "kind": "Tuple",
+      "shape": [
+        "bool",
+        "string"
+      ],
+      "input": [
+        true,
+        "foo"
+      ],
+      "hex": "9402b764656d6f2e5475706c65426f6f6c537472696e672e7631c420d254b4ecd3d7964454dcdf86fd10ede585a17b3af27982a289819afdc2379ab292c3a3666f6f",
+      "shape_descriptor": "T[B,S]"
+    },
+    {
+      "schema_id": "demo.FixedArrayInts.v1",
+      "kind": "FixedArray",
+      "shape": [
+        "int64",
+        "int64",
+        "int64"
+      ],
+      "input": [
+        1,
+        2,
+        3
+      ],
+      "hex": "9402b664656d6f2e46697865644172726179496e74732e7631c4206a46f6c65c619cc1c5354f7bd3b35ec0fcfbc9866c0760a15b860cfef79773b993010203",
+      "shape_descriptor": "FA[I,I,I]"
+    },
+    {
+      "schema_id": "demo.FixedListNested.v1",
+      "kind": "FixedList",
+      "shape": [
+        {
+          "List": "string"
+        },
+        "bool"
+      ],
+      "input": [
+        [
+          "a",
+          "b"
+        ],
+        false
+      ],
+      "hex": "9402b764656d6f2e46697865644c6973744e65737465642e7631c4202007a0279d88d3eca7d21cf32b37327b996593c1353963dd78555f56f1ba6ddc9292a161a162c2",
+      "shape_descriptor": "FL[L[S],B]"
+    },
+    {
+      "schema_id": "demo.ArrayStrings.v1",
+      "kind": "Array",
+      "shape": {
+        "element": "string"
+      },
+      "input": [
+        "a",
+        "b"
+      ],
+      "hex": "9402b464656d6f2e4172726179537472696e67732e7631c420139722a10b9ef4d4af0cea1bfbc50ff92a0459aabf837f63a6fec052fe5dc5c992a161a162",
+      "shape_descriptor": "A[S]"
+    },
+    {
+      "schema_id": "demo.ListStrings.v1",
+      "kind": "List",
+      "shape": {
+        "element": "string"
+      },
+      "input": [
+        "a",
+        "b"
+      ],
+      "hex": "9402b364656d6f2e4c697374537472696e67732e7631c4204efbea59591d5c31d9f13ee93ef5c1d954e653144d380bb2d064ea4fa6d56b8c92a161a162",
+      "shape_descriptor": "L[S]"
+    },
+    {
+      "schema_id": "demo.String.v1",
+      "kind": "string",
+      "shape": "string",
+      "input": "foo",
+      "hex": "9402ae64656d6f2e537472696e672e7631c42021c2efdbff08dd4e1320d8abe1ba0cc6aea8e4cf104b984be7b7079968fad3cda3666f6f",
+      "shape_descriptor": "S"
+    }
+  ],
+  "notes": [
+    "The example schema ids are test contracts, not type-identity hashing or a schema registry.",
+    "Text JSON only for authoring test metadata; actual transport bytes are the MessagePack hex vectors.",
+    "No class/enum/Option/Result arbitrary codecs or actor serializer integration are claimed.",
+    "Golden byte vectors generated independently with Python msgpack packb(use_bin_type=True) + hashlib.sha256 on canonical descriptors; schema-v2 format is intentionally incompatible with v1.",
+    "Decoder rejects noncanonical integer/string/array header encodings and untrusted array length budgets before allocation."
+  ]
+}

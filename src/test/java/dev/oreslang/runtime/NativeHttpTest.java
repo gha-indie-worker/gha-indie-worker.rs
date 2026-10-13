@@ -50,15 +50,15 @@ class NativeHttpTest {
               val request = await server.accept();
               val worker = spawn Owner();
               val thief = spawn Thief();
-              await worker.ready;
-              await thief.ready;
+              await worker.get_ready();
+              await thief.get_ready();
               val String token = request.move_to(worker);
               try { stdio.println(request.method); } catch (err) { stdio.println("sender-revoked"); }
               try { request.move_to(thief); } catch (err) { stdio.println("double-move-rejected"); }
               thief.send(token);
-              await thief.done;
+              await thief.get_done();
               worker.send(token);
-              await worker.done;
+              await worker.get_done();
               await server.shutdown(0);
               return;
             }
@@ -136,9 +136,9 @@ class NativeHttpTest {
               stdio.println(server.port);
               val request = await server.accept();
               val worker = spawn Stream();
-              await worker.ready;
+              await worker.get_ready();
               worker.send(request.move_to(worker));
-              await worker.done;
+              await worker.get_done();
               await server.shutdown(0);
               return;
             }

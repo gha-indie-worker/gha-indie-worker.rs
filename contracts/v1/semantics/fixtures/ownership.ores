@@ -1,0 +1,8 @@
+define class Box as
+  pub let int value = 0;
+end
+fnc change(Box box): void {
+  box.value = 1;
+  return;
+}
+pub routine main(): void { return; }

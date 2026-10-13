@@ -216,6 +216,7 @@ select_arm      = select_arm_keyword "readch" expression ":"
                   [ binding_kind IDENT ] { statement }
                 | select_arm_keyword "writech" expression "," expression ":"
                   { statement } ;
+(* Static select arms cannot use nb/try modifiers on readch/writech; the enclosing select supplies wait mode. *)
 select_arm_keyword = "when" | "case" ; (* "when" is canonical; "case" is accepted for compatibility. *)
 (* "when" and "case" are contextual keywords: outside these grammar positions they are ordinary IDENT names. *)
 select_default  = "default" ":" { statement } ;

@@ -45,6 +45,110 @@ public final class NativeIo {
         return Files.exists(path);
     }
 
+    /**
+     * Bounded, sorted immediate child names. This is deliberately NOT a path
+     * walker: the guest checks each next component with is_symlink and is_dir.
+     */
+    public static List<String> listDir(OresContext context, String rawPath) {
+        Path lexical = Path.of(rawPath).toAbsolutePath().normalize();
+        context.requirePermission(RuntimePermissions.Permission.READ, lexical.toString(), "fs.list_dir");
+        if (Files.isSymbolicLink(lexical)) throw new SecurityException("fs.list_dir refuses symlink: " + lexical);
+        Path path = canonicalExistingPath(rawPath);
+        context.requirePermission(RuntimePermissions.Permission.READ, path.toString(), "fs.list_dir");
+        if (!Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalArgumentException("fs.list_dir requires directory: " + path);
+        }
+        try (java.util.stream.Stream<Path> stream = Files.list(path)) {
+            List<String> names = stream.limit(20001).map(p -> p.getFileName().toString()).sorted().toList();
+            if (names.size() > 20000) throw new IllegalArgumentException("fs.list_dir exceeds 20000 entries: " + path);
+            return new java.util.ArrayList<>(names);
+        } catch (IOException failure) {
+            throw ioFailure("list directory", path, failure);
+        }
+    }
+
+    /**
+     * Resolve the parent directory before probing an entry. Permission checks
+     * cover both the lexical path and its actual parent; a symlinked ancestor
+     * cannot be used to inspect names outside the granted source root.
+     * Metadata cannot provide race-free traversal on an attacker-writable tree.
+     */
+    private static Path metadataTarget(OresContext context, String rawPath, String operation) {
+        Path lexical = lexicalPath(rawPath);
+        Path parent = lexical.getParent();
+        if (parent == null) throw new IllegalArgumentException("metadata path has no parent");
+        // Metadata only reads the entry in its parent, not the target of a
+        // symbolic link. Requiring READ on the child would canonicalize a
+        // symlink to its target and incorrectly reject detecting unsafe links.
+        // Resolve/check the parent instead; ancestor escapes still fail.
+        Path canonicalParent = realPath(parent);
+        Path target = canonicalParent.resolve(lexical.getFileName());
+        try {
+            context.requirePermission(RuntimePermissions.Permission.READ,
+                    canonicalParent.toString(), operation);
+        } catch (SecurityException parentDenied) {
+            // A caller may have an exact READ grant for the root directory,
+            // without a grant on /tmp or the parent of that root. Allow
+            // metadata on that exact ordinary entry but never dereference an
+            // ungranted terminal symlink.
+            if (Files.isSymbolicLink(target)) throw parentDenied;
+            context.requirePermission(RuntimePermissions.Permission.READ,
+                    target.toString(), operation);
+        }
+        return target;
+    }
+
+    public static boolean isSymlink(OresContext context, String rawPath) {
+        return Files.isSymbolicLink(metadataTarget(context, rawPath, "fs.is_symlink"));
+    }
+
+    public static boolean isDir(OresContext context, String rawPath) {
+        return Files.isDirectory(metadataTarget(context, rawPath, "fs.is_dir"),
+                LinkOption.NOFOLLOW_LINKS);
+    }
+
+    /**
+     * Generate a complete UTF-8 file beside the destination and replace it
+     * atomically. Never open the destination for truncation, nor follow a
+     * symlink in the destination slot. The parent is canonicalized and checked
+     * against the caller's WRITE grant before any mutation.
+     */
+    public static void writeTextAtomic(OresContext context, String rawPath, String value) {
+        Path lexical = lexicalPath(rawPath);
+        if (Files.isSymbolicLink(lexical)) {
+            throw new SecurityException("fs.write_text_atomic refuses symlink: " + lexical);
+        }
+        Path parent = lexical.getParent();
+        if (parent == null) throw new IllegalArgumentException("atomic write path has no parent");
+        Path canonicalParent = realPath(parent);
+        Path target = canonicalParent.resolve(lexical.getFileName());
+        context.requirePermission(RuntimePermissions.Permission.WRITE, lexical.toString(), "fs.write_text_atomic");
+        context.requirePermission(RuntimePermissions.Permission.WRITE, target.toString(), "fs.write_text_atomic");
+        if (!Files.isDirectory(canonicalParent, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalArgumentException("atomic write parent is not a directory: " + parent);
+        }
+        if (Files.isSymbolicLink(target)) {
+            throw new SecurityException("fs.write_text_atomic refuses destination symlink: " + target);
+        }
+        Path temp = null;
+        try {
+            temp = Files.createTempFile(canonicalParent, ".oreslang-stack-", ".tmp");
+            Files.writeString(temp, value, StandardCharsets.UTF_8);
+            if (Files.isSymbolicLink(target)) {
+                throw new SecurityException("fs.write_text_atomic refuses destination symlink: " + target);
+            }
+            Files.move(temp, target,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException failure) {
+            throw ioFailure("atomic write", target, failure);
+        } finally {
+            if (temp != null) {
+                try { Files.deleteIfExists(temp); } catch (IOException ignored) { }
+            }
+        }
+    }
+
     public static void writeText(OresContext context, String rawPath, String value) {
         Path path = canonicalWritePath(rawPath);
         context.requirePermission(RuntimePermissions.Permission.WRITE, path.toString(), "fs.write_text");

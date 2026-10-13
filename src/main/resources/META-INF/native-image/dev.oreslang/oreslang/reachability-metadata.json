@@ -6,7 +6,9 @@
       "methods": [
         {
           "name": "<init>",
-          "parameterTypes": ["java.lang.String"]
+          "parameterTypes": [
+            "java.lang.String"
+          ]
         }
       ]
     },
@@ -16,9 +18,21 @@
       "methods": [
         {
           "name": "nativeCarrierLoop",
-          "parameterTypes": ["int"]
+          "parameterTypes": [
+            "int"
+          ]
         }
       ]
+    }
+  ],
+  "resources": [
+    {
+      "module": "dev.oreslang",
+      "glob": "dev/oreslang/std/*.ores"
+    },
+    {
+      "module": "dev.oreslang",
+      "glob": "dev/oreslang/std/**/*.ores"
     }
   ]
 }

@@ -62,6 +62,12 @@ final class RuntimeGarbageCollectorTest {
             var cleanup = entry.getClass().getDeclaredField("cleanup");
             cleanup.setAccessible(true);
             assertNull(cleanup.get(entry));
+            var domain = entry.getClass().getDeclaredField("domain");
+            domain.setAccessible(true);
+            assertNull(domain.get(entry),
+                    "completed weak cleanup must not retain an actor/process domain");
+            enqueue(handle); // stale queued entry must also carry no domain link
+            assertNull(domain.get(entry));
         }
     }
 
@@ -345,6 +351,7 @@ final class RuntimeGarbageCollectorTest {
     void actorExitDeterministicallyRetiresItsCleanupDomain() throws Exception {
         AtomicInteger cleanups = new AtomicInteger();
         AtomicReference<Object> leakedOwner = new AtomicReference<>();
+        AtomicReference<RuntimeGarbageCollector.CleanupHandle> completedHandle = new AtomicReference<>();
         CountDownLatch registered = new CountDownLatch(1);
 
         try (RuntimeGarbageCollector gc = new RuntimeGarbageCollector(() -> {}, Duration.ofHours(1));
@@ -353,7 +360,7 @@ final class RuntimeGarbageCollectorTest {
             var ref = runtime.<String>spawn(() -> (message, context) -> {
                 Object owner = new Object();
                 leakedOwner.set(owner); // deliberately keep a stale host reference alive
-                gc.track(owner, cleanups::incrementAndGet);
+                completedHandle.set(gc.track(owner, cleanups::incrementAndGet));
                 registered.countDown();
                 context.self().stop();
             });
@@ -364,6 +371,13 @@ final class RuntimeGarbageCollectorTest {
             assertNotNull(leakedOwner.get());
             assertEquals(1, cleanups.get(),
                     "actor termination must retire actor-local runtime resources even with a stale owner reference");
+            var entryField = completedHandle.get().getClass().getDeclaredField("entry");
+            entryField.setAccessible(true);
+            Object entry = entryField.get(completedHandle.get());
+            var domain = entry.getClass().getDeclaredField("domain");
+            domain.setAccessible(true);
+            assertNull(domain.get(entry),
+                    "actor-domain identity must not be pinned by completed cleanup handles");
         }
     }
 
@@ -374,4 +388,93 @@ final class RuntimeGarbageCollectorTest {
             assertTrue(error.getMessage().contains("actor.gc() requires execution inside an actor"));
         }
     }
+    @Test
+    void fallbackSweepIsDormantUntilFirstInteropRegistrationAndStopsAfterRelease() throws Exception {
+        AtomicInteger jvmGcRequests = new AtomicInteger();
+        try (RuntimeGarbageCollector gc = new RuntimeGarbageCollector(
+                jvmGcRequests::incrementAndGet, Duration.ofHours(1))) {
+            var field = RuntimeGarbageCollector.class.getDeclaredField("periodicSweep");
+            field.setAccessible(true);
+            assertNull(field.get(gc), "ownership-only workloads require no scheduled GC");
+            gc.collectPeriodic();
+            assertNull(field.get(gc), "explicit empty maintenance must not start a timer");
+            assertEquals(0, jvmGcRequests.get());
+
+            var first = gc.track(new Object(), () -> {});
+            assertNotNull(field.get(gc), "interop cleanup enables the fallback timer");
+            var second = gc.track(new Object(), () -> {});
+            first.close();
+            assertNotNull(field.get(gc), "another live interop handle still requires fallback");
+            second.close();
+            assertNull(field.get(gc), "closing the last handle must cancel fallback work");
+            assertEquals(0, jvmGcRequests.get());
+        }
+    }
+
+    @Test
+    void periodicFallbackBoundsQueueWorkAndDoesNotRequestHostGc() throws Exception {
+        AtomicInteger jvmGcRequests = new AtomicInteger();
+        AtomicInteger cleanups = new AtomicInteger();
+        try (RuntimeGarbageCollector gc = new RuntimeGarbageCollector(
+                jvmGcRequests::incrementAndGet, Duration.ofHours(1))) {
+            ArrayList<RuntimeGarbageCollector.CleanupHandle> handles = new ArrayList<>();
+            ArrayList<Object> owners = new ArrayList<>();
+            for (int n = 0; n < 320; n++) {
+                Object owner = new Object();
+                owners.add(owner); // deterministic weak-reference enqueue, not JVM timing
+                var handle = gc.track(owner, cleanups::incrementAndGet);
+                handles.add(handle);
+                enqueue(handle);
+            }
+
+            var first = gc.collectPeriodic();
+            assertEquals(320, first.trackedBefore());
+            assertEquals(256, first.inspected());
+            assertEquals(256, first.cleaned());
+            assertEquals(64, first.trackedAfter());
+            assertFalse(first.jvmGcRequested());
+            assertEquals(0, jvmGcRequests.get());
+
+            var second = gc.collectPeriodic();
+            assertEquals(64, second.inspected());
+            assertEquals(64, second.cleaned());
+            assertEquals(0, second.trackedAfter());
+            assertEquals(320, cleanups.get());
+            assertEquals(0, jvmGcRequests.get());
+            // Retaining handles cannot accidentally repeat completed cleanups.
+            handles.forEach(RuntimeGarbageCollector.CleanupHandle::close);
+            assertEquals(320, cleanups.get());
+            java.lang.ref.Reference.reachabilityFence(owners);
+        }
+    }
+
+    @Test
+    void staleWeakReferenceNotificationsAreAlsoBoundedBySweepBudget() throws Exception {
+        try (RuntimeGarbageCollector gc = new RuntimeGarbageCollector(
+                () -> fail("background sweep must not request JVM GC"), Duration.ofHours(1))) {
+            ArrayList<Object> owners = new ArrayList<>();
+            ArrayList<RuntimeGarbageCollector.CleanupHandle> handles = new ArrayList<>();
+            AtomicInteger cleanups = new AtomicInteger();
+            for (int n = 0; n < 320; n++) {
+                Object owner = new Object();
+                owners.add(owner);
+                var handle = gc.track(owner, cleanups::incrementAndGet);
+                handles.add(handle);
+                handle.close();
+                // A released owner may later enqueue a stale weak reference.
+                enqueue(handle);
+            }
+            assertEquals(320, cleanups.get());
+            var first = gc.collectPeriodic();
+            assertEquals(256, first.inspected());
+            assertEquals(0, first.cleaned());
+            assertEquals(0, first.trackedAfter());
+            var second = gc.collectPeriodic();
+            assertEquals(64, second.inspected());
+            assertEquals(0, second.cleaned());
+            java.lang.ref.Reference.reachabilityFence(owners);
+            java.lang.ref.Reference.reachabilityFence(handles);
+        }
+    }
+
 }

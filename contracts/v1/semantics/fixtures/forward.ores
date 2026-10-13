@@ -1,0 +1,2 @@
+pub fnc main(): int { return times(7, 6); }
+fnc times(int a, int b): int { return a * b; }

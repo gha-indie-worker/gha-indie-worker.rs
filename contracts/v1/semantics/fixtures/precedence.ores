@@ -1,0 +1,1 @@
+pub fnc main(): int { return (2 + 3) * 8; }

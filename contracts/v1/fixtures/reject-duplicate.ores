@@ -1,0 +1,2 @@
+fnc same(): int { return 1; }
+fnc same(): int { return 2; }

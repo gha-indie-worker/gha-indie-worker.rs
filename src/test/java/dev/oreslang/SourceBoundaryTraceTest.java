@@ -51,9 +51,9 @@ final class SourceBoundaryTraceTest {
                         end
                         pub routine main(): void {
                           val worker = spawn Broken();
-                          await worker.ready;
+                          await worker.get_ready();
                           worker.send("go");
-                          await worker.done;
+                          await worker.get_done();
                           return;
                         }
                         """.formatted(kind)));

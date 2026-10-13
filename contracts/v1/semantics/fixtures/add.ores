@@ -1,0 +1,1 @@
+pub fnc main(): int { return 40 + 2; }

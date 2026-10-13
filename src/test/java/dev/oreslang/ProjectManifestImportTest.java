@@ -405,9 +405,9 @@ final class ProjectManifestImportTest {
 
                 pub async routine main(): void {
                   val worker = spawn Worker();
-                  await worker.ready;
+                  await worker.get_ready();
                   worker.send("go");
-                  await worker.done;
+                  await worker.get_done();
                   return;
                 }
                 """);

@@ -1,0 +1,38 @@
+name: Oreslang ADT PR623 exact-source funded CI
+on:
+  push:
+    branches:
+      - ci/oreslang-adt623-exact-20261013
+permissions:
+  contents: read
+concurrency:
+  group: adt623-exact-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  java-adt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Reconstruct and verify original Oreslang Git tree
+        shell: bash
+        run: |
+          git rm -q --cached -- .github/workflows/adt623-exact-source.yml
+          actual="$(git write-tree)"
+          test "$actual" = "025314531561f9ba58322194364e2263c7503c71"
+          echo "Source PR: 613ec7ce66498b513a271ad45232ed773f2efcf9"
+          echo "Verified source tree: $actual"
+      - name: Set up GraalVM 25
+        uses: graalvm/setup-graalvm@v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: ADT targeted JUnit
+        run: mvn -B -ntp -Dores.runtime.carriers=native -Dtest=AlgebraicDataTypeMatchTest,EnumScalarPayloadRangeHardeningTest,EnumOwnershipMatchTest,NestedEnumLocalValueTest test
+      - name: Full Java verify
+        run: mvn -B -ntp -Dores.runtime.carriers=native verify

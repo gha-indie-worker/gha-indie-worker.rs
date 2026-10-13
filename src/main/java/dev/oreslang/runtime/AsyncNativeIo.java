@@ -57,8 +57,11 @@ public final class AsyncNativeIo implements AutoCloseable {
             return result;
         }
         admitted.add(result);
+        long queued = CorePerf.start();
         try {
             workers.execute(() -> {
+                CorePerf.end(CorePerf.ASYNC_IO_QUEUE, queued);
+                long workPerf = CorePerf.start();
                 T value;
                 try {
                     value = work.call();
@@ -70,6 +73,8 @@ public final class AsyncNativeIo implements AutoCloseable {
                     if (failure instanceof ThreadDeath fatal) throw fatal;
                     if (failure instanceof LinkageError fatal) throw fatal;
                     return;
+                } finally {
+                    CorePerf.end(CorePerf.ASYNC_IO_WORK, workPerf);
                 }
                 synchronized (this) { admitted.remove(result); }
                 result.completeFromRuntime(value);

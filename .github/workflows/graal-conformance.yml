@@ -14,6 +14,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: Schema validator
+        run: python3 -m pip install --break-system-packages 'jsonschema>=4.20,<5'
       - name: Verify conformance runner failure handling
         run: |
           python3 contracts/v1/test_runner.py -v
@@ -30,8 +32,6 @@ jobs:
           cache: maven
       - name: Compile TypeSpec contracts
         run: npm --prefix contracts/v1 install --no-audit --no-fund && npm --prefix contracts/v1 run build && ./contracts/v1/node_modules/.bin/tsp compile contracts/v1/semantics && ./contracts/v1/node_modules/.bin/tsp compile contracts/v1/semantics/traces
-      - name: Schema validator
-        run: python3 -m pip install --break-system-packages 'jsonschema>=4.20,<5'
       - name: Verify metamorphic generator and adversarial actor trace contracts
         run: |
           python3 contracts/v1/semantics/metamorphic.py --self-test --count 64
@@ -50,6 +50,10 @@ jobs:
         run: python3 contracts/v1/run.py --backend graal --command 'python3 contracts/v1/java_probe.py {source}' --report target/conformance-graal.json
       - name: Validate Java borrow and semantic diagnostic cases
         run: python3 contracts/v1/semantics/run.py --backend graal --command 'python3 contracts/v1/java_probe.py {source}' --revision "${{ github.sha }}" --report target/semantics-graal.json
+      - name: Verify real shared actor mailbox trace against the contract
+        run: |
+          mvn -B -ntp -Dores.runtime.carriers=native -Dtest=ActorTraceContractIntegrationTest test
+          python3 contracts/v1/semantics/traces/validate.py target/actor-trace-graal.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -57,4 +61,5 @@ jobs:
           path: |
             target/conformance-graal.json
             target/semantics-graal.json
+            target/actor-trace-graal.json
           if-no-files-found: ignore

@@ -1,0 +1,12 @@
+{
+  "private": true,
+  "name": "oreslang-conformance-v1",
+  "version": "1.0.0",
+  "scripts": {
+    "build": "tsp compile ."
+  },
+  "devDependencies": {
+    "@typespec/compiler": "1.16.0",
+    "@typespec/json-schema": "1.16.0"
+  }
+}

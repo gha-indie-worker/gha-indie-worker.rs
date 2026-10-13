@@ -208,6 +208,8 @@ do select {
 }
 ```
 
+**One wait mode per selection:** the enclosing `select`, `nb select`, or `try select` controls whether the entire selection suspends, registers an asynchronous selection, or probes immediately. An arm is atomic and must use plain `readch` or `writech`. Arm-level `nb` or `try` modifiers are invalid. Standalone operations in arm bodies remain governed by their own rules.
+
 A read arm may bind with `let`, `val`, or `const`. `const` means the
 selected runtime value is bound immutably; it does not imply the message was a
 compile-time constant.
@@ -266,6 +268,52 @@ select random {
 
 Fairness policy governs the probe order among cases observed ready together.
 It cannot reverse a case that has already atomically won a readiness race.
+
+### Ownership at suspension and registration boundaries
+
+A blocking `select { ... }`, `readch`, `writech`, or `select from cases`
+may yield the actor execution lane. Because a different actor message may run
+before the suspended continuation resumes, the ownership checker rejects
+ordinary live lexical borrows across these operations, just as it does across
+`await`. Actor-confined `self` is the narrow mailbox-managed exception.
+`try select` and immediate channel probes do not suspend and may retain
+ordinary lexical borrows.
+
+A nonblocking operation returns without yielding the current activation.
+`nb readch` and `nb select from cases` register an operation and return
+a Future, so an otherwise unrelated borrow in the caller need not end.
+A static `nb select { ... }` additionally detaches *arm bodies*: every
+captured non-Copy owned value transfers to the selection at registration;
+captured ordinary borrows and MutexGuard-bearing values are rejected; and
+Copy values can be captured without moving the caller's binding. Actor
+`self` is only captured for re-entry on its own serialized lane. A read-arm
+binding shadows an outer binding of the same name and is not an outer capture.
+
+This distinction protects logical overlapping lifetimes even when the runtime
+never executes two actor turns on separate native threads.
+
+### Deferred channel write callbacks
+
+`nb cb writech channel, value || -> { ... }` evaluates and transfers its
+write payload when it registers the write. Its callback executes on a later
+serialized actor mailbox turn, so callback captures obey the same ownership
+lifetime rules as static `nb select` arms:
+
+- owned non-Copy captures move into the callback at registration; the
+  continuing caller cannot read, mutate, or transfer them;
+- ordinary borrowed captures (including aliases of actor `self`) and
+  guard-bearing captures are rejected;
+- Copy captures remain usable by the caller; a mutable capture transfers
+  exclusively, even when its underlying type is Copy;
+- only the canonical actor `self` mailbox capability has the special
+  actor-turn lifetime;
+- nested channel callbacks are included in outer deferred-capture scanning,
+  so callback nesting cannot revive a moved owner or conceal an alias.
+
+A nonblocking write with **no callback** does not detach a source-language arm;
+it transfers its outbound payload but does not capture unrelated locals.
+The runtime callback is only dispatched by the owning actor mailbox lane,
+not a producer or I/O thread.
 
 ## Nonblocking static select
 

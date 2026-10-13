@@ -138,6 +138,184 @@ final class TrapOptionSemanticsTest {
         assertTrue(generator.getMessage().contains("trap generator"));
     }
 
+
+    @Test
+    void everySynchronousTrappedResultRejectsAssignmentToBareSuccessType() {
+        String declarations = """
+                trap fnc number(): int { return 7; }
+                trap fnc truth(): bool { return true; }
+                trap fnc done(): void { return; }
+                trap fnc optional(): Option<int> { return None; }
+                """;
+        String[] invalidBindings = {
+                "val int unwrapped = number();",
+                "val bool unwrapped = truth();",
+                "val int unwrapped = optional();",
+                "val Option<int> flattened = optional();",
+                "val Option<int> wrong_void = done();"
+        };
+        for (String binding : invalidBindings) {
+            String source = declarations + "fnc check(): void { " + binding + " return; }";
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source), binding);
+        }
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(declarations + """
+                fnc check(): void {
+                  val Option<int> number_value = number();
+                  val Option<bool> truth_value = truth();
+                  val Option<void> finished = done();
+                  val Option<Option<int>> nested = optional();
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void trappedFunctionValueMustPreserveOptionReturn() throws Exception {
+        String source = """
+                trap fnc value(int x): int { return x + 1; }
+                pub fnc main(): void {
+                  val Fnc<int, Option<int>> callback = value;
+                  val Option<int> direct = value(9);
+                  val Option<int> via_callback = callback(9);
+                  stdio.stdout.write(direct.unwrap());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(via_callback.unwrap());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("10:10", run(source));
+
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                trap fnc value(int x): int { return x; }
+                fnc bad(): void {
+                  val Fnc<int, int> callback = value;
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void qualifiedModuleCallsRemainOptionTyped() throws Exception {
+        String source = """
+                define module safely as
+                  pub trap fnc value(): int { return 23; }
+                end
+                pub fnc main(): void {
+                  val Option<int> wrapped = safely.value();
+                  stdio.stdout.write(wrapped.unwrap());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("23", run(source));
+
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                define module safely as
+                  pub trap fnc value(): int { return 23; }
+                end
+                fnc bad(): void {
+                  val int raw = safely.value();
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void returnedNoneIsSomeNoneAndRuntimeFailureIsOuterNone() throws Exception {
+        String source = """
+                define class Animal as
+                end
+                define class Dog extends Animal as
+                end
+                define class Cat extends Animal as
+                end
+
+                trap fnc optional(bool enabled): Option<int> {
+                  if enabled; then
+                    return Some(21);
+                  fi
+                  return None;
+                }
+                trap fnc failed(Animal animal): Option<int> {
+                  val Dog dog = animal as Dog;
+                  return None;
+                }
+
+                pub fnc main(): void {
+                  val Option<Option<int>> none_value = optional(false);
+                  val Option<Option<int>> some_value = optional(true);
+                  val Option<Option<int>> failed_value = failed(new Cat());
+                  stdio.stdout.write(none_value.is_some());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(none_value.unwrap().is_none());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(some_value.unwrap().unwrap());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(failed_value.is_none());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("true:true:21:true", run(source));
+    }
+
+    @Test
+    void voidTrapReturnsSomeEvenWithoutValue() throws Exception {
+        String source = """
+                trap fnc done(): void {
+                  return;
+                }
+                pub fnc main(): void {
+                  val Option<void> completed = done();
+                  stdio.stdout.write(completed.is_some());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(completed.is_none());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("true:false", run(source));
+    }
+
+    @Test
+    void aTrapMayCallAnotherTrapWithoutImplicitFlattening() throws Exception {
+        String source = """
+                trap fnc inner(): int { return 11; }
+                trap fnc outer(): Option<int> {
+                  return inner();
+                }
+                pub fnc main(): void {
+                  val Option<Option<int>> nested = outer();
+                  stdio.stdout.write(nested.is_some());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(nested.unwrap().unwrap());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("true:11", run(source));
+    }
+
+    @Test
+    void ordinaryFunctionsRemainUnwrapped() throws Exception {
+        String source = """
+                fnc raw(): int { return 3; }
+                trap fnc safe(): int { return 7; }
+                pub fnc main(): void {
+                  val int a = raw();
+                  val Option<int> b = safe();
+                  stdio.stdout.write(a);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(b.unwrap());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("3:7", run(source));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "trap-option.ores")

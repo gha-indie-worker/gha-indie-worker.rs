@@ -34,14 +34,14 @@ final class SourceActorEndCleanupExecutionTest {
 
                 pub async routine main(): void {
                   val worker = spawn Worker();
-                  await worker.ready;
+                  await worker.get_ready();
                   worker.send("go");
 
                   for await const output of worker.outputs {
                     stdio.stdout.write(output.value);
                   }
 
-                  await worker.done;
+                  await worker.get_done();
                   return;
                 }
                 """;
@@ -68,14 +68,14 @@ final class SourceActorEndCleanupExecutionTest {
 
                 pub async routine main(): void {
                   val worker = spawn Worker();
-                  await worker.ready;
+                  await worker.get_ready();
                   worker.send("go");
 
                   for await const output of worker.outputs {
                     stdio.stdout.write(output.value);
                   }
 
-                  await worker.done;
+                  await worker.get_done();
                   return;
                 }
                 """;

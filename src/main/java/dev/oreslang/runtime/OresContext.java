@@ -40,6 +40,7 @@ public final class OresContext implements AutoCloseable {
 
     private final UUID contextId = UUID.randomUUID();
     private final AtomicLong schedulerSafepoints = new AtomicLong();
+    private final AtomicLong sourceLoopCooperates = new AtomicLong();
     private final IsolatePolicy isolatePolicy;
     private final RuntimePermissions runtimePermissions;
     private final PermissionCheckMode permissionCheckMode;
@@ -71,6 +72,7 @@ public final class OresContext implements AutoCloseable {
     }
 
     public OresContext(OresLanguage language, TruffleLanguage.Env env) {
+        long contextPerf = CorePerf.start();
         this.language = language;
         this.env = env;
         this.input = new BufferedReader(new InputStreamReader(env.in()));
@@ -86,12 +88,14 @@ public final class OresContext implements AutoCloseable {
         // admission while runtime CONTROL carriers remain prestarted.
         this.isolatedRootTurns = isolatePolicy.adversarial()
                 ? new ArrayBlockingQueue<>(65_536) : null;
+        long controlPerf = CorePerf.start();
         OresVM vm = OresVM.create(this::executeRootTurn,
                 isolatedRootTurns == null ? null : turn -> {
                     if (!isolatedRootTurns.offer(turn)) {
                         throw new RejectedExecutionException("isolated root turn queue is full");
                     }
                 });
+        CorePerf.end(CorePerf.VM_CONTROL_STARTUP, controlPerf);
         if (!vm.started()) {
             vm.close();
             throw new IllegalStateException(
@@ -125,6 +129,7 @@ public final class OresContext implements AutoCloseable {
             try { vm.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
             throw failure;
         }
+        CorePerf.end(CorePerf.CONTEXT_STARTUP, contextPerf);
     }
 
     public static OresContext get(Node node) {
@@ -204,6 +209,11 @@ public final class OresContext implements AutoCloseable {
     }
 
     public long schedulerSafepoints() { return schedulerSafepoints.get(); }
+
+    /** Count completed VM decisions to hand a source loop off cooperatively. */
+    public void recordSourceLoopCooperate() { sourceLoopCooperates.incrementAndGet(); }
+
+    public long sourceLoopCooperates() { return sourceLoopCooperates.get(); }
 
     /**
      * Host-managed cross-file link registry. Guest imports may only observe
@@ -317,6 +327,9 @@ public final class OresContext implements AutoCloseable {
                 if (pc == 1) {
                     if (resume.failure() != null) {
                         Throwable failure = OresFuture.unwrap(resume.failure());
+                        if (failure instanceof ProcessExitSignal exit) {
+                            return OresScheduler.done(exit.exitStatus());
+                        }
                         if (failure instanceof Exception checked) throw checked;
                         if (failure instanceof Error error) throw error;
                         throw new RuntimeException(failure);
@@ -391,7 +404,7 @@ public final class OresContext implements AutoCloseable {
 
 
     public Map<String, Object> processDescriptor() {
-        return Map.of(
+        Map<String, Object> descriptor = new java.util.HashMap<>(Map.of(
                 "context_id", contextId.toString(),
                 "runtime", "graalvm-truffle",
                 "language", "oreslang",
@@ -401,7 +414,9 @@ public final class OresContext implements AutoCloseable {
                 "root_scheduler", vm.rootScheduler().name(),
                 "scheduler_started", vm.started(),
                 "control_carriers_started", vm.controlCarrierCount(),
-                "scheduler_safepoints", schedulerSafepoints.get());
+                "scheduler_safepoints", schedulerSafepoints.get()));
+        descriptor.put("source_loop_cooperates", sourceLoopCooperates.get());
+        return Map.copyOf(descriptor);
     }
 
     @Override

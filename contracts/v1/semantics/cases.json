@@ -1,0 +1,126 @@
+{
+  "schema_version": "1.1.0",
+  "cases": [
+    {
+      "id": "native.add",
+      "feature": "numeric.add",
+      "source": "fixtures/add.ores",
+      "kind": "native_exit",
+      "expected_exit": 42,
+      "backends": {
+        "llvm": "required",
+        "graal": "required"
+      }
+    },
+    {
+      "id": "native.precedence",
+      "feature": "numeric.precedence",
+      "source": "fixtures/precedence.ores",
+      "kind": "native_exit",
+      "expected_exit": 40,
+      "backends": {
+        "llvm": "required",
+        "graal": "required"
+      }
+    },
+    {
+      "id": "native.forward",
+      "feature": "function.forward-call",
+      "source": "fixtures/forward.ores",
+      "kind": "native_exit",
+      "expected_exit": 42,
+      "backends": {
+        "llvm": "required",
+        "graal": "required"
+      }
+    },
+    {
+      "id": "native.underscores",
+      "feature": "numeric.integer-separators",
+      "source": "fixtures/underscores.ores",
+      "kind": "native_exit",
+      "expected_exit": 42,
+      "backends": {
+        "llvm": "required",
+        "graal": "required"
+      }
+    },
+    {
+      "id": "native.unary",
+      "feature": "numeric.unary-minus",
+      "source": "fixtures/unary.ores",
+      "kind": "native_exit",
+      "expected_exit": 42,
+      "backends": {
+        "llvm": "required",
+        "graal": "required"
+      }
+    },
+    {
+      "id": "diagnostic.unknown",
+      "feature": "type.unknown-name",
+      "source": "fixtures/unknown.ores",
+      "kind": "diagnostic",
+      "diagnostic_class": "unknown_name",
+      "backends": {
+        "llvm": "required",
+        "graal": "required"
+      }
+    },
+    {
+      "id": "diagnostic.arity",
+      "feature": "type.call-arity",
+      "source": "fixtures/arity.ores",
+      "kind": "diagnostic",
+      "diagnostic_class": "call_arity",
+      "backends": {
+        "llvm": "required",
+        "graal": "required"
+      }
+    },
+    {
+      "id": "diagnostic.duplicate",
+      "feature": "type.duplicate-name",
+      "source": "fixtures/duplicate.ores",
+      "kind": "diagnostic",
+      "diagnostic_class": "duplicate_declaration",
+      "backends": {
+        "llvm": "required",
+        "graal": "required"
+      }
+    },
+    {
+      "id": "diagnostic.overflow",
+      "feature": "numeric.literal-overflow",
+      "source": "fixtures/overflow.ores",
+      "kind": "diagnostic",
+      "diagnostic_class": "integer_overflow",
+      "backends": {
+        "llvm": "required",
+        "graal": "required"
+      }
+    },
+    {
+      "id": "diagnostic.comment",
+      "feature": "lexer.block-comment",
+      "source": "fixtures/comment.ores",
+      "kind": "diagnostic",
+      "diagnostic_class": "unterminated_comment",
+      "backends": {
+        "llvm": "required",
+        "graal": "required"
+      }
+    },
+    {
+      "id": "ownership.mutable-borrow",
+      "feature": "ownership.mutation-requires-borrow",
+      "source": "fixtures/ownership.ores",
+      "kind": "diagnostic",
+      "diagnostic_class": "ownership_violation",
+      "backends": {
+        "llvm": "required",
+        "graal": "required"
+      }
+    }
+  ]
+}

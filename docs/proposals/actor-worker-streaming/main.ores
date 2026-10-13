@@ -14,7 +14,7 @@
 define actor Worker as
 
   // No constructor. This hook runs in the actor's own execution domain
-  // before w.ready settles, and is not publicly callable.
+  // before w.get_ready() settles, and is not publicly callable.
   on_start(): void {
     return;
   }
@@ -40,7 +40,7 @@ pub async routine main(): void {
   // Async anonymous callback with slim arrow (future source feature).
   const create = async || -> {
     const w = spawn Worker();
-    await w.ready;
+    await w.get_ready();
     return w;            // ready resolves to void, so return actor reference
   };
 
@@ -63,9 +63,9 @@ pub async routine main(): void {
   done
 
   await Future.all([
-    workers[0].done,
-    workers[1].done,
-    workers[2].done
+    workers[0].get_done(),
+    workers[1].get_done(),
+    workers[2].get_done()
   ]);
   return;
 }

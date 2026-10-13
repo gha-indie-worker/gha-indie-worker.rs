@@ -286,6 +286,64 @@ final class MethodOverloadTest {
     }
 
     @Test
+    void inheritedPublicInstanceMethodCannotBecomePrivate() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Base as
+                          pub pick(int value): int { return value; }
+                        end
+                        define class Child extends Base as
+                          private pick(int value): int { return value; }
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("cannot override inherited public method"));
+        assertTrue(error.getMessage().contains("Child.pick"));
+    }
+
+    @Test
+    void diamondConflictCannotBeResolvedWithPrivateMethod() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Left as
+                          pub pick(int value): int { return value; }
+                        end
+                        define class Right as
+                          pub pick(int value): int { return value; }
+                        end
+                        define class Child extends Left, Right as
+                          private pick(int value): int { return value; }
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("cannot override inherited public method"));
+    }
+
+    @Test
+    void inheritedPublicStaticFunctionCannotBecomePrivate() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Base as
+                          pub static fnc pick(int value): int { return value; }
+                        end
+                        define class Child extends Base as
+                          private static fnc pick(int value): int { return value; }
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("cannot override inherited public static function"));
+    }
+
+    @Test
+    void publicOverrideMayResolvePrivateParentSlot() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Base as
+                  private pick(int value): int { return value; }
+                end
+                define class Child extends Base as
+                  pub pick(int value): int { return value; }
+                end
+                """)));
+    }
+
+    @Test
     void trueDiamondInheritanceOfTheSameDeclarationIsNotAmbiguous() throws Exception {
         String output = run("""
                 define module m

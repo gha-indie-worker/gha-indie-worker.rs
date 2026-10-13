@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oreslang.dev/conformance/semantics-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "cases"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.1.0"
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/case"
+      }
+    }
+  },
+  "$defs": {
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "feature",
+        "source",
+        "kind",
+        "backends"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$"
+        },
+        "feature": {
+          "type": "string",
+          "minLength": 3
+        },
+        "source": {
+          "type": "string",
+          "pattern": "^fixtures/[a-z][a-z0-9-]*\\.ores$"
+        },
+        "kind": {
+          "enum": [
+            "native_exit",
+            "diagnostic"
+          ]
+        },
+        "expected_exit": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 125
+        },
+        "diagnostic_class": {
+          "enum": [
+            "unknown_name",
+            "call_arity",
+            "duplicate_declaration",
+            "integer_overflow",
+            "unterminated_comment",
+            "ownership_violation"
+          ]
+        },
+        "backends": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "llvm",
+            "graal"
+          ],
+          "properties": {
+            "llvm": {
+              "enum": [
+                "required",
+                "pending"
+              ]
+            },
+            "graal": {
+              "enum": [
+                "required",
+                "pending"
+              ]
+            }
+          }
+        },
+        "pending_reason": {
+          "type": "string",
+          "minLength": 12
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "native_exit"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "expected_exit"
+            ],
+            "not": {
+              "required": [
+                "diagnostic_class"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "diagnostic"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "diagnostic_class"
+            ],
+            "not": {
+              "required": [
+                "expected_exit"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}
