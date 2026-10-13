@@ -95,8 +95,11 @@ disjointness from identical/overlapping structural shapes.
    tuple cross-products, and finite enum payloads. It rejects arms
    collectively made unreachable by earlier unconditional arms.
    Infinite, oversized, opaque and unresolved domains use a
-   conservative constructor/payload check instead. These checks
-   are not yet a general symbolic decision-matrix solver.
+   conservative constructor/payload check instead. Java constructs the
+   finite witness set only once per match and maintains incremental
+   unguarded-arm coverage. It caps match bodies at 4096 arms to prevent
+   unbounded compiler work. These checks are not yet a general symbolic
+   decision-matrix solver.
 8. Enum growth changes the resolved domain of `...Enum`; downstream
    exhaustive match compilation must be invalidated. Wire schema
    compatibility and deployed sender/receiver negotiation are
@@ -153,6 +156,18 @@ implemented. Standalone `Option` and `Result` remain ADT match subjects.
 - Equality and hashing depend on nominal identity and recursively
   equality-comparable payloads; hash-map admission needs immutable
   `Hash`/`Eq` keys. Do not hash only wire tags.
+
+## Executable differential corpus
+
+`contracts/v2/adt-conformance/cases.toml` is the versioned canonical
+Java/LLVM fixture manifest; `AdtConformanceCorpusTest` runs it under
+GraalVM (with compiler rejection and guest-stdout expectations). The
+manifest explicitly marks LLVM `pending` until native lowering and
+execution are verified. The corpus and exact-source Git tree identity
+are necessary integration assets, **not** evidence of passed tests.
+Recent external workflow runs failed with `startup_failure` before any
+JVM/Maven/JUnit step. The Java PR stays draft and must not be merged on
+source review alone.
 
 ## Required conformance matrix before language-level ADT parity
 
