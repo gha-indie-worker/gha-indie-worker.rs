@@ -29,7 +29,7 @@ mvn -B -ntp -Dores.runtime.carriers=native -Dtest=AlgebraicDataTypeMatchTest,Enu
 mvn -B -ntp -Dores.runtime.carriers=native verify
 ```
 
-The JUnit test reads the TOML manifest and fixtures directly; file paths
+The manifest now contains 14 cases, including legacy exclusive matches,\nlarge integer guard boundaries, and unary unsigned underflow.\n\nThe JUnit test reads the TOML manifest and fixtures directly; file paths
 are constrained to simple `.ores` filenames and duplicate case IDs fail.
 Keep all fixtures committed. Never silently skip a source fixture or mark
 a native backend `required` based only on source parsing.

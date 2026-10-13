@@ -91,3 +91,40 @@ java = "required"
 llvm = "pending"
 description = "Guarded arms cannot prove completeness"
 diagnostic_contains = "non-exhaustive match"
+
+[[case]]
+id = "exclusive.disjoint"
+source = "exclusive-disjoint.ores"
+kind = "run"
+java = "required"
+llvm = "pending"
+description = "Bare match requires unique explicit arm, unlike ordered match-over"
+expected_stdout = "1\n0\n"
+
+[[case]]
+id = "reject.exclusive.overlap"
+source = "exclusive-overlap.ores"
+kind = "reject"
+java = "required"
+llvm = "pending"
+description = "Legacy exclusive match rejects overlapping guarded arms"
+diagnostic_contains = "overlapping exclusive match arms"
+
+[[case]]
+id = "reject.exclusive.wide.guard"
+source = "exclusive-wide-guard.ores"
+kind = "reject"
+java = "required"
+llvm = "pending"
+description = "2^53 precision loss cannot prove numerical guards disjoint"
+diagnostic_contains = "overlapping exclusive match arms"
+
+[[case]]
+id = "reject.signed.unary.u8"
+source = "unary-u8-negative.ores"
+kind = "reject"
+java = "required"
+llvm = "pending"
+description = "Unary minus must not bypass unsigned source-width range check"
+diagnostic_contains = "out of range"
+

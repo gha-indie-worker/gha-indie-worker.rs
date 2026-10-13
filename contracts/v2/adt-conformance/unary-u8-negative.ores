@@ -1,0 +1,6 @@
+define enum Value as
+    Byte: u8
+end
+fnc invalid(): Value {
+    return Value.Byte(-1);
+}

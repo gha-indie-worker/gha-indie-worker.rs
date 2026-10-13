@@ -1853,10 +1853,12 @@ public final class TypeChecker {
                 Type actual = deref(typeOf(cast.value(), env, generics, self));
                 requireAssignable(actual, resolve(variant.sourcePayload(), generics, self),
                         "payload for " + variant.qualifiedName());
-                if (cast.value() instanceof Ast.LiteralExpr literal
-                        && EXACT_WIDTH_ENUM_SCALARS.contains(variant.sourcePayload().name())) {
-                    NominalEnumValueGuards.requireValue(
-                            taggedMessages, variant.sourcePayload(), literal.value());
+                if (EXACT_WIDTH_ENUM_SCALARS.contains(variant.sourcePayload().name())) {
+                    java.math.BigInteger constant = enumIntegralConstant(cast.value());
+                    if (constant != null) {
+                        NominalEnumValueGuards.requireValue(
+                                taggedMessages, variant.sourcePayload(), constant);
+                    }
                 }
                 return new Named(variant.qualifiedName(), List.of());
             }
@@ -2025,12 +2027,14 @@ public final class TypeChecker {
                         // The present numeric Type IR erases u8/i16/u32 width.
                         // Do not accept a visibly out-of-range constant and
                         // defer a guaranteed failure until the runtime.
-                        if (call.arguments().getFirst() instanceof Ast.LiteralExpr literal
-                                && Set.of("i8", "i16", "i32", "u8", "u16",
-                                        "u32", "u64", "uint").contains(
-                                        enumCase.sourcePayload().name())) {
-                            NominalEnumValueGuards.requirePayload(
-                                    taggedMessages, enumCase, literal.value());
+                        if (EXACT_WIDTH_ENUM_SCALARS.contains(
+                                enumCase.sourcePayload().name())) {
+                            java.math.BigInteger constant =
+                                    enumIntegralConstant(call.arguments().getFirst());
+                            if (constant != null) {
+                                NominalEnumValueGuards.requirePayload(
+                                        taggedMessages, enumCase, constant);
+                            }
                         }
                     }
                     return new Named(enumCase.qualifiedName(), List.of());
@@ -4632,6 +4636,37 @@ public final class TypeChecker {
                 : new TaggedMessageContracts.Domain(named.name(), List.of(singleton));
     }
 
+    /**
+     * Extract a purely syntactic integer constant without evaluating user
+     * expressions or invoking the interpreter. Unary sign is significant:
+     * "-1 as E.Byte" must not bypass a u8 guard merely because its AST is
+     * a UnaryExpr rather than a LiteralExpr.
+     *
+     * This is intentionally NOT general constant folding. Nonconstant
+     * expressions are still checked by the runtime enum constructor.
+     */
+    private static java.math.BigInteger enumIntegralConstant(Ast.Expr expr) {
+        if (expr instanceof Ast.LiteralExpr literal) {
+            Object raw = literal.value();
+            if (raw instanceof java.math.BigInteger big) return big;
+            if (raw instanceof Byte || raw instanceof Short
+                    || raw instanceof Integer || raw instanceof Long) {
+                return java.math.BigInteger.valueOf(((Number) raw).longValue());
+            }
+            return null;
+        }
+        if (expr instanceof Ast.UnaryExpr unary) {
+            java.math.BigInteger inner = enumIntegralConstant(unary.operand());
+            if (inner == null) return null;
+            return switch (unary.operator()) {
+                case "+" -> inner;
+                case "-" -> inner.negate();
+                default -> null;
+            };
+        }
+        return null;
+    }
+
     private static final Set<String> EXACT_WIDTH_ENUM_SCALARS = Set.of(
             "i8", "i16", "i32", "u8", "u16", "u32", "u64", "uint");
 
@@ -5030,6 +5065,14 @@ public final class TypeChecker {
                     + " arms; split the decision into smaller match expressions");
         }
 
+        if (!matched.ordered()) {
+            long fallbackCount = arms.stream().filter(this::isFallbackArm).count();
+            if (fallbackCount > 1) {
+                throw new IllegalArgumentException(
+                        "exclusive match has multiple fallback arms");
+            }
+        }
+
         // Build finite witnesses once. Re-enumerating them for each arm and
         // re-testing every earlier arm produced an avoidable quadratic/cubic
         // proof cost for large enums or tuple products.
@@ -5078,6 +5121,10 @@ public final class TypeChecker {
                     }
                 }
             }
+        }
+
+        if (!matched.ordered()) {
+            validateExclusiveMatchArms(arms, subject, generics, self);
         }
 
         boolean exhaustive = coveredByUnguarded != null
@@ -5300,6 +5347,36 @@ public final class TypeChecker {
         return false;
     }
 
+    /**
+     * Compare statically known numerical pattern literals using the same
+     * carrier semantics as the interpreter, not Java wrapper equality:
+     * 1L matches 1.0 and -0.0 matches +0.0. Unknown Number subclasses
+     * return null, meaning that no disjointness/subsumption proof exists.
+     */
+    private static Boolean numericPatternLiteralEquality(Number a, Number b) {
+        boolean ai = a instanceof Byte || a instanceof Short
+                || a instanceof Integer || a instanceof Long;
+        boolean bi = b instanceof Byte || b instanceof Short
+                || b instanceof Integer || b instanceof Long;
+        if (ai && bi) return a.longValue() == b.longValue();
+
+        if (a instanceof java.math.BigDecimal || b instanceof java.math.BigDecimal
+                || a instanceof java.math.BigInteger || b instanceof java.math.BigInteger) {
+            try {
+                return new java.math.BigDecimal(a.toString())
+                        .compareTo(new java.math.BigDecimal(b.toString())) == 0;
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        boolean af = a instanceof Float || a instanceof Double;
+        boolean bf = b instanceof Float || b instanceof Double;
+        if ((ai || af) && (bi || bf)) {
+            return a.doubleValue() == b.doubleValue();
+        }
+        return null;
+    }
+
     private boolean patternSubsumes(
             Ast.Pattern earlier,
             Ast.Pattern later,
@@ -5310,6 +5387,9 @@ public final class TypeChecker {
         if (later instanceof Ast.WildcardPattern || later instanceof Ast.BindingPattern) return false;
 
         if (earlier instanceof Ast.LiteralPattern a && later instanceof Ast.LiteralPattern b) {
+            if (a.value() instanceof Number x && b.value() instanceof Number y) {
+                return Boolean.TRUE.equals(numericPatternLiteralEquality(x, y));
+            }
             return java.util.Objects.equals(a.value(), b.value());
         }
 
@@ -5370,21 +5450,92 @@ public final class TypeChecker {
         return false;
     }
 
+    /**
+     * Legacy `match subject` (without `over`) chooses exactly one
+     * non-fallback branch. The interpreter rejects multiple matching arms,
+     * so the compiler must never accept overlapping explicit alternatives
+     * based on *ordered* first-match semantics.
+     *
+     * Guards only establish disjointness when the existing numerical guard
+     * range proof can establish it; side-effecting/unknown guards never do.
+     */
+    private void validateExclusiveMatchArms(
+            List<Ast.MatchArm> arms, Type subject,
+            Set<String> generics, Type self) {
+        boolean foundFallback = false;
+        for (int i = 0; i < arms.size(); i++) {
+            Ast.MatchArm current = arms.get(i);
+            if (isFallbackArm(current)) {
+                if (foundFallback) {
+                    throw new IllegalArgumentException(
+                            "exclusive match has multiple fallback arms");
+                }
+                foundFallback = true;
+                continue;
+            }
+            for (int j = 0; j < i; j++) {
+                Ast.MatchArm previous = arms.get(j);
+                if (isFallbackArm(previous)) continue;
+                boolean exclusive = patternsProvablyDisjoint(
+                        previous.pattern(), current.pattern(), subject, generics, self);
+                if (!exclusive && previous.guard() != null && current.guard() != null
+                        && previous.pattern().equals(current.pattern())) {
+                    // The same lexical name in two DIFFERENT patterns may
+                    // refer to different tuple/record positions. Comparing
+                    // their numerical guard ranges is sound only when both
+                    // patterns bind that name to the exact same projection.
+                    exclusive = guardsProvablyDisjoint(previous.guard(), current.guard());
+                }
+                if (!exclusive) {
+                    throw new IllegalArgumentException(
+                            "overlapping exclusive match arms " + (j + 1)
+                                    + " and " + (i + 1)
+                                    + "; use ordered 'match ... over' for precedence"
+                                    + " or prove the legacy arms disjoint");
+                }
+            }
+        }
+    }
+
     private boolean patternsProvablyDisjoint(
             Ast.Pattern left, Ast.Pattern right, Type subject, Set<String> generics, Type self) {
         if (left instanceof Ast.WildcardPattern || right instanceof Ast.WildcardPattern
                 || left instanceof Ast.BindingPattern || right instanceof Ast.BindingPattern) return false;
         if (left instanceof Ast.LiteralPattern a && right instanceof Ast.LiteralPattern b) {
+            if (a.value() instanceof Number x && b.value() instanceof Number y) {
+                // A proof of *difference* needs trusted runtime equality.
+                // Unknown numeric carriers are conservatively overlapping.
+                return Boolean.FALSE.equals(numericPatternLiteralEquality(x, y));
+            }
             return !java.util.Objects.equals(a.value(), b.value());
         }
         if (left instanceof Ast.ConstructorPattern a && right instanceof Ast.ConstructorPattern b) {
             if (!a.constructor().equals(b.constructor())) {
+                // Different qualified nominal cases have different tags,
+                // regardless of their payloads. Neither can match the other.
+                if (taggedCaseOrNull(a.constructor()) != null
+                        && taggedCaseOrNull(b.constructor()) != null) return true;
                 if ((a.constructor().equals("Some") && b.constructor().equals("None"))
                         || (a.constructor().equals("None") && b.constructor().equals("Some"))
                         || (a.constructor().equals("Ok") && b.constructor().equals("Err"))
                         || (a.constructor().equals("Err") && b.constructor().equals("Ok"))) return true;
+                return false;
+            }
+            if (a.arguments().size() != b.arguments().size()) return false;
+            for (int i = 0; i < a.arguments().size(); i++) {
+                if (patternsProvablyDisjoint(
+                        a.arguments().get(i), b.arguments().get(i),
+                        Unknown.INSTANCE, generics, self)) return true;
             }
             return false;
+        }
+        if (left instanceof Ast.TuplePattern a && right instanceof Ast.TuplePattern b
+                && a.elements().size() == b.elements().size()) {
+            for (int i = 0; i < a.elements().size(); i++) {
+                if (patternsProvablyDisjoint(
+                        a.elements().get(i), b.elements().get(i),
+                        Unknown.INSTANCE, generics, self)) return true;
+            }
         }
         if (left instanceof Ast.TypePattern a && right instanceof Ast.TypePattern b) {
             Type at = deref(resolve(a.type(), generics, self));
@@ -5408,7 +5559,25 @@ public final class TypeChecker {
                 || !(binary.left() instanceof Ast.NameExpr name)
                 || !(binary.right() instanceof Ast.LiteralExpr literal)
                 || !(literal.value() instanceof Number number)) return null;
-        double v = number.doubleValue();
+        // These range proofs use double endpoints. A wide integer (for
+        // example 2^53+1) must NOT be rounded to 2^53 here, since the two
+        // source comparisons may overlap even when their rounded bounds
+        // falsely appear adjacent/disjoint. Unknown number kinds also fail
+        // closed instead of permitting an approximate uniqueness proof.
+        final double v;
+        if (number instanceof Byte || number instanceof Short
+                || number instanceof Integer || number instanceof Long) {
+            long integer = number.longValue();
+            final long exactDoubleIntegerLimit = 9_007_199_254_740_992L;
+            if (integer < -exactDoubleIntegerLimit
+                    || integer > exactDoubleIntegerLimit) return null;
+            v = integer;
+        } else if (number instanceof Double || number instanceof Float) {
+            v = number.doubleValue();
+            if (!Double.isFinite(v)) return null;
+        } else {
+            return null;
+        }
         return switch (binary.operator()) {
             case "<" -> new GuardRange(name.name(), Double.NEGATIVE_INFINITY, false, v, false);
             case "<=" -> new GuardRange(name.name(), Double.NEGATIVE_INFINITY, false, v, true);

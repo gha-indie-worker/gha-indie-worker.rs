@@ -181,6 +181,43 @@ final class EnumScalarPayloadRangeHardeningTest {
     }
 
     @Test
+    void unarySignedExactWidthConstantsCannotBypassSourceChecks() {
+        String decls = """
+                define enum Status as
+                    Byte: u8
+                    Small: i8
+                end
+                """;
+        for (String illegal : List.of(
+                "Status.Byte(-1)",
+                "Status.Byte(+256)",
+                "Status.Byte(-(+1))",
+                "-1 as Status.Byte",
+                "+256 as Status.Byte",
+                "Status.Small(-129)",
+                "Status.Small(+128)",
+                "-129 as Status.Small")) {
+            String source = decls + "fnc invalid(): void { val x = "
+                    + illegal + "; return; }";
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), illegal);
+            assertTrue(failure.getMessage().contains("out of range"),
+                    illegal + ": " + failure);
+        }
+        for (String legal : List.of(
+                "Status.Byte(+0)",
+                "Status.Byte(255)",
+                "+255 as Status.Byte",
+                "Status.Small(-128)",
+                "Status.Small(+127)",
+                "-128 as Status.Small")) {
+            String source = decls + "fnc valid(): void { val x = "
+                    + legal + "; return; }";
+            assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)), legal);
+        }
+    }
+
+    @Test
     void numericLiteralCasePatternsCannotRepresentOutOfRangeValues() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define enum Status as

@@ -1,0 +1,8 @@
+fnc invalid(bool input, bool condition): int {
+    match input
+        true when condition -> { return 1; }
+        true when condition -> { return 2; }
+        false -> { return 0; }
+        else -> { return -1; }
+    end
+}

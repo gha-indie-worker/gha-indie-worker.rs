@@ -301,8 +301,12 @@ final class AlgebraicDataTypeMatchTest {
             source.append("on true -> { return 1; }\\n");
         }
         source.append("end\\n}");
-        assertTrue(rejects(source.toString())
-                .getMessage().contains("match exceeds 4096 arms"));
+        // Bound the parser itself; accepting 100k arms before TypeChecker
+        // notices the quota would still be an untrusted-source DoS.
+        IllegalArgumentException parsed = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(source.toString()));
+        assertTrue(parsed.getMessage().contains("match exceeds 4096 arms"),
+                parsed.toString());
     }
 
     @Test

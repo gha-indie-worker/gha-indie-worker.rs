@@ -9,6 +9,9 @@ import static dev.oreslang.parser.Token.Type.*;
 
 public final class Parser {
     public static final String ROOT_MODULE = "__root__";
+    // Match exhaustiveness and runtime dispatch have the same budget; parse
+    // admission must not allocate an arbitrarily large arm list first.
+    private static final int MAX_MATCH_ARMS = 4096;
 
     public record SyntaxWarning(int line, int column, String message) { }
 
@@ -2544,6 +2547,9 @@ public final class Parser {
 
         List<Ast.MatchArm> arms = new ArrayList<>();
         while (!check(END) && !check(EOF)) {
+            if (arms.size() >= MAX_MATCH_ARMS) {
+                throw error(peek(), "match exceeds " + MAX_MATCH_ARMS + " arms");
+            }
             if (canonicalOver) {
                 if (!matchContextualIdentifier("on")) {
                     if (check(ELSE) || check(DEFAULT)) {

@@ -1,0 +1,11 @@
+fnc classify(bool value): int {
+    match value
+        true -> { return 1; }
+        false -> { return 0; }
+    end
+}
+pub fnc main(): void {
+    stdio.println(classify(true));
+    stdio.println(classify(false));
+    return;
+}

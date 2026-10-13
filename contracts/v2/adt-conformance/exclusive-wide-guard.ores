@@ -1,0 +1,10 @@
+define enum CountState as
+    Count: int
+end
+fnc invalid(CountState state): int {
+    match state
+        CountState.Count(x) when x < 9007199254740993 -> { return 1; }
+        CountState.Count(x) when x >= 9007199254740992 -> { return 2; }
+        else -> { return 0; }
+    end
+}
