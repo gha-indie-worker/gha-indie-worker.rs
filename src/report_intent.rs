@@ -520,10 +520,12 @@ pub(crate) async fn record_delivery(
         }
     }
     match delivery {
-        Delivery::CheckRun if check_run_id.is_some()
-            && intent.check_run_id == check_run_id
-            && intent.execution_state != ExecutionState::Active
-            && intent.desired_conclusion.is_some() =>
+        Delivery::CheckRun if crate::report_admission_core::may_mark_delivered(
+            intent.check_run_id,
+            check_run_id,
+            intent.execution_state != ExecutionState::Active,
+            intent.desired_conclusion.is_some(),
+        ) =>
         {
             intent.report_delivery_state = ReportDeliveryState::Delivered;
             intent.last_report_error_class = None;
@@ -625,13 +627,25 @@ fn job_matches_intent(intent: &ReportIntent, job: &crate::types::BuildJobRecord)
     ) else {
         return false;
     };
-    target.owner.eq_ignore_ascii_case(&intent.owner)
-        && target.repo.eq_ignore_ascii_case(&intent.repo)
-        && target.head_sha == intent.head_sha
-        && job.request.request_id.as_deref()
-            .filter(|value| safe_attempt_id(value))
-            .unwrap_or(&job.id) == intent.logical_attempt_id
-        && target.installation_id == intent.installation_candidate
+    use crate::report_admission_core::{same_attempt, AttemptIdentity};
+    same_attempt(
+        AttemptIdentity {
+            owner: &intent.owner,
+            repo: &intent.repo,
+            head_sha: &intent.head_sha,
+            attempt_id: &intent.logical_attempt_id,
+            installation_id: intent.installation_candidate,
+        },
+        AttemptIdentity {
+            owner: &target.owner,
+            repo: &target.repo,
+            head_sha: &target.head_sha,
+            attempt_id: job.request.request_id.as_deref()
+                .filter(|value| safe_attempt_id(value))
+                .unwrap_or(&job.id),
+            installation_id: target.installation_id,
+        },
+    )
 }
 
 async fn reconcile_one(state: &AppState, intent: &mut ReportIntent) {
