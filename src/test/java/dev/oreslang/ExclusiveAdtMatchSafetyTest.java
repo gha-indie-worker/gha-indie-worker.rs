@@ -2,7 +2,12 @@ package dev.oreslang;
 
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -185,6 +190,38 @@ final class ExclusiveAdtMatchSafetyTest {
                 () -> TypeChecker.check(Parser.parse(source)));
         assertTrue(error.getMessage().contains("unreachable match arm"),
                 error.toString());
+    }
+
+    @Test
+    void guestRuntimeUsesFirstMatchingOrderedArmAndFallsThroughFalseGuards() throws Exception {
+        String program = """
+                fnc classify(bool value, bool gate): int {
+                    match value over
+                        on true when gate -> { return 1; }
+                        on true when gate -> { return 2; }
+                        on false -> { return 0; }
+                        on _ -> { return 3; }
+                    end
+                }
+                pub fnc main(): void {
+                    stdio.println(classify(true, true));
+                    stdio.println(classify(true, false));
+                    stdio.println(classify(false, true));
+                    return;
+                }
+                """;
+        accepts(program);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source guest = Source.newBuilder(OresLanguage.ID,
+                program, "ordered-match-guard-runtime.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(guest);
+        }
+        assertEquals("1\\n3\\n0",
+                output.toString(StandardCharsets.UTF_8)
+                        .strip().replace("\\r\\n", "\\n"));
     }
 
     @Test
