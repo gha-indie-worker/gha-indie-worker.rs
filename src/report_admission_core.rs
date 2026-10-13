@@ -33,6 +33,15 @@ pub(crate) fn may_reserve_create(
     check_run_id.is_none() && !create_attempted && pending && execution_active
 }
 
+/// A successful HTTP PATCH is not evidence of the *intended* verdict if the
+/// caller was forced to publish failure after an unpersisted local result.
+pub(crate) fn conclusion_matches(deliberate: Option<&str>, reported_success: bool) -> bool {
+    matches!(
+        (deliberate, reported_success),
+        (Some("success"), true) | (Some("failure"), false)
+    )
+}
+
 /// Never mark local success as App-delivered unless a specific already-bound
 /// Check Run accepted a terminal verdict after execution was durably recorded.
 pub(crate) fn may_mark_delivered(
@@ -116,6 +125,17 @@ mod tests {
         assert!(!may_mark_delivered(None, Some(7), true, true));
         assert!(!may_mark_delivered(Some(7), Some(8), true, true));
         assert!(!may_mark_delivered(Some(0), Some(0), true, true));
+    }
+
+    #[test]
+    fn success_and_failure_must_match_the_actual_published_check_verdict() {
+        assert!(conclusion_matches(Some("success"), true));
+        assert!(conclusion_matches(Some("failure"), false));
+        assert!(!conclusion_matches(Some("success"), false));
+        assert!(!conclusion_matches(Some("failure"), true));
+        assert!(!conclusion_matches(None, false));
+        assert!(!conclusion_matches(None, true));
+        assert!(!conclusion_matches(Some("neutral"), false));
     }
 
     #[test]
