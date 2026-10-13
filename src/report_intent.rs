@@ -260,13 +260,14 @@ async fn persist(state: &AppState, intent: &ReportIntent) -> Result<(), String> 
         .map_err(|error| format!("could not fsync report intent: {error}"))?;
     drop(file);
 
-    if let Err(first_error) = fs::rename(&temp, &path).await {
-        // Windows cannot atomically replace an existing destination. Keep the
-        // compatibility fallback bounded and never leave a partial temp file.
-        if fs::remove_file(&path).await.is_err() || fs::rename(&temp, &path).await.is_err() {
-            let _ = fs::remove_file(&temp).await;
-            return Err(format!("could not publish report intent: {first_error}"));
-        }
+    if let Err(error) = fs::rename(&temp, &path).await {
+        // #80: NEVER unlink the existing durable journal to make a Windows
+        // rename work. A crash between unlink and rename destroys the only
+        // authoritative evidence. Reject this update without changing the
+        // durable prior version. The production Windows adapter needs
+        // ReplaceFileW or a transactional database, not delete-and-rename.
+        let _ = fs::remove_file(&temp).await;
+        return Err(format!("atomic report-intent replacement unavailable: {error}"));
     }
     sync_parent_directory(&root)?;
     Ok(())
@@ -285,6 +286,13 @@ async fn read_intent_path(path: &Path) -> Result<ReportIntent, String> {
     let intent: ReportIntent = serde_json::from_slice(&bytes)
         .map_err(|error| format!("invalid report-intent JSON: {error}"))?;
     validate(&intent)?;
+    let expected_name = intent_path(
+        path.parent().ok_or_else(|| "missing report-intent parent".to_string())?,
+        &intent,
+    );
+    if path != expected_name {
+        return Err("report-intent filename does not match logical attempt".to_string());
+    }
     Ok(intent)
 }
 
@@ -478,12 +486,17 @@ pub(crate) async fn record_delivery(
         }
     }
     match delivery {
-        Delivery::CheckRun => {
+        Delivery::CheckRun if intent.execution_state != ExecutionState::Active
+            && intent.desired_conclusion.is_some() =>
+        {
             intent.report_delivery_state = ReportDeliveryState::Delivered;
             intent.last_report_error_class = None;
             intent.last_observed_check_state = Some(
                 format!("completed:{}", intent.desired_conclusion.as_deref().unwrap_or("unknown")),
             );
+        }
+        Delivery::CheckRun => {
+            intent.last_report_error_class = Some("delivery_before_terminal_execution".to_string());
         }
         Delivery::Undelivered | Delivery::NotConfigured => {
             intent.last_report_error_class = Some("undelivered".to_string());
@@ -562,6 +575,27 @@ fn authority_still_matches(state: &AppState, intent: &ReportIntent) -> bool {
         && state.config.github_app_id.as_deref() == Some(intent.reporter_app_id.as_str())
 }
 
+/// A journal is keyed by the exact verified source and one logical attempt.
+/// The ephemeral job map is NOT trusted to supply an outcome merely because
+/// it contains a matching job_id; webhook redelivery can replace/reuse data.
+fn job_matches_intent(intent: &ReportIntent, job: &crate::types::BuildJobRecord) -> bool {
+    if job.id != intent.job_id {
+        return false;
+    }
+    let Some(target) = crate::checks::target_from_request(
+        &job.request.repo_url,
+        job.request.commit_sha.as_deref(),
+        job.request.github_installation_id,
+    ) else {
+        return false;
+    };
+    target.owner.eq_ignore_ascii_case(&intent.owner)
+        && target.repo.eq_ignore_ascii_case(&intent.repo)
+        && target.head_sha == intent.head_sha
+        && job.request.request_id.as_deref().unwrap_or(&job.id) == intent.logical_attempt_id
+        && target.installation_id == intent.installation_candidate
+}
+
 async fn reconcile_one(state: &AppState, intent: &mut ReportIntent) {
     // Every non-Pending state is terminal. In particular PermanentFailure must
     // never later become Reconciled merely because a subsequent API call works.
@@ -579,6 +613,16 @@ async fn reconcile_one(state: &AppState, intent: &mut ReportIntent) {
     if intent.execution_state == ExecutionState::Active {
         let current = state.jobs.read().await.get(&intent.job_id).cloned();
         if let Some(job) = current {
+            if !job_matches_intent(intent, &job) {
+                // #78: never import a success from a different repo, commit,
+                // App installation or logical attempt. This is permanent
+                // identity drift, not a transient GitHub API failure.
+                intent.report_delivery_state = ReportDeliveryState::PermanentFailure;
+                intent.last_report_error_class = Some("execution_identity_mismatch".to_string());
+                intent.last_observed_check_state = Some("untrusted_job_identity".to_string());
+                let _ = persist(state, intent).await;
+                return;
+            }
             match job.status {
                 BuildStatus::Queued | BuildStatus::Running => return,
                 BuildStatus::Succeeded => {
