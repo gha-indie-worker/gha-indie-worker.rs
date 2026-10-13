@@ -828,7 +828,9 @@ pub(crate) async fn report_finished(
         );
     }
     if reporter == Reporter::CheckRun {
-        crate::report_intent::record_delivery(state, target, check_run_id, delivery).await;
+        crate::report_intent::record_delivery(
+            state, target, check_run_id, delivery, effective_succeeded,
+        ).await;
     }
     delivery
 }
