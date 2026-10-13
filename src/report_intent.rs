@@ -253,7 +253,10 @@ async fn persist(state: &AppState, intent: &ReportIntent) -> Result<(), String> 
         return Err("report intent exceeds size bound".to_string());
     }
 
-    let mut file = fs::File::create(&temp)
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)
         .await
         .map_err(|error| format!("could not create report intent: {error}"))?;
     file.write_all(&bytes)
@@ -310,7 +313,7 @@ async fn load_durable_intent(state: &AppState, expected: &ReportIntent) -> Resul
     Ok(current)
 }
 
-async fn logical_attempt_for_job(state: &AppState, job_id: &str) -> String {
+pub(crate) async fn logical_attempt_for_job(state: &AppState, job_id: &str) -> String {
     let jobs = state.jobs.read().await;
     jobs.get(job_id)
         .and_then(|job| job.request.request_id.as_deref())
@@ -515,7 +518,9 @@ pub(crate) async fn record_delivery(
         }
     }
     match delivery {
-        Delivery::CheckRun if intent.execution_state != ExecutionState::Active
+        Delivery::CheckRun if check_run_id.is_some()
+            && intent.check_run_id == check_run_id
+            && intent.execution_state != ExecutionState::Active
             && intent.desired_conclusion.is_some() =>
         {
             intent.report_delivery_state = ReportDeliveryState::Delivered;
@@ -621,7 +626,9 @@ fn job_matches_intent(intent: &ReportIntent, job: &crate::types::BuildJobRecord)
     target.owner.eq_ignore_ascii_case(&intent.owner)
         && target.repo.eq_ignore_ascii_case(&intent.repo)
         && target.head_sha == intent.head_sha
-        && job.request.request_id.as_deref().unwrap_or(&job.id) == intent.logical_attempt_id
+        && job.request.request_id.as_deref()
+            .filter(|value| safe_attempt_id(value))
+            .unwrap_or(&job.id) == intent.logical_attempt_id
         && target.installation_id == intent.installation_candidate
 }
 
