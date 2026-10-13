@@ -58,6 +58,10 @@ pub(crate) struct ReportIntent {
     pub(crate) reporter_app_id: String,
     pub(crate) installation_candidate: Option<u64>,
     pub(crate) check_run_id: Option<u64>,
+    /// Persisted before submitting a create call. A lost response must never
+    /// cause an automatic second authoritative Check Run for this attempt.
+    #[serde(default)]
+    pub(crate) check_create_attempted: bool,
     pub(crate) execution_state: ExecutionState,
     pub(crate) execution_finished_at_ms: Option<u64>,
     pub(crate) desired_conclusion: Option<String>,
@@ -350,6 +354,7 @@ pub(crate) async fn begin(
         reporter_app_id: app_id,
         installation_candidate: target.installation_id,
         check_run_id: None,
+        check_create_attempted: false,
         execution_state: ExecutionState::Active,
         execution_finished_at_ms: None,
         desired_conclusion: None,
@@ -377,6 +382,30 @@ pub(crate) async fn begin(
     }
     persist(state, &intent).await?;
     Ok(Some(intent))
+}
+
+/// Reserve the single allowed GitHub create attempt in the durable journal
+/// before touching the Checks API. If creation is ambiguous, the reconciler
+/// must recover by deterministic external_id (or fail closed); it must never
+/// blindly create another App-owned check. The process-local striped lock in
+/// checks.rs serializes discovery + reservation + create for each attempt.
+pub(crate) async fn reserve_check_creation(
+    state: &AppState,
+    intent: &mut ReportIntent,
+) -> Result<bool, String> {
+    let _guard = REPORT_JOURNAL_LOCK.lock().await;
+    let mut current = load_durable_intent(state, intent).await?;
+    if current.check_run_id.is_some() || current.check_create_attempted
+        || current.report_delivery_state != ReportDeliveryState::Pending
+        || current.execution_state != ExecutionState::Active
+    {
+        *intent = current;
+        return Ok(false);
+    }
+    current.check_create_attempted = true;
+    persist(state, &current).await?;
+    *intent = current;
+    Ok(true)
 }
 
 pub(crate) async fn record_check_id(
@@ -828,6 +857,7 @@ mod tests {
             reporter_app_id: "42".to_string(),
             installation_candidate: Some(7),
             check_run_id: None,
+        check_create_attempted: false,
             execution_state: ExecutionState::Active,
             execution_finished_at_ms: None,
             desired_conclusion: None,
@@ -918,6 +948,21 @@ mod tests {
         assert!(binding_changed || execution_changed);
         assert_eq!(intent.check_run_id, Some(7));
         assert_eq!(intent.execution_finished_at_ms, Some(10));
+    }
+
+    #[test]
+    fn create_attempt_reservation_remains_default_off_for_legacy_journal() {
+        let mut intent = test_intent();
+        assert!(!intent.check_create_attempted);
+        let wire = serde_json::to_string(&intent).expect("serialize");
+        assert!(wire.contains("check_create_attempted"));
+        let recovered: ReportIntent = serde_json::from_str(
+            &wire.replace("\\"check_create_attempted\\":false,", "")
+                 .replace(",\\"check_create_attempted\\":false", "")
+        ).expect("legacy journal");
+        assert!(!recovered.check_create_attempted);
+        intent.check_create_attempted = true;
+        assert!(validate(&intent).is_ok());
     }
 
     #[test]
