@@ -650,16 +650,15 @@ async fn reconcile_one(state: &AppState, intent: &mut ReportIntent) {
         let current = state.jobs.read().await.get(&intent.job_id).cloned();
         if let Some(job) = current {
             if !job_matches_intent(intent, &job) {
-                // #78: never import a success from a different repo, commit,
-                // App installation or logical attempt. This is permanent
-                // identity drift, not a transient GitHub API failure.
-                intent.report_delivery_state = ReportDeliveryState::PermanentFailure;
+                // #78: never import success from an unbound job. An identity
+                // mismatch is an UNKNOWN execution outcome, but the stored
+                // Check Run can still be closed with a non-success verdict.
+                // PermanentFailure here would orphan an in_progress Check Run.
+                let _ = apply_terminal_execution(intent, false, now_ms());
                 intent.last_report_error_class = Some("execution_identity_mismatch".to_string());
                 intent.last_observed_check_state = Some("untrusted_job_identity".to_string());
-                let _ = persist(state, intent).await;
-                return;
-            }
-            match job.status {
+            } else {
+                match job.status {
                 BuildStatus::Queued | BuildStatus::Running => return,
                 BuildStatus::Succeeded => {
                     if apply_terminal_execution(
@@ -688,6 +687,7 @@ async fn reconcile_one(state: &AppState, intent: &mut ReportIntent) {
                         intent.report_delivery_state = ReportDeliveryState::PermanentFailure;
                         intent.last_report_error_class = Some("execution_outcome_conflict".to_string());
                     }
+                }
                 }
             }
         } else {
