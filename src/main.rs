@@ -25,6 +25,7 @@ mod lambda_exec;
 mod nats_submit;
 mod profiles;
 mod report_intent;
+mod report_admission_core;
 mod state;
 mod types;
 mod util;
