@@ -1,0 +1,78 @@
+name: Oreslang source-free hosted capacity canary
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hosted-capacity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Prove hosted runner allocation
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "RUNNER_OS=$RUNNER_OS"
+          echo "RUNNER_ARCH=$RUNNER_ARCH"
+          uname -a
+          echo "ORESLANG_HOSTED_CAPACITY=ALLOCATED"
+
+      - name: Probe preinstalled Java 25 FFM without external actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidate=""
+          if [[ -n "${JAVA_HOME_25_X64:-}" && -x "${JAVA_HOME_25_X64}/bin/java" ]]; then
+            candidate="${JAVA_HOME_25_X64}"
+          else
+            while IFS= read -r path; do
+              home="${path%/bin/java}"
+              version="$("${path}" -version 2>&1 | head -n1 || true)"
+              if [[ "$version" == *'"25'* ]]; then
+                candidate="$home"
+                break
+              fi
+            done < <(find /opt/hostedtoolcache /usr/lib/jvm -type f -path '*/bin/java' 2>/dev/null | sort)
+          fi
+
+          if [[ -z "$candidate" ]]; then
+            echo "JAVA25_PREINSTALLED=NO"
+            java --version || true
+            exit 0
+          fi
+
+          export JAVA_HOME="$candidate"
+          export PATH="$JAVA_HOME/bin:$PATH"
+          java --version
+          javac --version
+          cat >/tmp/OreslangFfmCanary.java <<'JAVA'
+          import java.lang.foreign.Arena;
+          import java.lang.foreign.MemorySegment;
+          import java.lang.foreign.ValueLayout;
+
+          public final class OreslangFfmCanary {
+              public static void main(String[] args) {
+                  try (Arena arena = Arena.ofShared()) {
+                      MemorySegment segment = arena.allocate(8, 8);
+                      segment.set(ValueLayout.JAVA_LONG, 0, 0x1234_5678_9abc_def0L);
+                      long actual = segment.get(ValueLayout.JAVA_LONG, 0);
+                      if (actual != 0x1234_5678_9abc_def0L) {
+                          throw new AssertionError("FFM round trip mismatch");
+                      }
+                  }
+                  System.out.println("JAVA25_FFM_CANARY=PASS");
+              }
+          }
+          JAVA
+          javac --release 25 /tmp/OreslangFfmCanary.java
+          java -cp /tmp OreslangFfmCanary
+
+      - name: Declare evidence boundary
+        run: |
+          echo "No Oreslang private source was checked out or transferred."
+          echo "This proves hosted-runner capacity and, when present, the preinstalled Java 25 FFM environment only."
+          echo "It does not prove exact-head Oreslang correctness."
