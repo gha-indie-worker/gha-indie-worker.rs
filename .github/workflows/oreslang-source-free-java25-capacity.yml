@@ -1,0 +1,53 @@
+name: Oreslang source-free Java 25 capacity canary
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  java25-graal-ffm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Set up GraalVM 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify Java 25, Native Image, and FFM shared arena
+        shell: bash
+        run: |
+          set -euo pipefail
+          java --version
+          javac --version
+          native-image --version
+          cat >/tmp/OreslangFfmCanary.java <<'JAVA'
+          import java.lang.foreign.Arena;
+          import java.lang.foreign.MemorySegment;
+          import java.lang.foreign.ValueLayout;
+
+          public final class OreslangFfmCanary {
+              public static void main(String[] args) {
+                  try (Arena arena = Arena.ofShared()) {
+                      MemorySegment segment = arena.allocate(8, 8);
+                      segment.set(ValueLayout.JAVA_LONG, 0, 0x1234_5678_9abc_def0L);
+                      long actual = segment.get(ValueLayout.JAVA_LONG, 0);
+                      if (actual != 0x1234_5678_9abc_def0L) {
+                          throw new AssertionError("FFM round trip mismatch");
+                      }
+                  }
+                  System.out.println("ORESLANG_SOURCE_FREE_CANARY=PASS");
+              }
+          }
+          JAVA
+          javac --release 25 /tmp/OreslangFfmCanary.java
+          java -cp /tmp OreslangFfmCanary
+      - name: Declare evidence boundary
+        run: |
+          echo "No Oreslang private source was checked out or transferred."
+          echo "This proves only hosted-runner/toolchain capacity, not exact-head Oreslang correctness."
