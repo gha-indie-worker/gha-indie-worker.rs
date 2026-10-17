@@ -1,4 +1,4 @@
-name: Oreslang source-free Java 25 capacity canary
+name: Oreslang source-free hosted capacity canary
 
 on:
   pull_request:
@@ -8,24 +8,47 @@ permissions:
   contents: read
 
 jobs:
-  java25-graal-ffm:
+  hosted-capacity:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
-      - name: Set up GraalVM 25
-        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
-        with:
-          version: '25.3'
-          java-version: '25'
-          distribution: 'graalvm'
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Verify Java 25, Native Image, and FFM shared arena
+      - name: Prove hosted runner allocation
         shell: bash
         run: |
           set -euo pipefail
+          echo "RUNNER_OS=$RUNNER_OS"
+          echo "RUNNER_ARCH=$RUNNER_ARCH"
+          uname -a
+          echo "ORESLANG_HOSTED_CAPACITY=ALLOCATED"
+
+      - name: Probe preinstalled Java 25 FFM without external actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidate=""
+          if [[ -n "${JAVA_HOME_25_X64:-}" && -x "${JAVA_HOME_25_X64}/bin/java" ]]; then
+            candidate="${JAVA_HOME_25_X64}"
+          else
+            while IFS= read -r path; do
+              home="${path%/bin/java}"
+              version="$("${path}" -version 2>&1 | head -n1 || true)"
+              if [[ "$version" == *'"25'* ]]; then
+                candidate="$home"
+                break
+              fi
+            done < <(find /opt/hostedtoolcache /usr/lib/jvm -type f -path '*/bin/java' 2>/dev/null | sort)
+          fi
+
+          if [[ -z "$candidate" ]]; then
+            echo "JAVA25_PREINSTALLED=NO"
+            java --version || true
+            exit 0
+          fi
+
+          export JAVA_HOME="$candidate"
+          export PATH="$JAVA_HOME/bin:$PATH"
           java --version
           javac --version
-          native-image --version
           cat >/tmp/OreslangFfmCanary.java <<'JAVA'
           import java.lang.foreign.Arena;
           import java.lang.foreign.MemorySegment;
@@ -41,13 +64,15 @@ jobs:
                           throw new AssertionError("FFM round trip mismatch");
                       }
                   }
-                  System.out.println("ORESLANG_SOURCE_FREE_CANARY=PASS");
+                  System.out.println("JAVA25_FFM_CANARY=PASS");
               }
           }
           JAVA
           javac --release 25 /tmp/OreslangFfmCanary.java
           java -cp /tmp OreslangFfmCanary
+
       - name: Declare evidence boundary
         run: |
           echo "No Oreslang private source was checked out or transferred."
-          echo "This proves only hosted-runner/toolchain capacity, not exact-head Oreslang correctness."
+          echo "This proves hosted-runner capacity and, when present, the preinstalled Java 25 FFM environment only."
+          echo "It does not prove exact-head Oreslang correctness."
