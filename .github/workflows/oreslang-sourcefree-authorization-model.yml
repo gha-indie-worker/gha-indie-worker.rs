@@ -1,0 +1,39 @@
+name: Oreslang source-free authorization model
+on:
+  push:
+    branches: ['ci/oreslang-sourcefree-security-20261018']
+    paths:
+      - 'tests/oreslang_sourcefree_admission_oracle.py'
+      - '.github/workflows/oreslang-sourcefree-authorization-model.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-free-security:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Prove no cross-org private source or publisher mirrored
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = 'gha-indie-worker/gha-indie-worker.rs'
+          test ! -e private-oreslang-source
+          test ! -e scripts/publish-private-ci-source.py
+          test ! -e scripts/test-publish-private-ci-source.py
+          printf 'ORES_SOURCE_FREE_ONLY=1\\n'
+      - name: Execute independent synthetic denial and revocation cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I -B tests/oreslang_sourcefree_admission_oracle.py 2>&1 | tee "$RUNNER_TEMP/oreslang-admission-tests.log"
+          grep -q '^Ran 22 tests' "$RUNNER_TEMP/oreslang-admission-tests.log"
+          grep -q '^OK$' "$RUNNER_TEMP/oreslang-admission-tests.log"
+          printf 'ORES_SOURCE_FREE_MODEL_CASES=22\\n'
+          printf 'ORES_SOURCE_FREE_MODEL_COMMIT=%s\\n' "$(git rev-parse HEAD)"
+          printf 'ORES_SOURCE_FREE_MODEL_TREE=%s\\n' "$(git rev-parse 'HEAD^{tree}')"
