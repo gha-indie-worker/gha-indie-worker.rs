@@ -13,7 +13,7 @@ class Denied(Exception):
 
 
 def canonical_blob(data):
-    return hashlib.sha1(b"blob " + str(len(data)).encode() + b"\\0" + data).hexdigest()
+    return hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
 
 
 def synthetic_content_payload(data, *, sha=None, size=None, encoding="base64"):
@@ -83,7 +83,7 @@ class Snapshot:
                            force_push=False, deletion=False, review_bypass=[])
         self.destination = dict(self.source)
         self.owner_bytes = b"".join(
-            ("/" + file + " " + REVIEWER + "\\n").encode() for file in CONTROL_FILES)
+            ("/" + file + " " + REVIEWER + "\n").encode() for file in CONTROL_FILES)
         self.owner = synthetic_content_payload(self.owner_bytes)
         self.allowlisted = True
         self.source_tree = "a" * 40
@@ -153,12 +153,12 @@ class SourceFreeAdmissionTests(unittest.TestCase):
     def test_missing_owner(self):
         self.s.owner = synthetic_content_payload(
             self.s.owner_bytes.replace(b"/scripts/publisher.py " +
-                                       REVIEWER.encode() + b"\\n", b""))
+                                       REVIEWER.encode() + b"\n", b""))
         self.deny_without_writes()
 
     def test_owner_override(self):
         self.s.owner = synthetic_content_payload(
-            self.s.owner_bytes + b"/scripts/publisher.py @attacker\\n")
+            self.s.owner_bytes + b"/scripts/publisher.py @attacker\n")
         self.deny_without_writes()
 
     def test_invalid_owner_digest(self):
@@ -175,7 +175,7 @@ class SourceFreeAdmissionTests(unittest.TestCase):
 
     def test_owner_unsupported_glob(self):
         self.s.owner = synthetic_content_payload(
-            self.s.owner_bytes + b"/scripts/* @attacker\\n")
+            self.s.owner_bytes + b"/scripts/* @attacker\n")
         self.deny_without_writes()
 
     def test_unapproved_destination(self):
@@ -193,7 +193,7 @@ class SourceFreeAdmissionTests(unittest.TestCase):
     def test_owner_revoke_between_blobs(self):
         self.s.upload_one()
         self.s.owner = synthetic_content_payload(
-            self.s.owner_bytes + b"/scripts/publisher.py @attacker\\n")
+            self.s.owner_bytes + b"/scripts/publisher.py @attacker\n")
         with self.assertRaises(Denied):
             self.s.upload_one()
         self.assertEqual(self.s.writes, 1)
