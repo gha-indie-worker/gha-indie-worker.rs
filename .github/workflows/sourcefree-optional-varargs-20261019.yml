@@ -1,0 +1,36 @@
+name: Source-free optional/varargs property tests
+on:
+  push:
+    branches:
+      - ci/sourcefree-optional-varargs-20261019
+  pull_request:
+    paths:
+      - tests/sourcefree_optional_varargs_20261019.py
+      - .github/workflows/sourcefree-optional-varargs-20261019.yml
+
+permissions:
+  contents: read
+
+jobs:
+  optional-varargs-properties:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - name: Checkout public synthetic-only test branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Assert zero private source transferred
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = 'gha-indie-worker/gha-indie-worker.rs'
+          test ! -e private-oreslang-source
+          test ! -e scripts/publish-private-ci-source.py
+          echo SOURCE_FREE_ONLY=1
+      - name: Execute synthetic optional/rest tests and 10000 property cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I -B tests/sourcefree_optional_varargs_20261019.py
+          echo SOURCE_FREE_REFERENCE_ONLY=1
