@@ -334,5 +334,41 @@ class SourceFreeOptionAdaptationAudit(unittest.TestCase):
                 ["would-wrap", "forged"], events)
         self.assertEqual(events, [])
 
+# Independent scalar boundary oracle: closed scalar formals only. This is
+# intentionally NOT copied from the private Oreslang Java AST/compiler.
+def verified_scalar_literal(formal, value):
+    expected = {
+        "int": int, "float": float, "bool": bool, "string": str,
+    }.get(formal)
+    return expected is not None and type(value) is expected
+
+
+class SourceFreeDirectLiteralBoundaryAudit(unittest.TestCase):
+    def test_four_primitive_scalar_formals(self):
+        for formal, value in (("int", 3), ("float", 3.5),
+                              ("bool", True), ("string", "x")):
+            self.assertTrue(verified_scalar_literal(formal, value))
+
+    def test_integer_bool_subclass_must_not_cross_type_boundary(self):
+        self.assertFalse(verified_scalar_literal("int", True))
+        self.assertFalse(verified_scalar_literal("bool", 1))
+
+    def test_string_cannot_forge_bool_or_int(self):
+        self.assertFalse(verified_scalar_literal("bool", "true"))
+        self.assertFalse(verified_scalar_literal("int", "3"))
+
+    def test_nominal_option_alias_or_borrow_not_in_literal_fast_path(self):
+        for formal in ("Option<string>", "MyString", "&string", "T", "int?"):
+            self.assertFalse(verified_scalar_literal(formal, "hello"))
+
+    def test_named_reordering_keeps_formal_types(self):
+        expected_formals = ("int", "string", "bool")
+        source_items = [("c", True), ("a", 3), ("b", "hello")]
+        names = ("a", "b", "c")
+        bindings = dict(source_items)
+        self.assertEqual(tuple(bindings[n] for n in names), (3, "hello", True))
+        self.assertTrue(all(verified_scalar_literal(t, bindings[n])
+                            for n, t in zip(names, expected_formals)))
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
