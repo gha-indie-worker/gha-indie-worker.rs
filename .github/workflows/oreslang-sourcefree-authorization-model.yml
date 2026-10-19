@@ -26,7 +26,7 @@ jobs:
           test ! -e private-oreslang-source
           test ! -e scripts/publish-private-ci-source.py
           test ! -e scripts/test-publish-private-ci-source.py
-          printf 'ORES_SOURCE_FREE_ONLY=1\\n'
+          printf 'ORES_SOURCE_FREE_ONLY=1\n'
       - name: Execute independent synthetic denial and revocation cases
         shell: bash
         run: |
@@ -34,6 +34,6 @@ jobs:
           python3 -I -B tests/oreslang_sourcefree_admission_oracle.py 2>&1 | tee "$RUNNER_TEMP/oreslang-admission-tests.log"
           grep -q '^Ran 22 tests' "$RUNNER_TEMP/oreslang-admission-tests.log"
           grep -q '^OK$' "$RUNNER_TEMP/oreslang-admission-tests.log"
-          printf 'ORES_SOURCE_FREE_MODEL_CASES=22\\n'
-          printf 'ORES_SOURCE_FREE_MODEL_COMMIT=%s\\n' "$(git rev-parse HEAD)"
-          printf 'ORES_SOURCE_FREE_MODEL_TREE=%s\\n' "$(git rev-parse 'HEAD^{tree}')"
+          printf 'ORES_SOURCE_FREE_MODEL_CASES=22\n'
+          printf 'ORES_SOURCE_FREE_MODEL_COMMIT=%s\n' "$(git rev-parse HEAD)"
+          printf 'ORES_SOURCE_FREE_MODEL_TREE=%s\n' "$(git rev-parse 'HEAD^{tree}')"
