@@ -228,26 +228,38 @@ class SyntheticOption:
     value: object = None
 
 
-def assemble_option_slots(slots, lexical_values):
-    """slots: (action, evaluated-value index); -1 means omitted."""
+def assemble_option_slots(slots, lexical_values, allocations=None):
+    """Independent model. (action, temp-index, required_option?) ABI slots."""
     if any(v is None for v in lexical_values):
         raise InvalidCall("null/void is not a source value")
-    used = [idx for action, idx in slots if idx >= 0]
+    slots = [(a, idx, is_option if len(slot) == 3 else False)
+             for slot in slots
+             for a, idx, *is_option_tail in [slot]
+             for is_option in [is_option_tail[0] if is_option_tail else False]]
+    used = [idx for action, idx, _ in slots if idx >= 0]
     if sorted(used) != list(range(len(lexical_values))):
         raise InvalidCall("source values missing or duplicated")
+    # The check precedes any synthetic Some/None creation.
+    for action, index, required_option in slots:
+        if (action == "pass_option" or
+                (action == "pass_required" and required_option)):
+            if index < 0 or not isinstance(lexical_values[index], SyntheticOption):
+                raise InvalidCall("forged required/supplied nominal Option")
     out = []
-    for action, index in slots:
+    for action, index, required_option in slots:
         if action == "inject_none" and index == -1:
             adapted = SyntheticOption(False)
+            if allocations is not None:
+                allocations.append("None")
         elif 0 <= index < len(lexical_values):
             raw = lexical_values[index]
             if action == "wrap_some":
                 if isinstance(raw, SyntheticOption):
                     raise InvalidCall("unexpected nested Option")
                 adapted = SyntheticOption(True, raw)
+                if allocations is not None:
+                    allocations.append("Some")
             elif action == "pass_option":
-                if not isinstance(raw, SyntheticOption):
-                    raise InvalidCall("forged supplied Option")
                 adapted = raw
             elif action == "pass_required":
                 adapted = raw
@@ -257,7 +269,6 @@ def assemble_option_slots(slots, lexical_values):
             raise InvalidCall("invalid omission/action index")
         out.append(adapted)
     return tuple(out)
-
 
 class SourceFreeOptionAdaptationAudit(unittest.TestCase):
     def test_named_value_permutation_preserves_temporaries(self):
@@ -305,6 +316,23 @@ class SourceFreeOptionAdaptationAudit(unittest.TestCase):
     def test_reject_missing_omitted_marker(self):
         with self.assertRaises(InvalidCall):
             assemble_option_slots([("pass_required", -1)], [])
+
+    def test_required_option_rejects_plain_value(self):
+        with self.assertRaises(InvalidCall):
+            assemble_option_slots([("pass_required", 0, True)], ["fake"])
+
+    def test_required_option_keeps_provided_none_identity(self):
+        provided = SyntheticOption(False)
+        self.assertIs(assemble_option_slots(
+            [("pass_required", 0, True)], [provided])[0], provided)
+
+    def test_invalid_late_option_rejected_before_earlier_allocation(self):
+        events = []
+        with self.assertRaises(InvalidCall):
+            assemble_option_slots(
+                [("wrap_some", 0), ("pass_option", 1)],
+                ["would-wrap", "forged"], events)
+        self.assertEqual(events, [])
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
