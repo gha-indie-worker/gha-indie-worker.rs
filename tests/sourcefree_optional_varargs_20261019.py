@@ -220,5 +220,91 @@ class SourceFreeOptionalVarargAudit(unittest.TestCase):
         print("SOURCE_FREE_REJECTED=" + str(rejected))
 
 
+# Independent synthetic ABI assembly model: no code or types imported from
+# Oreslang's private repositories. Values arrive after lexical evaluation.
+@dataclass(frozen=True)
+class SyntheticOption:
+    has_value: bool
+    value: object = None
+
+
+def assemble_option_slots(slots, lexical_values):
+    """slots: (action, evaluated-value index); -1 means omitted."""
+    if any(v is None for v in lexical_values):
+        raise InvalidCall("null/void is not a source value")
+    used = [idx for action, idx in slots if idx >= 0]
+    if sorted(used) != list(range(len(lexical_values))):
+        raise InvalidCall("source values missing or duplicated")
+    out = []
+    for action, index in slots:
+        if action == "inject_none" and index == -1:
+            adapted = SyntheticOption(False)
+        elif 0 <= index < len(lexical_values):
+            raw = lexical_values[index]
+            if action == "wrap_some":
+                if isinstance(raw, SyntheticOption):
+                    raise InvalidCall("unexpected nested Option")
+                adapted = SyntheticOption(True, raw)
+            elif action == "pass_option":
+                if not isinstance(raw, SyntheticOption):
+                    raise InvalidCall("forged supplied Option")
+                adapted = raw
+            elif action == "pass_required":
+                adapted = raw
+            else:
+                raise InvalidCall("invalid adaptation")
+        else:
+            raise InvalidCall("invalid omission/action index")
+        out.append(adapted)
+    return tuple(out)
+
+
+class SourceFreeOptionAdaptationAudit(unittest.TestCase):
+    def test_named_value_permutation_preserves_temporaries(self):
+        actual = assemble_option_slots([
+            ("pass_required", 1), ("inject_none", -1), ("pass_required", 0)],
+            [True, 3])
+        self.assertEqual(actual, (3, SyntheticOption(False), True))
+
+    def test_supplied_none_retains_identity_and_is_not_omission(self):
+        supplied = SyntheticOption(False)
+        actual = assemble_option_slots([
+            ("pass_required", 0), ("pass_option", 1), ("pass_required", 2)],
+            [3, supplied, True])
+        self.assertIs(actual[1], supplied)
+
+    def test_wrap_plain_value_into_exactly_one_some(self):
+        self.assertEqual(
+            assemble_option_slots([("wrap_some", 0)], ["hello"]),
+            (SyntheticOption(True, "hello"),))
+
+    def test_empty_rest_is_not_none(self):
+        self.assertNotEqual((), (SyntheticOption(False),))
+
+    def test_reject_java_null_or_void_like_nonvalue(self):
+        with self.assertRaises(InvalidCall):
+            assemble_option_slots([("wrap_some", 0)], [None])
+
+    def test_reject_fake_supplied_option(self):
+        with self.assertRaises(InvalidCall):
+            assemble_option_slots([("pass_option", 0)], ["None"])
+
+    def test_reject_double_wrapping_option(self):
+        with self.assertRaises(InvalidCall):
+            assemble_option_slots([("wrap_some", 0)], [SyntheticOption(False)])
+
+    def test_reject_duplicate_source_consumption(self):
+        with self.assertRaises(InvalidCall):
+            assemble_option_slots([
+                ("pass_required", 0), ("pass_required", 0)], [3])
+
+    def test_reject_unconsumed_source_temp(self):
+        with self.assertRaises(InvalidCall):
+            assemble_option_slots([("pass_required", 0)], [3, 4])
+
+    def test_reject_missing_omitted_marker(self):
+        with self.assertRaises(InvalidCall):
+            assemble_option_slots([("pass_required", -1)], [])
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
