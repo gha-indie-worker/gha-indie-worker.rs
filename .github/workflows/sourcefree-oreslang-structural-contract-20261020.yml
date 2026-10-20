@@ -1,0 +1,147 @@
+name: Oreslang structural source-free conformance canary
+on:
+  push:
+    branches: [ci/sourcefree-structural-contract-20261020]
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/sourcefree-oreslang-structural-contract-20261020.yml
+  workflow_dispatch:
+permissions: {}
+jobs:
+  public-reference-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Run independent structural conformance reference
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_OS" = Linux
+          echo "SOURCE_FREE_ONLY: no checkout, no tokens, no cross-org private source"
+          python3 - <<'PY'
+          # Public, independent model. No private Git tree, compiler, token or checkout.
+          import random
+          
+          SUPERS = {"Child": "Root", "DerivedReturn": "BaseReturn"}
+          
+          def subtype(src, target):
+              while src is not None:
+                  if src == target:
+                      return True
+                  src = SUPERS.get(src)
+              return False
+          
+          def view(value, required, *, explicit=True, readonly=True, methods=()):
+              if not explicit or not readonly:
+                  return False
+              if value["kind"] not in {"record", "struct", "class", "entry"}:
+                  return False
+              visible = value["fields"]
+              if value["kind"] == "entry":
+                  visible = {k: v for k, v in visible.items() if k in {"key", "value"}}
+              if any(visible.get(k) != t for k, t in required.items()):
+                  return False
+              if methods and value["kind"] != "class":
+                  return False
+              have = value.get("methods", {})
+              for name, contract_param, contract_result in methods:
+                  actual = have.get(name)
+                  if actual is None:
+                      return False
+                  parameter, result = actual
+                  # Candidate parameters are contravariant; results covariant.
+                  if not subtype(contract_param, parameter) or not subtype(result, contract_result):
+                      return False
+              return True
+          
+          def carrier(kind, fields, **kwargs):
+              return {"kind": kind, "fields": fields, **kwargs}
+          
+          record = carrier("record", {"id": "int", "extra": "string"})
+          struct = carrier("struct", {"id": "int", "extra": "string"})
+          entry = carrier("entry", {"key": "int", "value": "string", "hidden": "bool"})
+          candidate = carrier("class", {"id": "int"}, methods={"handle": ("Root", "DerivedReturn")})
+          contract_method = (("handle", "Child", "BaseReturn"),)
+          
+          for value in (record, struct, candidate):
+              assert view(value, {"id": "int"})
+          assert view(entry, {"key": "int", "value": "string"})
+          assert not view(entry, {"hidden": "bool"})
+          assert not view(record, {"id": "int"}, explicit=False)
+          assert not view(struct, {"id": "int"}, readonly=False)
+          assert not view(struct, {"id": "float"})  # no numeric slot coercion
+          assert not view(record, {"missing": "int"})
+          assert not view(record, {"id": "int"}, methods=contract_method)
+          assert view(candidate, {"id": "int"}, methods=contract_method)
+          assert not view(carrier("class", {"id": "int"}, methods={"handle": ("Child", "Root")}),
+                          {"id": "int"}, methods=contract_method)
+          assert not view(carrier("class", {"id": "int"}, methods={"handle": ("Root", "Root")}),
+                          {"id": "int"}, methods=contract_method)
+          for kind in ("scalar", "actor", "tuple", "array", "list"):
+              assert not view(carrier(kind, {}), {})  # empty contract cannot erase kind
+          assert view(carrier("record", {}), {})
+          assert view(carrier("struct", {}), {})
+          
+          # Deterministic randomized contract-width, visibility and type preservation.
+          rng = random.Random(20261020)
+          cases = 25000
+          for _ in range(cases):
+              count = rng.randrange(1, 14)
+              fields = {f"f{i}": rng.choice(("int", "bool", "string")) for i in range(count)}
+              required_names = rng.sample(list(fields), rng.randrange(count + 1))
+              required = {key: fields[key] for key in required_names}
+              kind = rng.choice(("record", "struct", "class"))
+              item = carrier(kind, fields)
+              assert view(item, required)
+              assert not view(item, required, readonly=False)
+              assert not view(item, required, explicit=False)
+              if required:
+                  bad = dict(required)
+                  key = required_names[0]
+                  bad[key] = next(t for t in ("int", "bool", "string") if t != bad[key])
+                  assert not view(item, bad)
+              missing = dict(required)
+              missing["not_present"] = "int"
+              assert not view(item, missing)
+          # Positional products: exact physical arity and representation.
+          def positional_view(actual, expected, *, kind="tuple"):
+              if len(actual) != len(expected):
+                  return False
+              if any(not subtype(a, b) for a, b in zip(actual, expected)):
+                  return False
+              if kind != "tuple" and any(not subtype(b, a) for a, b in zip(actual, expected)):
+                  return False
+              return True
+          assert positional_view(("int", "string"), ("int", "string"))
+          assert not positional_view(("int", "string"), ("float", "string"))
+          assert not positional_view(("int", "string"), ("int",))
+          assert not positional_view(("Child",), ("Root",), kind="fixed-array")
+          assert positional_view(("Child",), ("Root",), kind="tuple")
+          print("PASS SOURCE-FREE positional slots: exact arity, no numeric coercion, fixed-array invariance")
+          # Generic structural callables compare binders modulo alpha-renaming.
+          # Names of method-local generic parameters are not nominal identities.
+          def normalize_method(generics, params, result):
+              names = {name: ("GENERIC", index) for index, name in enumerate(generics)}
+              def normalize(t):
+                  if isinstance(t, str):
+                      return names.get(t, ("TYPE", t))
+                  return tuple(normalize(x) for x in t)
+              return tuple(normalize(x) for x in params), normalize(result)
+          def same_generic_contract(left, right):
+              if len(left[0]) != len(right[0]):
+                  return False
+              return normalize_method(*left) == normalize_method(*right)
+          sig = (("T",), ("T",), "T")
+          renamed = (("U",), ("U",), "U")
+          nested = (("T",), (("Option", "T"),), ("Option", "T"))
+          nested_renamed = (("Different",), (("Option", "Different"),), ("Option", "Different"))
+          assert same_generic_contract(sig, renamed)
+          assert same_generic_contract(nested, nested_renamed)
+          assert not same_generic_contract(sig, (("U",), ("U",), "int"))
+          assert not same_generic_contract(sig, (("U", "V"), ("U",), "U"))
+          assert not same_generic_contract(nested, (("U",), (("Option", "U"),), ("List", "U")))
+          print("PASS SOURCE-FREE method-generic alpha equivalence: renamed binders and negative mismatches")
+          print(f"PASS SOURCE-FREE structural oracle: {cases} randomized cases plus carrier, ownership and variance boundaries")
+          print("NOT a Java/Graal, LLVM, native, or actual Oreslang compiler test")
+          PY
