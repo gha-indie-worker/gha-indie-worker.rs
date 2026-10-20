@@ -104,6 +104,21 @@ jobs:
               missing = dict(required)
               missing["not_present"] = "int"
               assert not view(item, missing)
+          # Positional products: exact physical arity and representation.
+          def positional_view(actual, expected, *, kind="tuple"):
+              if len(actual) != len(expected):
+                  return False
+              if any(not subtype(a, b) for a, b in zip(actual, expected)):
+                  return False
+              if kind != "tuple" and any(not subtype(b, a) for a, b in zip(actual, expected)):
+                  return False
+              return True
+          assert positional_view(("int", "string"), ("int", "string"))
+          assert not positional_view(("int", "string"), ("float", "string"))
+          assert not positional_view(("int", "string"), ("int",))
+          assert not positional_view(("Child",), ("Root",), kind="fixed-array")
+          assert positional_view(("Child",), ("Root",), kind="tuple")
+          print("PASS SOURCE-FREE positional slots: exact arity, no numeric coercion, fixed-array invariance")
           print(f"PASS SOURCE-FREE structural oracle: {cases} randomized cases plus carrier, ownership and variance boundaries")
           print("NOT a Java/Graal, LLVM, native, or actual Oreslang compiler test")
           PY
