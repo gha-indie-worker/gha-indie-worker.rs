@@ -130,7 +130,7 @@ jobs:
             "$archive" | sha256sum --check --strict
           tar -xzf "$archive" -C "$RUNNER_TEMP" gitleaks
           "$RUNNER_TEMP/gitleaks" version
-      - name: Scan exact candidate commit range and current tree
+      - name: Scan exact candidate history and all changed tree files
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -140,42 +140,48 @@ jobs:
           CURRENT_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          scan_head="$(git rev-parse HEAD)"
           if [[ "$EVENT_NAME" == 'pull_request' ]]; then
             [[ "$PR_BASE_SHA" =~ ^[a-f0-9]{40}$ ]]
             [[ "$PR_HEAD_SHA" =~ ^[a-f0-9]{40}$ ]]
+            test "$scan_head" = "$PR_HEAD_SHA"
             git cat-file -e "${PR_BASE_SHA}^{commit}"
             git cat-file -e "${PR_HEAD_SHA}^{commit}"
             comparison_base="$(git merge-base "$PR_BASE_SHA" "$PR_HEAD_SHA")"
-            log_opts="${comparison_base}..${PR_HEAD_SHA}"
-          elif [[ -n "${PUSH_BEFORE_SHA:-}" && "$PUSH_BEFORE_SHA" =~ ^[a-f0-9]{40}$ && ! "$PUSH_BEFORE_SHA" =~ ^0+$ ]]; then
+          elif [[ "$EVENT_NAME" == 'push' && -n "${PUSH_BEFORE_SHA:-}" && "$PUSH_BEFORE_SHA" =~ ^[a-f0-9]{40}$ && ! "$PUSH_BEFORE_SHA" =~ ^0+$ ]]; then
             [[ "$CURRENT_SHA" =~ ^[a-f0-9]{40}$ ]]
+            test "$scan_head" = "$CURRENT_SHA"
             git cat-file -e "${PUSH_BEFORE_SHA}^{commit}"
-            log_opts="${PUSH_BEFORE_SHA}..${CURRENT_SHA}"
+            comparison_base="$PUSH_BEFORE_SHA"
           else
+            # For manual dispatch or a new branch, require a real parent instead
+            # of silently falling back to a partial or zero-commit scan.
             [[ "$CURRENT_SHA" =~ ^[a-f0-9]{40}$ ]]
-            log_opts="-n 1 ${CURRENT_SHA}"
+            test "$scan_head" = "$CURRENT_SHA"
+            comparison_base="$(git rev-parse 'HEAD^')"
           fi
-          "$RUNNER_TEMP/gitleaks" git --redact --no-banner --log-opts="$log_opts" .
-          # The worktree scan also catches credentials already present in the
-          # final tree, including values added outside this PR's commit range.
-          # Report only file/rule/line metadata; never emit a matched secret.
-          report="$RUNNER_TEMP/gitleaks-current-tree.json"
-          scan_result=0
-          "$RUNNER_TEMP/gitleaks" dir --redact --no-banner \
-            --report-format json --report-path "$report" . || scan_result=$?
-          if (( scan_result != 0 )); then
-            REPORT_PATH="$report" python3 - <<'PY'
-          import json, os
-          from pathlib import Path
-          report = Path(os.environ['REPORT_PATH'])
-          findings = json.loads(report.read_text(encoding='utf-8')) if report.is_file() else []
-          for item in findings[:25]:
-              print('POTENTIAL_SECRET_LOCATION', json.dumps({
-                  'file': str(item.get('File', ''))[:256],
-                  'line': item.get('StartLine'),
-                  'rule': str(item.get('RuleID', ''))[:100],
-              }, sort_keys=True))
-          print('POTENTIAL_SECRET_COUNT', len(findings))
-          PY
-          fi
-          exit "$scan_result"
+          git cat-file -e "${comparison_base}^{commit}"
+          "$RUNNER_TEMP/gitleaks" git --redact --no-banner \
+            --log-opts="${comparison_base}..${scan_head}" .
+          # A full-tree Gitleaks scan can reclassify untouched Cargo.lock crate
+          # names as generic keys. Scan each final added/modified/renamed file
+          # and all new commits instead. Never suppress a finding in changed files.
+          changed_file_list="$RUNNER_TEMP/changed-files.nul"
+          git diff --name-only -z --diff-filter=ACMR \
+            "$comparison_base" "$scan_head" -- > "$changed_file_list"
+          test -s "$changed_file_list"
+          scan_dir="$RUNNER_TEMP/exact-head-changed-files"
+          mkdir -p "$scan_dir"
+          count=0
+          while IFS= read -r -d '' path; do
+            case "$path" in
+              /*|../*|*/../*|*/..|./*|*/./*) echo 'unsafe changed path' >&2; exit 1 ;;
+            esac
+            test -f "$path" && test ! -L "$path"
+            mkdir -p -- "$scan_dir/$(dirname -- "$path")"
+            cp -- "$path" "$scan_dir/$path"
+            count=$((count+1))
+          done < "$changed_file_list"
+          test "$count" -ge 1 && test "$count" -le 10000
+          "$RUNNER_TEMP/gitleaks" dir --redact --no-banner "$scan_dir"
+          echo "Secret scan complete: exact head, $count changed files, complete PR commit range."
