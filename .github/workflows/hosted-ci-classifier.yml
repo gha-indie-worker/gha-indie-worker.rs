@@ -156,4 +156,26 @@ jobs:
             log_opts="-n 1 ${CURRENT_SHA}"
           fi
           "$RUNNER_TEMP/gitleaks" git --redact --no-banner --log-opts="$log_opts" .
-          "$RUNNER_TEMP/gitleaks" dir --redact --no-banner .
+          # The worktree scan also catches credentials already present in the
+          # final tree, including values added outside this PR's commit range.
+          # Report only file/rule/line metadata; never emit a matched secret.
+          report="$RUNNER_TEMP/gitleaks-current-tree.json"
+          scan_result=0
+          "$RUNNER_TEMP/gitleaks" dir --redact --no-banner \
+            --report-format json --report-path "$report" . || scan_result=$?
+          if (( scan_result != 0 )); then
+            REPORT_PATH="$report" python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          report = Path(os.environ['REPORT_PATH'])
+          findings = json.loads(report.read_text(encoding='utf-8')) if report.is_file() else []
+          for item in findings[:25]:
+              print('POTENTIAL_SECRET_LOCATION', json.dumps({
+                  'file': str(item.get('File', ''))[:256],
+                  'line': item.get('StartLine'),
+                  'rule': str(item.get('RuleID', ''))[:100],
+              }, sort_keys=True))
+          print('POTENTIAL_SECRET_COUNT', len(findings))
+          PY
+          fi
+          exit "$scan_result"
