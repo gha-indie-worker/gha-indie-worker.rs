@@ -1,0 +1,70 @@
+name: Oreslang tuple literal source-free contract canary
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/sourcefree-oreslang-tuple-contract-20261020.yml
+  push:
+    branches:
+      - ci/sourcefree-oreslang-tuple-contract-20261020
+  workflow_dispatch:
+permissions: {}
+jobs:
+  source-free-reference-oracle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify runner and public synthetic-only tuple corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_OS" = Linux
+          echo "SOURCE_FREE_ONLY: no checkout, no Oreslang compiler source and no cross-org mirror"
+          python3 - <<'PY'
+          # Independent public syntax reference, not an Oreslang compiler test.
+          import random
+          import re
+          def classify(src):
+              src = src.strip()
+              if src.startswith("tuple {") and src.endswith("}"):
+                  return "tuple"
+              if src.startswith("arr[") and src.endswith("]"):
+                  return "array"
+              if src.startswith("[") and src.endswith("]"):
+                  return "array"
+              if src.startswith("tuple(") and src.endswith(")"):
+                  return "call"
+              if src.startswith("(") and src.endswith(")"):
+                  body = src[1:-1].strip()
+                  if not body or "," in body:
+                      return "tuple"
+                  return "group"
+              return "other"
+          examples = {
+              "[1, 2, 3]": "array",
+              "arr[1, 2, 3]": "array",
+              "tuple {1, 2, 3}": "tuple",
+              "(1, 2, 3)": "tuple",
+              "tuple {}": "tuple",
+              "()": "tuple",
+              "tuple {1}": "tuple",
+              "(1,)": "tuple",
+              "(1)": "group",
+              "tuple(1, 2, 3)": "call",
+          }
+          for expression, expected in examples.items():
+              assert classify(expression) == expected, (expression, expected)
+          rng = random.Random(20261020)
+          for _ in range(20000):
+              length = rng.randrange(1, 15)
+              elems = [str(rng.randrange(-10**6, 10**6)) for _ in range(length)]
+              body = ", ".join(elems)
+              assert classify(f"tuple {{{body}}}") == "tuple"
+              assert classify(f"[{body}]") == "array"
+              if length == 1:
+                  assert classify(f"({body},)") == "tuple"
+                  assert classify(f"({body})") == "group"
+              else:
+                  assert classify(f"({body})") == "tuple"
+          print("PASS source-free public tuple/array oracle: 10 edge cases and 20,000 generated shapes")
+          PY
