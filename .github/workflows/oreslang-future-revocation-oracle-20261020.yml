@@ -1,28 +1,171 @@
 name: Oreslang Future revocation source-free oracle
-
 on:
   push:
-    branches:
-      - test/oreslang-future-revocation-oracle-20261020
+    branches: [test/oreslang-future-revocation-oracle-20261020]
   workflow_dispatch:
-
-permissions:
-  contents: read
-
+permissions: {}
 jobs:
-  oracle:
+  public-reference-only:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Checkout source-free carrier
-        uses: actions/checkout@v4
-      - name: Prove no private Oreslang source tree is present
+      - name: Run independent Future revocation reference
         shell: bash
         run: |
           set -euo pipefail
-          test ! -e src/main/java/dev/oreslang/runtime/OresFuture.java
-          test ! -e src/main/cpp/oreslang/runtime/NativeEpollReactor.hpp
-          test -f source-free/oreslang_future_revocation_oracle.py
-      - name: Run Future revocation oracle
-        run: |
-          python3 -m unittest -v source-free/oreslang_future_revocation_oracle.py
+          test "$RUNNER_OS" = Linux
+          echo "SOURCE_FREE_ONLY: no checkout, no tokens, no cross-org private source"
+          python3 - <<'PY'
+          import threading
+          import time
+
+          PENDING = object()
+
+          class WouldBlock(RuntimeError):
+              pass
+
+          class PollTimeout(TimeoutError):
+              pass
+
+          class Cancelled(RuntimeError):
+              pass
+
+          class FutureModel:
+              def __init__(self):
+                  self.cv = threading.Condition()
+                  self.state = PENDING
+                  self.revoked = False
+
+              def complete(self, value):
+                  with self.cv:
+                      assert self.state is PENDING
+                      self.state = ("ok", value)
+                      self.revoked = True
+                      self.cv.notify_all()
+
+              def cancel(self, revoker):
+                  with self.cv:
+                      assert self.state is PENDING
+                      self.state = ("cancelled", None)
+                  revoker()
+                  with self.cv:
+                      self.revoked = True
+                      self.cv.notify_all()
+
+              def cancelled_flag(self):
+                  with self.cv:
+                      return self.state is not PENDING and self.state[0] == "cancelled"
+
+              def terminal(self):
+                  if self.state is PENDING:
+                      return None
+                  if self.state[0] == "cancelled" and not self.revoked:
+                      return None
+                  return self.state
+
+              def observe(self, scheduler=False, timeout=None):
+                  with self.cv:
+                      current = self.terminal()
+                      if current is None and scheduler:
+                          raise WouldBlock
+                      if current is None and timeout == 0:
+                          raise PollTimeout
+                      deadline = None if timeout is None else time.monotonic() + timeout
+                      while current is None:
+                          if deadline is None:
+                              self.cv.wait()
+                          else:
+                              left = deadline - time.monotonic()
+                              if left <= 0:
+                                  raise PollTimeout
+                              self.cv.wait(left)
+                          current = self.terminal()
+                      if current[0] == "cancelled":
+                          raise Cancelled
+                      return current[1]
+
+          # Pending scheduler turns must suspend, never park.
+          f = FutureModel()
+          try:
+              f.observe(scheduler=True)
+              raise AssertionError("pending scheduler turn blocked instead of rejecting")
+          except WouldBlock:
+              pass
+          f.complete(41)
+          assert f.observe(scheduler=True) == 41
+
+          # Cancellation CAS may become visible before producer revocation.
+          # Neither scheduler nor host observation may cross that barrier.
+          for iteration in range(500):
+              f = FutureModel()
+              entered = threading.Event()
+              release = threading.Event()
+              cancel_error = []
+
+              def revoker():
+                  entered.set()
+                  assert release.wait(5)
+
+              def cancel():
+                  try:
+                      f.cancel(revoker)
+                  except BaseException as exc:
+                      cancel_error.append(exc)
+
+              canceller = threading.Thread(target=cancel, daemon=True)
+              canceller.start()
+              assert entered.wait(5)
+              assert f.cancelled_flag()
+              assert f.terminal() is None
+
+              try:
+                  f.observe(scheduler=True)
+                  raise AssertionError("scheduler crossed unfinished revocation")
+              except WouldBlock:
+                  pass
+
+              try:
+                  f.observe(timeout=0)
+                  raise AssertionError("zero-timeout poll crossed unfinished revocation")
+              except PollTimeout:
+                  pass
+
+              observed = threading.Event()
+              observer_error = []
+
+              def host_observer():
+                  try:
+                      f.observe()
+                      observer_error.append(AssertionError("cancelled future returned a value"))
+                  except Cancelled:
+                      pass
+                  except BaseException as exc:
+                      observer_error.append(exc)
+                  finally:
+                      observed.set()
+
+              waiter = threading.Thread(target=host_observer, daemon=True)
+              waiter.start()
+              time.sleep(0.001)
+              assert not observed.is_set(), "host observer crossed unfinished revocation"
+
+              release.set()
+              canceller.join(5)
+              waiter.join(5)
+              assert not canceller.is_alive()
+              assert not waiter.is_alive()
+              assert not cancel_error
+              assert not observer_error
+
+              try:
+                  f.observe(scheduler=True)
+                  raise AssertionError("post-revocation cancellation not observed")
+              except Cancelled:
+                  pass
+
+          print("PASS SOURCE-FREE Future revocation oracle: 500 cancellation races")
+          print("PASS scheduler pending/unrevoked cancellation never blocks carrier")
+          print("PASS host observation waits for producer revocation")
+          print("PASS zero-timeout poll respects revocation barrier")
+          print("NOT an Oreslang source, JDK25, GraalVM, LLVM, or exact-tree test")
+          PY
