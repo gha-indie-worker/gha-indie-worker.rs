@@ -114,17 +114,33 @@ impl Accounting {
 }
 
 fn saturating_increment(counter: &AtomicU32) -> u32 {
-    counter
-        .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
-            Some(value.saturating_add(1))
-        })
-        .unwrap_or_else(|value| value)
+    let mut previous = counter.load(Ordering::Acquire);
+    loop {
+        match counter.compare_exchange_weak(
+            previous,
+            previous.saturating_add(1),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(value) => return value,
+            Err(observed) => previous = observed,
+        }
+    }
 }
 
 fn saturating_add(counter: &AtomicU32, amount: u32) {
-    let _ = counter.try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
-        Some(value.saturating_add(amount))
-    });
+    let mut previous = counter.load(Ordering::Acquire);
+    loop {
+        match counter.compare_exchange_weak(
+            previous,
+            previous.saturating_add(amount),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return,
+            Err(observed) => previous = observed,
+        }
+    }
 }
 
 #[derive(Clone)]
