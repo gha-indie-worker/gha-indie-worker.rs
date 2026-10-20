@@ -172,12 +172,24 @@ jobs:
           test -s "$changed_file_list"
           scan_dir="$RUNNER_TEMP/exact-head-changed-files"
           mkdir -p "$scan_dir"
+          source_root="$(pwd -P)"
           count=0
+          total_bytes=0
           while IFS= read -r -d '' path; do
             case "$path" in
               /*|../*|*/../*|*/..|./*|*/./*) echo 'unsafe changed path' >&2; exit 1 ;;
             esac
             test -f "$path" && test ! -L "$path"
+            # Prevent a tracked-looking path with a symlinked parent from
+            # reading outside the candidate checkout.
+            resolved="$(realpath -e -- "$path")"
+            [[ "$resolved" == "$source_root/"* ]] || {
+              echo 'changed file resolves outside checkout' >&2; exit 1;
+            }
+            bytes="$(stat -c '%s' -- "$path")"
+            (( bytes <= 33554432 )) || { echo 'changed file too large' >&2; exit 1; }
+            total_bytes=$((total_bytes+bytes))
+            (( total_bytes <= 268435456 )) || { echo 'changed scan too large' >&2; exit 1; }
             mkdir -p -- "$scan_dir/$(dirname -- "$path")"
             cp -- "$path" "$scan_dir/$path"
             count=$((count+1))
