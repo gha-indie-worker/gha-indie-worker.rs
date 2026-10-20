@@ -115,14 +115,14 @@ impl Accounting {
 
 fn saturating_increment(counter: &AtomicU32) -> u32 {
     counter
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
             Some(value.saturating_add(1))
         })
         .unwrap_or_else(|value| value)
 }
 
 fn saturating_add(counter: &AtomicU32, amount: u32) {
-    let _ = counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+    let _ = counter.try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
         Some(value.saturating_add(amount))
     });
 }
