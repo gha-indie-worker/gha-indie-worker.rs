@@ -1,0 +1,28 @@
+name: Oreslang Future revocation source-free oracle
+
+on:
+  push:
+    branches:
+      - test/oreslang-future-revocation-oracle-20261020
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  oracle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout source-free carrier
+        uses: actions/checkout@v4
+      - name: Prove no private Oreslang source tree is present
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e src/main/java/dev/oreslang/runtime/OresFuture.java
+          test ! -e src/main/cpp/oreslang/runtime/NativeEpollReactor.hpp
+          test -f source-free/oreslang_future_revocation_oracle.py
+      - name: Run Future revocation oracle
+        run: |
+          python3 -m unittest -v source-free/oreslang_future_revocation_oracle.py
