@@ -1,0 +1,15 @@
+name: Generic source-free capacity canary
+on:
+  push:
+    branches: ['ci/source-free-capacity-*']
+permissions:
+  contents: read
+jobs:
+  canary:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: |
+          set -euo pipefail
+          echo SOURCE_FREE_CAPACITY_PASS
+          uname -a
