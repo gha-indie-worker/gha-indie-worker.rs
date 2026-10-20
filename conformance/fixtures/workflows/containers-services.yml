@@ -1,0 +1,95 @@
+name: conformance-containers-services
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  job_container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    container:
+      image: node:22-bookworm-slim
+      env:
+        CONTAINER_MARKER: job-container
+      options: --cpus 1
+    services:
+      redis:
+        image: redis:7.4-alpine
+        env:
+          ALLOW_EMPTY_PASSWORD: "yes"
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 20
+    steps:
+      - name: Verify job-container environment and service DNS
+        shell: sh
+        run: |
+          set -eu
+          test "${CONTAINER_MARKER}" = 'job-container'
+          node <<'NODE'
+          const net = require('node:net');
+          const socket = net.createConnection({ host: 'redis', port: 6379 });
+          const timer = setTimeout(() => {
+            socket.destroy(new Error('redis conformance timeout'));
+          }, 5000);
+          socket.setEncoding('utf8');
+          socket.once('connect', () => socket.write('*1\r\n$4\r\nPING\r\n'));
+          socket.on('data', (data) => {
+            if (!data.includes('PONG')) {
+              socket.destroy(new Error(`unexpected redis response: ${JSON.stringify(data)}`));
+              return;
+            }
+            clearTimeout(timer);
+            socket.end();
+          });
+          socket.once('error', (error) => {
+            clearTimeout(timer);
+            console.error(error.message);
+            process.exitCode = 1;
+          });
+          NODE
+
+  host_with_service_port:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    services:
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379/tcp
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 20
+    steps:
+      - name: Verify dynamically assigned service port context
+        shell: bash
+        env:
+          REDIS_PORT: ${{ job.services.redis.ports[6379] }}
+        run: |
+          set -euo pipefail
+          [[ "${REDIS_PORT}" =~ ^[0-9]+$ ]]
+          timeout 5 bash -c "</dev/tcp/127.0.0.1/${REDIS_PORT}"
+
+  cleanup_observer:
+    if: ${{ always() }}
+    needs:
+      - job_container
+      - host_with_service_port
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify both container scenarios completed
+        shell: bash
+        env:
+          CONTAINER_RESULT: ${{ needs.job_container.result }}
+          HOST_RESULT: ${{ needs.host_with_service_port.result }}
+        run: |
+          set -euo pipefail
+          test "${CONTAINER_RESULT}" = 'success'
+          test "${HOST_RESULT}" = 'success'

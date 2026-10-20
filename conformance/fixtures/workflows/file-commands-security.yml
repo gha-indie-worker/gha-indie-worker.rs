@@ -1,0 +1,100 @@
+name: conformance-file-commands-security
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  commands:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      CONFORMANCE_SECRET: ${{ secrets.CONFORMANCE_SECRET }}
+    steps:
+      - name: Mask an optional secret without printing it
+        shell: bash
+        env:
+          SECRET_VALUE: ${{ env.CONFORMANCE_SECRET }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${SECRET_VALUE}" ]]; then
+            printf '::add-mask::%s\n' "${SECRET_VALUE}"
+          fi
+
+      - id: files
+        name: Exercise environment, output, path, and summary files
+        shell: bash
+        run: |
+          set -euo pipefail
+          delimiter="GHA_PARITY_$$_${RANDOM}"
+          {
+            printf 'MULTILINE_VALUE<<%s\n' "${delimiter}"
+            printf '%s\n' 'first line'
+            printf '%s\n' '::warning::this is data, not a workflow command'
+            printf '%s\n' "${delimiter}"
+            printf '%s=%s\n' 'SINGLE_VALUE' 'alpha=beta'
+          } >> "${GITHUB_ENV}"
+
+          {
+            printf 'multiline<<%s\n' "${delimiter}"
+            printf '%s\n' 'output line one'
+            printf '%s\n' 'output line two'
+            printf '%s\n' "${delimiter}"
+            printf '%s=%s\n' 'scalar' '42'
+          } >> "${GITHUB_OUTPUT}"
+
+          bin_dir="${RUNNER_TEMP}/gha-parity-bin"
+          mkdir -p "${bin_dir}"
+          cat > "${bin_dir}/gha-parity-command" <<'SCRIPT'
+          #!/usr/bin/env sh
+          printf '%s\n' 'path-command-ok'
+          SCRIPT
+          chmod 0755 "${bin_dir}/gha-parity-command"
+          printf '%s\n' "${bin_dir}" >> "${GITHUB_PATH}"
+
+          {
+            printf '%s\n' '# File-command conformance'
+            printf '%s\n' ''
+            printf '%s\n' '- summary write succeeded'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Verify file-command state becomes available to later steps
+        shell: bash
+        env:
+          OUTPUT_MULTILINE: ${{ steps.files.outputs.multiline }}
+          OUTPUT_SCALAR: ${{ steps.files.outputs.scalar }}
+        run: |
+          set -euo pipefail
+          test "${SINGLE_VALUE}" = 'alpha=beta'
+          test "${MULTILINE_VALUE}" = $'first line\n::warning::this is data, not a workflow command'
+          test "${OUTPUT_MULTILINE}" = $'output line one\noutput line two'
+          test "${OUTPUT_SCALAR}" = '42'
+          test "$(gha-parity-command)" = 'path-command-ok'
+
+      - name: Exercise stop-commands and annotations
+        shell: bash
+        run: |
+          set -euo pipefail
+          token="gha-parity-stop-$$_${RANDOM}"
+          printf '::stop-commands::%s\n' "${token}"
+          printf '%s\n' '::error file=not-real.rs,line=1::suppressed command-looking data'
+          printf '::%s::\n' "${token}"
+          printf '%s\n' '::notice file=conformance.yml,line=1,col=1::commands resumed'
+          printf '%s\n' '::group::parity group'
+          printf '%s\n' 'group body'
+          printf '%s\n' '::endgroup::'
+
+      - name: Record post-job state without exposing secrets
+        if: ${{ always() }}
+        shell: bash
+        env:
+          SECRET_PRESENT: ${{ env.CONFORMANCE_SECRET != '' }}
+        run: |
+          set -euo pipefail
+          case "${SECRET_PRESENT}" in
+            true|false) ;;
+            *) exit 96 ;;
+          esac
+          printf '%s\n' "secret-present=${SECRET_PRESENT}" >> "${GITHUB_STEP_SUMMARY}"

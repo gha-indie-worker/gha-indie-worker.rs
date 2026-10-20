@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/gha-indie-worker/gha-indie-worker.rs/blob/main/conformance/trace.schema.json",
+  "title": "gha-indie-worker normalized execution trace",
+  "type": "object",
+  "required": [
+    "schema",
+    "engine",
+    "workflow_sha",
+    "events"
+  ],
+  "properties": {
+    "schema": {
+      "const": "gha-indie-worker.trace.v1"
+    },
+    "engine": {
+      "enum": [
+        "github-actions",
+        "gha-indie-worker"
+      ]
+    },
+    "workflow_sha": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "runner_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "platform": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*$"
+    },
+    "captured_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "events": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": {
+        "$ref": "#/$defs/event"
+      }
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "event": {
+      "type": "object",
+      "required": [
+        "event"
+      ],
+      "properties": {
+        "event": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "scope": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "status": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "data": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}
