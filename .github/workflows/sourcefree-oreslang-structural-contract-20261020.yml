@@ -119,6 +119,29 @@ jobs:
           assert not positional_view(("Child",), ("Root",), kind="fixed-array")
           assert positional_view(("Child",), ("Root",), kind="tuple")
           print("PASS SOURCE-FREE positional slots: exact arity, no numeric coercion, fixed-array invariance")
+          # Generic structural callables compare binders modulo alpha-renaming.
+          # Names of method-local generic parameters are not nominal identities.
+          def normalize_method(generics, params, result):
+              names = {name: ("GENERIC", index) for index, name in enumerate(generics)}
+              def normalize(t):
+                  if isinstance(t, str):
+                      return names.get(t, ("TYPE", t))
+                  return tuple(normalize(x) for x in t)
+              return tuple(normalize(x) for x in params), normalize(result)
+          def same_generic_contract(left, right):
+              if len(left[0]) != len(right[0]):
+                  return False
+              return normalize_method(*left) == normalize_method(*right)
+          sig = (("T",), ("T",), "T")
+          renamed = (("U",), ("U",), "U")
+          nested = (("T",), (("Option", "T"),), ("Option", "T"))
+          nested_renamed = (("Different",), (("Option", "Different"),), ("Option", "Different"))
+          assert same_generic_contract(sig, renamed)
+          assert same_generic_contract(nested, nested_renamed)
+          assert not same_generic_contract(sig, (("U",), ("U",), "int"))
+          assert not same_generic_contract(sig, (("U", "V"), ("U",), "U"))
+          assert not same_generic_contract(nested, (("U",), (("Option", "U"),), ("List", "U")))
+          print("PASS SOURCE-FREE method-generic alpha equivalence: renamed binders and negative mismatches")
           print(f"PASS SOURCE-FREE structural oracle: {cases} randomized cases plus carrier, ownership and variance boundaries")
           print("NOT a Java/Graal, LLVM, native, or actual Oreslang compiler test")
           PY
