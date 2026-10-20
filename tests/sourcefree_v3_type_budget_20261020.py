@@ -82,5 +82,31 @@ class BoundedFingerprintTypeTests(unittest.TestCase):
         self.assertEqual(bounded_tree([]), (0, 0))
 
 
+
+def validate_option_shape_flag(type_name, type_args, inferred, claimed):
+    # Synthetic shape consistency only. Actual nominal identity is separately
+    # resolved by a compiler; this helper intentionally never grants it.
+    is_option_shape = type_name == "Option" and len(type_args) == 1 and not inferred
+    if is_option_shape != claimed:
+        raise ValueError("inconsistent Option identity claim")
+    return is_option_shape
+
+
+class OptionProofShapeTests(unittest.TestCase):
+    def test_fake_option_claim_on_plain_integer_rejected(self):
+        with self.assertRaises(ValueError):
+            validate_option_shape_flag("int", (), False, True)
+
+    def test_missing_claim_on_option_t_rejected(self):
+        with self.assertRaises(ValueError):
+            validate_option_shape_flag("Option", ("int",), False, False)
+
+    def test_valid_option_shape_still_not_nominal_proof(self):
+        self.assertTrue(validate_option_shape_flag(
+            "Option", ("int",), False, True))
+
+    def test_regular_scalar_does_not_require_option_proof(self):
+        self.assertFalse(validate_option_shape_flag("int", (), False, False))
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
