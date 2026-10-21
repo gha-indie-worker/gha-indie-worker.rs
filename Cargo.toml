@@ -3,6 +3,10 @@ name = "dd-build-server"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+# Test-only compilation of the API observer in the hermetic Cargo harness.
+admission-api-harness = []
+
 [dependencies]
 dd-telemetry = { path = "../../libs/telemetry-rs" }
 tracing = "0.1"
