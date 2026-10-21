@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - test/ores-compute-stdlib-pr1780-112
+  pull_request:
 
 permissions:
   contents: read
