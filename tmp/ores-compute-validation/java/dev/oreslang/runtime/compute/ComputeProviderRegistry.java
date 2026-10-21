@@ -1,30 +1,34 @@
 package dev.oreslang.runtime.compute;
 
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 
 /**
- * Immutable, explicit compute-provider registry.
+ * Immutable, explicit compute-provider metadata registry.
  *
- * <p>The registry is descriptive only. It does not grant source code a device
- * handle and it never falls back to another backend implicitly.</p>
+ * <p>The registry snapshots provider/device metadata only. It deliberately
+ * does not retain executable {@link ComputeProvider} authority, grant source
+ * code a device handle, or fall back to another backend implicitly.</p>
  */
 public final class ComputeProviderRegistry {
     private static final int MAX_PROVIDERS = 32;
     private static final int MAX_DEVICES_PER_PROVIDER = 1024;
+    private static final int MAX_TOTAL_DEVICES =
+            MAX_PROVIDERS * MAX_DEVICES_PER_PROVIDER;
 
-    private final Map<String, ComputeProvider> providers;
+    private final List<String> backends;
     private final Map<String, ComputeDevice> devices;
 
     private ComputeProviderRegistry(
-            Map<String, ComputeProvider> providers,
+            Set<String> backendIds,
             Map<String, ComputeDevice> devices) {
-        this.providers = Collections.unmodifiableMap(new LinkedHashMap<>(providers));
+        this.backends = List.copyOf(backendIds);
         this.devices = Collections.unmodifiableMap(new LinkedHashMap<>(devices));
     }
 
@@ -34,8 +38,9 @@ public final class ComputeProviderRegistry {
             throw new IllegalArgumentException("too many compute providers");
         }
 
-        Map<String, ComputeProvider> providers = new LinkedHashMap<>();
+        Set<String> backendIds = new LinkedHashSet<>();
         Map<String, ComputeDevice> devices = new LinkedHashMap<>();
+        int totalDevices = 0;
 
         for (ComputeProvider provider : input) {
             Objects.requireNonNull(provider, "provider");
@@ -45,17 +50,27 @@ public final class ComputeProviderRegistry {
                     || !backendId.matches("[A-Za-z0-9][A-Za-z0-9._-]*")) {
                 throw new IllegalArgumentException("invalid compute backend id");
             }
-            if (providers.putIfAbsent(backendId, provider) != null) {
+            if (!backendIds.add(backendId)) {
                 throw new IllegalArgumentException(
                         "duplicate compute backend provider: " + backendId);
             }
 
-            List<ComputeDevice> providerDevices =
-                    List.copyOf(Objects.requireNonNull(provider.devices(), "devices"));
-            if (providerDevices.size() > MAX_DEVICES_PER_PROVIDER) {
+            // Apply the provider budget before defensive copying. A provider
+            // must not force an unbounded allocation merely so the registry
+            // can discover that the metadata exceeds its declared limit.
+            List<ComputeDevice> rawDevices =
+                    Objects.requireNonNull(provider.devices(), "devices");
+            int providerDeviceCount = rawDevices.size();
+            if (providerDeviceCount > MAX_DEVICES_PER_PROVIDER) {
                 throw new IllegalArgumentException(
                         "too many devices for compute backend: " + backendId);
             }
+            if (providerDeviceCount > MAX_TOTAL_DEVICES - totalDevices) {
+                throw new IllegalArgumentException("too many compute devices");
+            }
+
+            List<ComputeDevice> providerDevices = List.copyOf(rawDevices);
+            totalDevices += providerDevices.size();
             for (ComputeDevice device : providerDevices) {
                 Objects.requireNonNull(device, "device");
                 if (!backendId.equals(device.backendId())) {
@@ -70,7 +85,7 @@ public final class ComputeProviderRegistry {
                 }
             }
         }
-        return new ComputeProviderRegistry(providers, devices);
+        return new ComputeProviderRegistry(backendIds, devices);
     }
 
     public static ComputeProviderRegistry empty() {
@@ -78,11 +93,11 @@ public final class ComputeProviderRegistry {
     }
 
     public List<String> backends() {
-        return List.copyOf(providers.keySet());
+        return backends;
     }
 
     public List<ComputeDevice> devices() {
-        return new ArrayList<>(devices.values());
+        return List.copyOf(devices.values());
     }
 
     public Optional<ComputeDevice> device(String backendId, String deviceId) {
