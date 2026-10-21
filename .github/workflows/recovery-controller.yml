@@ -7,6 +7,10 @@ on:
       - src/admission/github_api.rs
       - src/config.rs
       - src/db.rs
+      - src/http.rs
+      - src/jobs.rs
+      - src/http.rs
+      - src/jobs.rs
       - src/main.rs
       - src/recovery.rs
       - src/webhooks.rs
@@ -59,7 +63,7 @@ jobs:
           components: rustfmt
       - name: Format recovery slice
         run: |
-          rustfmt --edition 2021 --check             src/admission.rs             src/admission/github_api.rs             src/config.rs             src/db.rs             src/main.rs             src/recovery.rs             src/webhooks.rs
+          rustfmt --edition 2021 --check             src/admission.rs             src/admission/github_api.rs             src/config.rs             src/db.rs             src/http.rs             src/jobs.rs             src/main.rs             src/recovery.rs             src/webhooks.rs
       - name: Compile and test recovery controller in hermetic harness
         shell: bash
         run: |
@@ -140,6 +144,10 @@ jobs:
           grep -Fq 'BUILD_SERVER_GH_RECOVERY_TOKEN' src/config.rs
           grep -Fq 'record_recovery_receipt_strict' src/recovery.rs
           grep -Fq '"dispatch": false' src/webhooks.rs
+          grep -Fq 'github_recovery_enabled: false' src/http.rs
+          grep -Fq 'github_recovery_token: None' src/http.rs
+          grep -Fq 'github_recovery_enabled: false' src/jobs.rs
+          grep -Fq 'github_recovery_token: None' src/jobs.rs
 
           for forbidden in             'enqueue_build'             'submit_from_nats'             'std::process'             'Command::'             'idempotency_finish'; do
             if grep -Fq "$forbidden" src/recovery.rs; then
