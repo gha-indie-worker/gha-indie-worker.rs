@@ -56,6 +56,7 @@ struct ProviderIdentity {
     std::string device;
     std::uint64_t queue_id;
     std::uint64_t queue_generation;
+    std::uint64_t queue_minimum_alignment;
 };
 
 struct Limits {
@@ -121,6 +122,15 @@ class Provider final {
         std::uint32_t events_ = 0;
         std::uint32_t queues_ = 0;
         bool released_ = false;
+    };
+
+    struct PreEnqueueRecovery {
+        explicit PreEnqueueRecovery(QuotaLease lease)
+            : lease_(std::move(lease)) {}
+
+        Api::Handle input_physical_ = nullptr;
+        Api::Handle output_physical_ = nullptr;
+        QuotaLease lease_;
     };
 
 public:
@@ -265,12 +275,22 @@ public:
         OperationState release_resume_state_ = OperationState::Failed;
     };
 
-    Provider(Api& api, ProviderIdentity identity, Limits limits)
-        : api_(api), identity_(std::move(identity)), limits_(limits) {
+    Provider(
+            Api& api,
+            ProviderIdentity identity,
+            Limits limits,
+            dop::GpuTarget target)
+        : api_(api),
+          identity_(std::move(identity)),
+          limits_(limits),
+          target_(target) {
         if (identity_.tenant.empty()
                 || identity_.device.empty()
                 || identity_.queue_id == 0
-                || identity_.queue_generation == 0)
+                || identity_.queue_generation == 0
+                || identity_.queue_minimum_alignment == 0
+                || (identity_.queue_minimum_alignment
+                    & (identity_.queue_minimum_alignment - 1)) != 0)
             throw std::invalid_argument("OpenCL provider identity incomplete");
         if (limits_.resident_bytes == 0
                 || limits_.pinned_host_bytes == 0
@@ -282,10 +302,20 @@ public:
                 || limits_.pinned_host_bytes
                 > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
             throw std::invalid_argument("OpenCL provider quotas exceed signed i64 ABI");
+        if (target_.address_bits != 64
+                || !target_.float32
+                || target_.maximum_buffer_bytes == 0
+                || target_.maximum_rows == 0)
+            throw std::invalid_argument(
+                    "OpenCL provider target incompatible with portable G3 ABI");
+
+        quarantined_operations_.reserve(limits_.queue_slots);
+        pre_enqueue_recoveries_.reserve(limits_.queue_slots);
+        pre_enqueue_operation_recoveries_.reserve(limits_.queue_slots);
     }
 
-    PreparedKernel prepare(const dop::Kernel& kernel, dop::GpuTarget target) {
-        auto artifact = dop::lower_opencl(kernel, target);
+    PreparedKernel prepare(const dop::Kernel& kernel) {
+        auto artifact = dop::lower_opencl(kernel, target_);
         Api::Handle program = api_.prepare(artifact);
         if (!program)
             throw std::runtime_error("OpenCL provider returned null program");
@@ -297,13 +327,20 @@ public:
             PreparedKernel& prepared,
             const dop::DeviceBuffer& input,
             const dop::DeviceBuffer& output,
-            const dop::GpuQueueLocation& queue,
             const std::vector<unsigned char>& host_input) {
         prepared.active();
-        authenticate_queue(queue);
+        const dop::GpuQueueLocation queue{
+                identity_.tenant,
+                identity_.device,
+                identity_.queue_id,
+                identity_.queue_generation,
+                identity_.queue_minimum_alignment};
         {
             std::lock_guard<std::mutex> quarantine_guard(quarantine_lock_);
-            if (quarantine_latched_ || !quarantined_operations_.empty())
+            if (quarantine_latched_
+                    || !quarantined_operations_.empty()
+                    || !pre_enqueue_recoveries_.empty()
+                    || !pre_enqueue_operation_recoveries_.empty())
                 throw std::logic_error(
                         "OpenCL provider quarantined after post-enqueue invariant failure");
         }
@@ -318,6 +355,8 @@ public:
         const auto resident = checked_mul(bytes, 2);
         const auto pinned = checked_mul(bytes, 2);
         auto lease = reserve(resident, pinned, 1, 1);
+        auto early_recovery = std::make_unique<PreEnqueueRecovery>(
+                std::move(lease));
 
         Api::Handle input_physical = nullptr;
         Api::Handle output_physical = nullptr;
@@ -353,7 +392,7 @@ public:
                     input,
                     output,
                     std::move(*claim),
-                    std::move(lease),
+                    std::move(early_recovery->lease_),
                     std::move(input_staging),
                     std::move(output_staging),
                     input_physical,
@@ -399,21 +438,47 @@ public:
                 // leaves the host ledger fail-closed in flight.
             }
 
-            bool physical_released = true;
-            if (input_physical) {
-                try { api_.release_buffer(input_physical); }
-                catch (...) { physical_released = false; }
-            }
-            if (output_physical) {
-                try { api_.release_buffer(output_physical); }
-                catch (...) { physical_released = false; }
-            }
+            if (operation) {
+                try {
+                    finish_cleanup(*operation);
+                } catch (...) {
+                    std::lock_guard<std::mutex> recovery_guard(quarantine_lock_);
+                    if (pre_enqueue_operation_recoveries_.size()
+                            >= limits_.queue_slots)
+                        throw std::logic_error(
+                                "OpenCL pre-enqueue operation recovery capacity exhausted");
+                    pre_enqueue_operation_recoveries_.push_back(
+                            std::move(operation));
+                }
+            } else {
+                if (input_physical) {
+                    try {
+                        api_.release_buffer(input_physical);
+                        input_physical = nullptr;
+                    } catch (...) {
+                        early_recovery->input_physical_ = input_physical;
+                    }
+                }
+                if (output_physical) {
+                    try {
+                        api_.release_buffer(output_physical);
+                        output_physical = nullptr;
+                    } catch (...) {
+                        early_recovery->output_physical_ = output_physical;
+                    }
+                }
 
-            if (physical_released) {
-                if (operation)
-                    operation->lease_.release();
-                else
-                    lease.release();
+                if (!early_recovery->input_physical_
+                        && !early_recovery->output_physical_) {
+                    early_recovery->lease_.release();
+                } else {
+                    std::lock_guard<std::mutex> recovery_guard(quarantine_lock_);
+                    if (pre_enqueue_recoveries_.size() >= limits_.queue_slots)
+                        throw std::logic_error(
+                                "OpenCL pre-enqueue recovery capacity exhausted");
+                    pre_enqueue_recoveries_.push_back(
+                            std::move(early_recovery));
+                }
             }
             std::rethrow_exception(failure);
         }
@@ -555,6 +620,46 @@ public:
         finish_cleanup(operation);
     }
 
+    void retry_pre_enqueue_cleanup() {
+        std::lock_guard<std::mutex> recovery_guard(quarantine_lock_);
+
+        if (!pre_enqueue_operation_recoveries_.empty()) {
+            auto& operation = pre_enqueue_operation_recoveries_.front();
+            finish_cleanup(*operation);
+            pre_enqueue_operation_recoveries_.erase(
+                    pre_enqueue_operation_recoveries_.begin());
+            return;
+        }
+
+        if (pre_enqueue_recoveries_.empty())
+            throw std::logic_error(
+                    "OpenCL provider has no pre-enqueue recovery");
+
+        auto& recovery = pre_enqueue_recoveries_.front();
+        std::exception_ptr failure;
+        if (recovery->input_physical_) {
+            try {
+                api_.release_buffer(recovery->input_physical_);
+                recovery->input_physical_ = nullptr;
+            } catch (...) {
+                failure = std::current_exception();
+            }
+        }
+        if (recovery->output_physical_) {
+            try {
+                api_.release_buffer(recovery->output_physical_);
+                recovery->output_physical_ = nullptr;
+            } catch (...) {
+                if (!failure) failure = std::current_exception();
+            }
+        }
+        if (failure)
+            std::rethrow_exception(failure);
+
+        recovery->lease_.release();
+        pre_enqueue_recoveries_.erase(pre_enqueue_recoveries_.begin());
+    }
+
     Usage usage() const {
         std::lock_guard<std::mutex> guard(quota_lock_);
         return Usage{
@@ -630,14 +735,6 @@ private:
         pinned_host_bytes_ -= lease.pinned_;
         outstanding_events_ -= lease.events_;
         queue_slots_ -= lease.queues_;
-    }
-
-    void authenticate_queue(const dop::GpuQueueLocation& queue) const {
-        if (queue.tenant != identity_.tenant
-                || queue.device != identity_.device
-                || queue.queue_id != identity_.queue_id
-                || queue.generation != identity_.queue_generation)
-            throw std::invalid_argument("foreign or stale OpenCL queue capability metadata");
     }
 
     void request_cancel(Operation& operation, bool timeout) {
@@ -734,10 +831,13 @@ private:
     Api& api_;
     ProviderIdentity identity_;
     Limits limits_;
+    dop::GpuTarget target_;
 
     mutable std::mutex quota_lock_;
     mutable std::mutex quarantine_lock_;
     std::vector<std::unique_ptr<Operation>> quarantined_operations_;
+    std::vector<std::unique_ptr<PreEnqueueRecovery>> pre_enqueue_recoveries_;
+    std::vector<std::unique_ptr<Operation>> pre_enqueue_operation_recoveries_;
     bool quarantine_latched_ = false;
     std::uint64_t resident_bytes_ = 0;
     std::uint64_t pinned_host_bytes_ = 0;
