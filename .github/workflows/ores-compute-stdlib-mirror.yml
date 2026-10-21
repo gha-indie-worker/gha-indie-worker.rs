@@ -184,7 +184,7 @@ jobs:
           CXXFLAGS="-std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror"
           INC="-Itmp/ores-compute-validation/cpp"
           c++ $CXXFLAGS -pthread $INC \
-            tmp/ores-compute-validation/cpp/opencl_provider_g3_test.cpp \
+            tmp/ores-compute-validation/cpp/opencl_provider_g3_debug.cpp \
             -o "${RUNNER_TEMP}/opencl-provider-g3"
           "${RUNNER_TEMP}/opencl-provider-g3"
 
