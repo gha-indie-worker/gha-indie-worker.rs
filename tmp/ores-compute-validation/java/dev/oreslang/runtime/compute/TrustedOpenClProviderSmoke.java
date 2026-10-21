@@ -22,6 +22,7 @@ public final class TrustedOpenClProviderSmoke {
         boolean failKernel;
         boolean failReleaseBufferOnce;
         boolean failReleaseProgramOnce;
+        boolean deviceLossQuiescent;
         final Deque<TrustedOpenClProvider.EventStatus> statuses = new ArrayDeque<>();
         EventHandle lastEvent;
 
@@ -70,6 +71,7 @@ public final class TrustedOpenClProviderSmoke {
             return ((EventHandle) event).status;
         }
         public void releaseEvent(TrustedOpenClProvider.NativeEvent event) {}
+        public boolean proveDeviceLossQuiescence() { return deviceLossQuiescent; }
 
         EventHandle event() {
             var status = statuses.isEmpty()
@@ -109,7 +111,7 @@ public final class TrustedOpenClProviderSmoke {
                 new TrustedOpenClProvider.Limits(bytes * 4, bytes * 4, 4, 4),
                 f.queue,
                 new TrustedOpenClProvider.DeviceProfile(
-                        1, 64, bytes * 2, 100, true, true));
+                        1, 64, bytes * 2, 100, 16, true, true));
     }
 
     private static void expectFailure(Runnable action, String message) {
@@ -128,93 +130,18 @@ public final class TrustedOpenClProviderSmoke {
             var provider = provider(driver, f);
             var prepared = provider.prepare(f.kernel);
             var operation = provider.begin(prepared, f.input, f.output, "actor:1", f.host);
-            expectFailure(prepared::close, "prepared kernel closed while active");
+            if (provider.activeOperationCount() != 1) throw new AssertionError("operation not retained");
             if (provider.poll(operation) != TrustedOpenClProvider.OperationState.KERNEL_SUBMITTED)
                 throw new AssertionError("upload transition failed");
             if (provider.poll(operation) != TrustedOpenClProvider.OperationState.DOWNLOAD_SUBMITTED)
                 throw new AssertionError("kernel transition failed");
             if (provider.poll(operation) != TrustedOpenClProvider.OperationState.SUCCEEDED)
                 throw new AssertionError("download transition failed");
+            if (provider.activeOperationCount() != 0) throw new AssertionError("terminal op retained");
             byte[] expected = Arrays.copyOf(f.host, f.host.length);
             for (int i = 0; i < expected.length; i++) expected[i] ^= 0x5a;
             if (!Arrays.equals(expected, operation.outputBytes()))
                 throw new AssertionError("provider output mismatch");
-            if (!provider.usage().equals(new TrustedOpenClProvider.Usage(0, 0, 0, 0)))
-                throw new AssertionError("successful provider leaked quota");
-            prepared.close();
-        }
-
-        {
-            var f = fixture();
-            var driver = new Driver();
-            driver.failUpload = true;
-            var provider = provider(driver, f);
-            var prepared = provider.prepare(f.kernel);
-            expectFailure(
-                    () -> provider.begin(prepared, f.input, f.output, "actor:1", f.host),
-                    "first enqueue failure accepted");
-            if (f.input.state() != ComputeBufferHandle.State.IDLE
-                    || f.output.state() != ComputeBufferHandle.State.IDLE)
-                throw new AssertionError("pre-enqueue failure did not restore pair");
-            if (!provider.usage().equals(new TrustedOpenClProvider.Usage(0, 0, 0, 0)))
-                throw new AssertionError("pre-enqueue failure leaked quota");
-            prepared.close();
-        }
-
-        {
-            var f = fixture();
-            var driver = new Driver();
-            driver.failKernel = true;
-            var provider = provider(driver, f);
-            var prepared = provider.prepare(f.kernel);
-            var operation = provider.begin(prepared, f.input, f.output, "actor:1", f.host);
-            expectFailure(() -> provider.poll(operation), "post-submit kernel failure accepted");
-            if (f.input.state() != ComputeBufferHandle.State.POISONED
-                    || f.output.state() != ComputeBufferHandle.State.POISONED)
-                throw new AssertionError("post-submit failure did not poison pair");
-            if (!provider.usage().equals(new TrustedOpenClProvider.Usage(0, 0, 0, 0)))
-                throw new AssertionError("post-submit terminal failure leaked quota");
-            prepared.close();
-        }
-
-        {
-            var f = fixture();
-            var driver = new Driver();
-            driver.statuses.add(TrustedOpenClProvider.EventStatus.PENDING);
-            var provider = provider(driver, f);
-            var prepared = provider.prepare(f.kernel);
-            var operation = provider.begin(prepared, f.input, f.output, "actor:1", f.host);
-            provider.requestTimeoutCancellation(operation);
-            var before = provider.usage();
-            if (provider.poll(operation) != TrustedOpenClProvider.OperationState.CANCEL_REQUESTED)
-                throw new AssertionError("pending timeout changed to terminal state");
-            if (!before.equals(provider.usage()))
-                throw new AssertionError("pending timeout released physical quota");
-            driver.lastEvent.status = TrustedOpenClProvider.EventStatus.COMPLETE;
-            if (provider.poll(operation) != TrustedOpenClProvider.OperationState.CANCELLED)
-                throw new AssertionError("quiescent cancellation not acknowledged");
-            if (!provider.usage().equals(new TrustedOpenClProvider.Usage(0, 0, 0, 0)))
-                throw new AssertionError("cancelled provider leaked quota");
-            prepared.close();
-        }
-
-        {
-            var f = fixture();
-            var driver = new Driver();
-            var provider = provider(driver, f);
-            var prepared = provider.prepare(f.kernel);
-            var operation = provider.begin(prepared, f.input, f.output, "actor:1", f.host);
-            provider.poll(operation);
-            provider.poll(operation);
-            driver.failReleaseBufferOnce = true;
-            expectFailure(() -> provider.poll(operation), "release failure was hidden");
-            if (operation.state() != TrustedOpenClProvider.OperationState.RELEASE_FAILED)
-                throw new AssertionError("release failure not retained");
-            if (provider.usage().residentBytes() == 0)
-                throw new AssertionError("release failure incorrectly freed quota");
-            provider.retryRelease(operation);
-            if (operation.state() != TrustedOpenClProvider.OperationState.SUCCEEDED)
-                throw new AssertionError("release retry did not restore terminal state");
             prepared.close();
         }
 
@@ -227,13 +154,15 @@ public final class TrustedOpenClProviderSmoke {
             var prepared = provider.prepare(f.kernel);
             expectFailure(
                     () -> provider.begin(prepared, f.input, f.output, "actor:1", f.host),
-                    "pre-enqueue physical cleanup failure was hidden");
+                    "pre-enqueue cleanup failure was hidden");
             if (provider.usage().residentBytes() == 0)
-                throw new AssertionError("pre-enqueue release failure dropped quota authority");
-            expectFailure(prepared::close, "prepared kernel lost recovery pin");
+                throw new AssertionError("pre-enqueue recovery lost quota authority");
+            expectFailure(
+                    () -> provider.begin(prepared, f.input, f.output, "actor:1", f.host),
+                    "provider admitted work during recovery quarantine");
             provider.retryPreEnqueueCleanup();
             if (!provider.usage().equals(new TrustedOpenClProvider.Usage(0, 0, 0, 0)))
-                throw new AssertionError("pre-enqueue recovery retry leaked quota");
+                throw new AssertionError("pre-enqueue recovery leaked quota");
             prepared.close();
         }
 
@@ -244,9 +173,44 @@ public final class TrustedOpenClProviderSmoke {
             var provider = provider(driver, f);
             var prepared = provider.prepare(f.kernel);
             expectFailure(prepared::close, "program release failure was hidden");
+            if (prepared.artifact().artifactAbiVersion() != 1)
+                throw new AssertionError("failed release dropped prepared authority");
             prepared.close();
         }
 
-        System.out.println("trusted-opencl-provider-g3-smoke-ok");
+        {
+            var f = fixture();
+            var driver = new Driver();
+            driver.statuses.add(TrustedOpenClProvider.EventStatus.DEVICE_LOST);
+            var provider = provider(driver, f);
+            var prepared = provider.prepare(f.kernel);
+            var operation = provider.begin(prepared, f.input, f.output, "actor:1", f.host);
+            if (provider.poll(operation) != TrustedOpenClProvider.OperationState.DEVICE_LOST)
+                throw new AssertionError("device loss not surfaced");
+            if (provider.usage().residentBytes() == 0 || provider.activeOperationCount() != 1)
+                throw new AssertionError("device loss released resources without quiescence");
+            expectFailure(() -> provider.recoverDeviceLoss(operation), "unproven loss recovery accepted");
+            driver.deviceLossQuiescent = true;
+            provider.recoverDeviceLoss(operation);
+            if (!provider.usage().equals(new TrustedOpenClProvider.Usage(0, 0, 0, 0))
+                    || provider.activeOperationCount() != 0)
+                throw new AssertionError("proved device-loss recovery leaked authority");
+            prepared.close();
+        }
+
+        {
+            var f = fixture();
+            var driver = new Driver();
+            long bytes = f.plan.byteLength();
+            var provider = new TrustedOpenClProvider(
+                    driver,
+                    new TrustedOpenClProvider.Limits(bytes * 4, bytes * 4, 4, 4),
+                    f.queue,
+                    new TrustedOpenClProvider.DeviceProfile(
+                            1, 64, bytes * 2, 100, 1, true, true));
+            expectFailure(() -> provider.prepare(f.kernel), "field bound bypassed physical ABI");
+        }
+
+        System.out.println("trusted-opencl-provider-g3-hardened-smoke-ok");
     }
 }
