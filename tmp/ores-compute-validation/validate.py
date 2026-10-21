@@ -83,4 +83,17 @@ assert provider["submissionRules"]["cancellationImpliesQuiescence"] is False
 assert provider["submissionRules"]["timeoutDoesNotFreeDeviceMemory"] is True
 assert provider["testing"]["mockProviderSuccessIsNotGpuExecutionEvidence"] is True
 assert provider["testing"]["realGpuExecutionEvidenceRequiresDeviceEvent"] is True
+assert provider["physicalProvider"]["queueCapabilityBoundToDeviceAuthority"] is True
+assert provider["physicalProvider"]["queueCapabilityGenerationRequired"] is True
+assert provider["physicalProvider"]["artifactAbiValidationRequired"] is True
+assert provider["physicalProvider"]["providerReleaseRetryable"] is True
+assert provider["submissionRules"]["preEnqueueCleanupFailureRetainsRecoveryAuthority"] is True
+assert provider["submissionRules"]["preEnqueueCleanupRetryRequired"] is True
+assert provider["submissionRules"]["programReleaseFailureRetainsPreparedAuthority"] is True
+assert provider["testing"]["preEnqueueReleaseFailureRecoveryRequired"] is True
+assert provider["testing"]["programReleaseRetryRequired"] is True
+assert provider["testing"]["queueAuthorityForgeryRequired"] is True
+assert provider["promotion"]["requiresArtifactAbiProviderValidation"] is True
+assert provider["promotion"]["requiresRecoverablePreEnqueueCleanup"] is True
+assert provider["promotion"]["requiresOpaqueJavaQueueAuthority"] is True
 print("portable-compute-provider-g3-contract-ok")
