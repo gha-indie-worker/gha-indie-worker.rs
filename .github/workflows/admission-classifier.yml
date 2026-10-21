@@ -153,7 +153,7 @@ jobs:
               };
           }
           EOF
-          if rustc --edition 2021 --crate-type lib -A warnings --emit=metadata \
+          if rustc --edition 2021 --test -A warnings --emit=metadata \
             -o "$scratch/forgery.rmeta" "$scratch/forgery.rs" 2>"$scratch/errors"; then
             echo "ERROR: forged provider evidence unexpectedly compiled" >&2
             exit 1
