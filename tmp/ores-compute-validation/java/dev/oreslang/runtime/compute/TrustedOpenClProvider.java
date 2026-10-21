@@ -557,7 +557,7 @@ final class TrustedOpenClProvider {
     private boolean releasePhysicalQuietly(
             PhysicalBuffer input,
             PhysicalBuffer output,
-            RuntimeException original) {
+            Throwable original) {
         boolean released = true;
         if (input != null) {
             try {
