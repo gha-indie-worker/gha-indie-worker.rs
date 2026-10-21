@@ -357,6 +357,49 @@ int main() {
         prepared.close();
     }
 
+    // Cancellation followed by device loss must still require provider
+    // recovery proof. Device loss outranks cancellation completion and the
+    // exact native event remains retained until recovery succeeds.
+    {
+        Fixture f;
+        FakeApi api;
+        api.statuses.push_back(EventStatus::Pending);
+        auto provider = make_provider(api, f.plan.byte_length());
+        auto prepared = provider.prepare(f.kernel);
+        auto operation = provider.begin(
+                prepared, f.input, f.output, f.host);
+
+        provider.request_timeout_cancellation(*operation);
+        const auto before = provider.usage();
+        check(provider.poll(*operation) == Provider::OperationState::CancelRequested);
+        check(provider.usage() == before);
+        check(api.released_events == 0);
+
+        api.last_event->status = EventStatus::DeviceLost;
+        check(provider.poll(*operation) == Provider::OperationState::DeviceLost);
+        check(provider.usage() == before);
+        check(api.released_events == 0);
+        check(f.input_fence.status() == Status::Poisoned);
+        check(f.output_fence.status() == Status::Poisoned);
+
+        expect_throw<std::logic_error>([&] {
+            provider.recover_device_loss(*operation);
+        });
+        check(provider.usage() == before);
+        check(api.released_events == 0);
+
+        api.device_loss_quiescent = true;
+        provider.recover_device_loss(*operation);
+        check(api.released_events == 1);
+        check(provider.usage() == oreslang::opencl::Usage{0, 0, 0, 0});
+
+        f.input_fence.retire_after_backend_release(
+                {"tenant-a", "gpu0", 101});
+        f.output_fence.retire_after_backend_release(
+                {"tenant-a", "gpu0", 102});
+        prepared.close();
+    }
+
     // Device loss poisons but does not imply physical quiescence.
     {
         Fixture f;
@@ -372,12 +415,14 @@ int main() {
         check(f.output_fence.status() == Status::Poisoned);
         check(provider.usage().resident_bytes > 0);
         check(provider.active_operation_count() == 1);
+        check(api.released_events == 0);
         expect_throw<std::logic_error>([&] { (void)operation->output_bytes(); });
         expect_throw<std::logic_error>([&] { prepared.close(); });
         expect_throw<std::logic_error>([&] {
             provider.recover_device_loss(*operation);
         });
         check(provider.usage().resident_bytes > 0);
+        check(api.released_events == 0);
         expect_throw<std::logic_error>([&] {
             f.input_fence.retire_after_backend_release(
                     {"tenant-a", "gpu0", 101});
@@ -385,6 +430,7 @@ int main() {
 
         api.device_loss_quiescent = true;
         provider.recover_device_loss(*operation);
+        check(api.released_events == 1);
         check(provider.usage() == oreslang::opencl::Usage{0, 0, 0, 0});
         check(provider.active_operation_count() == 0);
         f.input_fence.retire_after_backend_release(
