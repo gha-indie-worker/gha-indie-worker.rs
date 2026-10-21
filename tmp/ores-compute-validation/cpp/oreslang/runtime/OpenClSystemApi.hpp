@@ -150,6 +150,24 @@ public:
         return maximum_allocation_bytes_;
     }
 
+    void validate_artifact(
+            const dop::OpenClArtifact& artifact) const override {
+        if (artifact.artifact_abi_version != 1
+                || artifact.required_address_bits != 64
+                || !artifact.required_float32
+                || !artifact.required_little_endian
+                || artifact.required_bytes == 0
+                || artifact.required_bytes > maximum_allocation_bytes_
+                || artifact.global_rows == 0
+                || artifact.global_fields == 0) {
+            throw std::invalid_argument(
+                    "OpenCL artifact ABI incompatible with authenticated GPU");
+        }
+        (void)checked_size(artifact.required_bytes);
+        (void)checked_size(artifact.global_rows);
+        (void)checked_size(artifact.global_fields);
+    }
+
     Handle prepare(const dop::OpenClArtifact& artifact) override {
         auto prepared = std::make_unique<Prepared>();
 
@@ -330,6 +348,20 @@ public:
         if (wrapper->device_lost)
             return EventStatus::DeviceLost;
 
+        if (wrapper->flush_failed) {
+            const auto flush_status = dispatch_.flush(queue_);
+            if (flush_status == CL_SUCCESS) {
+                wrapper->flush_failed = false;
+            } else if (flush_status == CL_DEVICE_NOT_AVAILABLE) {
+                wrapper->device_lost = true;
+                return EventStatus::DeviceLost;
+            } else {
+                // A flush failure does not prove that the already-returned
+                // event is quiescent. Keep all resources pinned and retry.
+                return EventStatus::Pending;
+            }
+        }
+
         cl_int execution = 0;
         const auto status = dispatch_.get_event_info(
                 wrapper->event,
@@ -356,6 +388,12 @@ public:
                     "clReleaseEvent failed: " + std::to_string(status));
         wrapper->event = nullptr;
         delete wrapper;
+    }
+
+    bool prove_device_loss_quiescence() override {
+        if (!queue_ || !dispatch_.finish)
+            return false;
+        return dispatch_.finish(queue_) == CL_SUCCESS;
     }
 
 private:
