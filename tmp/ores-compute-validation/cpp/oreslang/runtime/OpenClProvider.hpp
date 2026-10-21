@@ -502,6 +502,22 @@ public:
         if (status == EventStatus::Pending)
             return operation.state_;
 
+        if (status == EventStatus::DeviceLost) {
+            // Device loss is not quiescence, even if cancellation was already
+            // requested. Keep the exact provider event until reset/recovery
+            // proves the queue can no longer touch these allocations.
+            if (!operation.cancel_requested_) {
+                gpu::BufferFence::cancel_pair(
+                        operation.input_.fence,
+                        operation.output_.fence,
+                        operation.claim_.claim().tickets);
+                operation.cancel_requested_ = true;
+            }
+            operation.state_ = OperationState::DeviceLost;
+            retain_quarantined(operation);
+            return operation.state_;
+        }
+
         Api::Handle completed_event = operation.event_;
         api_.release_event(completed_event);
         operation.event_ = nullptr;
@@ -513,17 +529,6 @@ public:
                     operation.claim_.claim().tickets);
             operation.state_ = OperationState::Cancelled;
             finish_cleanup(operation);
-            return operation.state_;
-        }
-
-        if (status == EventStatus::DeviceLost) {
-            gpu::BufferFence::cancel_pair(
-                    operation.input_.fence,
-                    operation.output_.fence,
-                    operation.claim_.claim().tickets);
-            operation.cancel_requested_ = true;
-            operation.state_ = OperationState::DeviceLost;
-            retain_quarantined(operation);
             return operation.state_;
         }
 
@@ -637,6 +642,12 @@ public:
         if (!api_.prove_device_loss_quiescence())
             throw std::logic_error(
                     "OpenCL provider could not prove device-loss quiescence");
+
+        if (operation.event_) {
+            auto lost_event = operation.event_;
+            api_.release_event(lost_event);
+            operation.event_ = nullptr;
+        }
 
         gpu::BufferFence::acknowledge_cancelled_pair(
                 operation.input_.fence,
