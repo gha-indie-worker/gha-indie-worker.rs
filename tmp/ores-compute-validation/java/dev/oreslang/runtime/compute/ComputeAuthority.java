@@ -65,6 +65,53 @@ final class ComputeAuthority {
         buffer.acknowledgeCancelled(fence);
     }
 
+
+    static ComputeFencePair beginKernelPair(
+            ComputeBufferHandle<?> input,
+            ComputeBufferHandle<?> output,
+            ComputeDeviceHandle expectedDevice,
+            String expectedOwnerDomain,
+            long length) {
+        return ComputeBufferHandle.beginKernelPair(
+                input, output, expectedDevice, expectedOwnerDomain, length);
+    }
+
+    static void markPairSubmitted(
+            ComputeBufferHandle<?> input,
+            ComputeBufferHandle<?> output,
+            ComputeFencePair pair) {
+        ComputeBufferHandle.markPairSubmitted(input, output, pair);
+    }
+
+    static void abortPairBeforeEnqueue(
+            ComputeBufferHandle<?> input,
+            ComputeBufferHandle<?> output,
+            ComputeFencePair pair) {
+        ComputeBufferHandle.abortPairBeforeEnqueue(input, output, pair);
+    }
+
+    static void completePair(
+            ComputeBufferHandle<?> input,
+            ComputeBufferHandle<?> output,
+            ComputeFencePair pair,
+            boolean succeeded) {
+        ComputeBufferHandle.completePair(input, output, pair, succeeded);
+    }
+
+    static void cancelPair(
+            ComputeBufferHandle<?> input,
+            ComputeBufferHandle<?> output,
+            ComputeFencePair pair) {
+        ComputeBufferHandle.cancelPair(input, output, pair);
+    }
+
+    static void acknowledgeCancelledPair(
+            ComputeBufferHandle<?> input,
+            ComputeBufferHandle<?> output,
+            ComputeFencePair pair) {
+        ComputeBufferHandle.acknowledgeCancelledPair(input, output, pair);
+    }
+
     static void retire(
             ComputeBufferHandle<?> buffer,
             ComputeDeviceHandle expectedDevice,
