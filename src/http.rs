@@ -859,6 +859,74 @@ mod e2e {
     }
 
     #[tokio::test]
+    async fn failed_workflow_run_recovery_is_disabled_by_default() {
+        let body = json!({
+            "action": "completed",
+            "repository": { "full_name": "ORESoftware/x" },
+            "workflow_run": {
+                "id": 42,
+                "run_attempt": 1,
+                "status": "completed",
+                "conclusion": "failure",
+                "head_sha": "0123456789abcdef0123456789abcdef01234567",
+                "head_branch": "main"
+            }
+        })
+        .to_string();
+        let sig = github_sig(GH_HOOK, &body);
+        let request = Request::builder()
+            .method("POST")
+            .uri("/webhooks/github")
+            .header("content-type", "application/json")
+            .header("x-github-event", "workflow_run")
+            .header("x-github-delivery", "d-recovery-disabled")
+            .header("x-hub-signature-256", sig)
+            .body(Body::from(body))
+            .unwrap();
+
+        let (status, body) = send(app(test_config()), request).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("ignored"));
+        assert!(!body.contains("recovery-observed"));
+    }
+
+    #[tokio::test]
+    async fn recovery_enabled_without_durable_db_fails_closed_before_observation() {
+        let mut config = test_config();
+        config.github_recovery_enabled = true;
+        config.github_recovery_token = Some("read-only-test-token".to_string());
+
+        let body = json!({
+            "action": "completed",
+            "repository": { "full_name": "ORESoftware/x" },
+            "workflow_run": {
+                "id": 43,
+                "run_attempt": 2,
+                "status": "completed",
+                "conclusion": "failure",
+                "head_sha": "89abcdef0123456789abcdef0123456789abcdef",
+                "head_branch": "main"
+            }
+        })
+        .to_string();
+        let sig = github_sig(GH_HOOK, &body);
+        let request = Request::builder()
+            .method("POST")
+            .uri("/webhooks/github")
+            .header("content-type", "application/json")
+            .header("x-github-event", "workflow_run")
+            .header("x-github-delivery", "d-recovery-no-db")
+            .header("x-hub-signature-256", sig)
+            .body(Body::from(body))
+            .unwrap();
+
+        let (status, body) = send(app(config), request).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(body.contains("durable database persistence"));
+        assert!(body.contains("\"dispatch\":false"));
+    }
+
+    #[tokio::test]
     async fn github_webhook_malformed_sha_does_not_panic_and_is_ignored() {
         // A non-ASCII/short `after` used to panic via a byte-slice; now it is
         // gated by valid_commit_sha and ignored. A real matching rule exists so
