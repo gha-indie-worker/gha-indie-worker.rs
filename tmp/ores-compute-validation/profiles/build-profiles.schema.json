@@ -162,7 +162,8 @@
             "sourceForgeableAuthority",
             "cancellationQuiescence",
             "strictAotKernelVariants",
-            "hardRtResourceBounds"
+            "hardRtResourceBounds",
+            "hardRtProviderCompilation"
           ],
           "properties": {
             "providerDiscovery": {
@@ -185,6 +186,9 @@
             },
             "hardRtResourceBounds": {
               "const": "required"
+            },
+            "hardRtProviderCompilation": {
+              "const": "forbidden-in-execution-phase"
             }
           }
         }
