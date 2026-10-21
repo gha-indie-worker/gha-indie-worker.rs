@@ -188,6 +188,10 @@ async fn maybe_handle_github_recovery(
         Ok(None) => return None,
         Err(error) => {
             tracing::warn!(?error, "rejecting malformed GitHub recovery candidate");
+            state
+                .counters
+                .github_recovery_fail_closed
+                .fetch_add(1, Ordering::Relaxed);
             return Some(
                 (
                     StatusCode::ACCEPTED,
@@ -345,6 +349,11 @@ pub async fn github_webhook(
         .unwrap_or_default()
         .to_string();
 
+    state
+        .counters
+        .webhooks_received
+        .fetch_add(1, Ordering::Relaxed);
+
     // Failed workflow runs take a separate, fail-closed observe-only path before
     // ordinary delivery-id dedupe. This preserves retryability after transient
     // GitHub API or database failures and never dispatches fallback work.
@@ -386,11 +395,6 @@ pub async fn github_webhook(
         }
         _ => (String::new(), String::new(), false),
     };
-
-    state
-        .counters
-        .webhooks_received
-        .fetch_add(1, Ordering::Relaxed);
 
     // Local dedupe (Postgres unique) + multi-replica dedupe (fiducia lease).
     if let Some(db) = state.db.as_ref() {
