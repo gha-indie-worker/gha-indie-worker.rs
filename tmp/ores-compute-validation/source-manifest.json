@@ -57,7 +57,29 @@
       "source_path": "tests/portable_compute_descriptor_test.cpp",
       "source_blob_sha": "bd3a9fd02ca879986280d0aab604eea554d3f078",
       "dest": "tmp/ores-compute-validation/cpp/portable_compute_descriptor_test.cpp"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-target-profiles",
+      "source_ref": "feat/portable-compute-stdlib-v1",
+      "source_path": "build-profiles/v1.json",
+      "source_blob_sha": "f8dc3aec4ed7aad66eb94a80b8fde5d4c130c07f",
+      "dest": "tmp/ores-compute-validation/profiles/build-profiles-v1.json"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-target-profiles",
+      "source_ref": "feat/portable-compute-stdlib-v1",
+      "source_path": "schemas/build-profiles.schema.json",
+      "source_blob_sha": "b8c62a6383c57b5905e3cc7310da57d130d007b8",
+      "dest": "tmp/ores-compute-validation/profiles/build-profiles.schema.json"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-target-profiles",
+      "source_ref": "feat/portable-compute-stdlib-v1",
+      "source_path": "tests/build-profiles.test.mjs",
+      "source_blob_sha": "15c11ddeb87f18cf81781f8150d109ad8d10fb7a",
+      "dest": "tmp/ores-compute-validation/profiles/build-profiles.test.mjs"
     }
   ],
-  "llvm_head": "b7faaa70fc61c504dd641b97bfa2ad96901caa8b"
+  "llvm_head": "b7faaa70fc61c504dd641b97bfa2ad96901caa8b",
+  "profiles_head": "ea6dd7e87eec827d95cd562f1026040d0d22d471"
 }
