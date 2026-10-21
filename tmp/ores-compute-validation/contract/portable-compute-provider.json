@@ -57,7 +57,10 @@
     "deviceLossRecoveryRequiresProviderProof": true,
     "deviceLossRetainsQuotaUntilRecovery": true,
     "providerRetainsSubmittedOperationAuthority": true,
-    "callerHandleDropCannotReleasePhysicalResources": true
+    "callerHandleDropCannotReleasePhysicalResources": true,
+    "deviceLossDominatesCancellation": true,
+    "lostDeviceEventRetainedUntilRecoveryProof": true,
+    "cancelThenDeviceLossRequiresRecovery": true
   },
   "transfers": {
     "uploadExplicit": true,
