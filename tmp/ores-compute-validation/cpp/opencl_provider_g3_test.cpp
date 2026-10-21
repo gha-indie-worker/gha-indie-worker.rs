@@ -40,6 +40,9 @@ struct FakeApi final : oreslang::opencl::Api {
     bool fail_release_buffer_once = false;
     bool fail_release_event_once = false;
     bool fail_release_program_once = false;
+    bool reject_artifact = false;
+    bool device_loss_quiescent = false;
+    mutable int validated_artifacts = 0;
 
     int released_programs = 0;
     int released_buffers = 0;
@@ -47,6 +50,21 @@ struct FakeApi final : oreslang::opencl::Api {
 
     std::deque<oreslang::opencl::EventStatus> statuses;
     Event* last_event = nullptr;
+
+    void validate_artifact(
+            const oreslang::dop::OpenClArtifact& artifact) const override {
+        ++validated_artifacts;
+        if (reject_artifact
+                || artifact.artifact_abi_version != 1
+                || artifact.required_address_bits != 64
+                || !artifact.required_float32
+                || !artifact.required_little_endian
+                || artifact.required_bytes == 0
+                || artifact.global_rows == 0
+                || artifact.global_fields == 0) {
+            throw std::invalid_argument("fake physical artifact rejected");
+        }
+    }
 
     Handle prepare(const oreslang::dop::OpenClArtifact&) override {
         if (fail_prepare) throw std::runtime_error("prepare failed");
@@ -127,6 +145,10 @@ struct FakeApi final : oreslang::opencl::Api {
         ++released_events;
     }
 
+    bool prove_device_loss_quiescence() override {
+        return device_loss_quiescent;
+    }
+
     Event* next_event() {
         const auto status = statuses.empty()
                 ? oreslang::opencl::EventStatus::Complete
@@ -200,6 +222,7 @@ int main() {
         auto operation = provider.begin(
                 prepared, f.input, f.output, f.host);
 
+        check(provider.active_operation_count() == 1);
         check(f.input_fence.status() == Status::InFlight);
         check(f.output_fence.status() == Status::InFlight);
         expect_throw<std::logic_error>([&] { prepared.close(); });
@@ -211,6 +234,7 @@ int main() {
         check(f.input_fence.status() == Status::Idle);
         check(f.output_fence.status() == Status::Idle);
         check(provider.usage() == oreslang::opencl::Usage{0, 0, 0, 0});
+        check(provider.active_operation_count() == 0);
 
         auto output = operation->output_bytes();
         check(output.size() == f.host.size());
@@ -333,7 +357,7 @@ int main() {
         prepared.close();
     }
 
-    // Device loss is terminal failure evidence, never success.
+    // Device loss poisons but does not imply physical quiescence.
     {
         Fixture f;
         FakeApi api;
@@ -346,7 +370,27 @@ int main() {
         check(provider.poll(*operation) == Provider::OperationState::DeviceLost);
         check(f.input_fence.status() == Status::Poisoned);
         check(f.output_fence.status() == Status::Poisoned);
+        check(provider.usage().resident_bytes > 0);
+        check(provider.active_operation_count() == 1);
         expect_throw<std::logic_error>([&] { (void)operation->output_bytes(); });
+        expect_throw<std::logic_error>([&] { prepared.close(); });
+        expect_throw<std::logic_error>([&] {
+            provider.recover_device_loss(*operation);
+        });
+        check(provider.usage().resident_bytes > 0);
+        expect_throw<std::logic_error>([&] {
+            f.input_fence.retire_after_backend_release(
+                    {"tenant-a", "gpu0", 101});
+        });
+
+        api.device_loss_quiescent = true;
+        provider.recover_device_loss(*operation);
+        check(provider.usage() == oreslang::opencl::Usage{0, 0, 0, 0});
+        check(provider.active_operation_count() == 0);
+        f.input_fence.retire_after_backend_release(
+                {"tenant-a", "gpu0", 101});
+        f.output_fence.retire_after_backend_release(
+                {"tenant-a", "gpu0", 102});
         prepared.close();
     }
 
@@ -411,6 +455,40 @@ int main() {
         check(api.released_programs == 0);
         prepared.close();
         check(api.released_programs == 1);
+    }
+
+    // Provider retains a submitted operation even if the caller drops its handle.
+    {
+        Fixture f;
+        FakeApi api;
+        auto provider = make_provider(api, f.plan.byte_length());
+        auto prepared = provider.prepare(f.kernel);
+        auto operation = provider.begin(
+                prepared, f.input, f.output, f.host);
+        std::weak_ptr<Provider::Operation> weak = operation;
+        operation.reset();
+        check(!weak.expired());
+        check(provider.active_operation_count() == 1);
+
+        auto retained = weak.lock();
+        check(provider.poll(*retained) == Provider::OperationState::KernelSubmitted);
+        check(provider.poll(*retained) == Provider::OperationState::DownloadSubmitted);
+        check(provider.poll(*retained) == Provider::OperationState::Succeeded);
+        check(provider.active_operation_count() == 0);
+        prepared.close();
+    }
+
+    // Physical artifact validation happens before driver preparation.
+    {
+        Fixture f;
+        FakeApi api;
+        api.reject_artifact = true;
+        auto provider = make_provider(api, f.plan.byte_length());
+        expect_throw<std::invalid_argument>([&] {
+            (void)provider.prepare(f.kernel);
+        });
+        check(api.validated_artifacts == 1);
+        check(api.released_programs == 0);
     }
 
     // Provider queue/target profiles are closed before any physical launch.
