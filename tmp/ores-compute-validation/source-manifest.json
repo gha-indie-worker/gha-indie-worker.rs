@@ -120,15 +120,15 @@
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.llvm",
       "source_ref": "feat/portable-compute-authority-v1",
-      "source_head": "4092b531aaf9c05c960db58eed21cfc46797cbfe",
+      "source_head": "0ef608479c8a8ddf56e57a27c299e136bd07e22b",
       "source_path": "src/main/cpp/oreslang/runtime/PortableComputeAuthority.hpp",
-      "source_blob_sha": "3b4c36e7e5cb38a9f6fc4dc7bf4be517d19ab5df",
+      "source_blob_sha": "26acbb69632d768374d478fa83972f253efe31d1",
       "dest": "tmp/ores-compute-validation/cpp/oreslang/runtime/PortableComputeAuthority.hpp"
     },
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.llvm",
       "source_ref": "feat/portable-compute-authority-v1",
-      "source_head": "4092b531aaf9c05c960db58eed21cfc46797cbfe",
+      "source_head": "0ef608479c8a8ddf56e57a27c299e136bd07e22b",
       "source_path": "src/main/cpp/oreslang/runtime/GpuBufferFence.hpp",
       "source_blob_sha": "54ed47a340f1c2707ed93b10a079811ac9fee390",
       "dest": "tmp/ores-compute-validation/cpp/oreslang/runtime/GpuBufferFence.hpp"
@@ -136,7 +136,7 @@
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.llvm",
       "source_ref": "feat/portable-compute-authority-v1",
-      "source_head": "4092b531aaf9c05c960db58eed21cfc46797cbfe",
+      "source_head": "0ef608479c8a8ddf56e57a27c299e136bd07e22b",
       "source_path": "tests/portable_compute_authority_test.cpp",
       "source_blob_sha": "abd5f131d52a1989710bf2925788216d83e991f2",
       "dest": "tmp/ores-compute-validation/cpp/portable_compute_authority_test.cpp"
@@ -151,6 +151,6 @@
     }
   ],
   "authority_java_head": "9a31229971c2dfdf4dfc179f632dd393e4c3dad6",
-  "authority_llvm_head": "4092b531aaf9c05c960db58eed21cfc46797cbfe",
+  "authority_llvm_head": "0ef608479c8a8ddf56e57a27c299e136bd07e22b",
   "authority_common_head": "28c57af6eaf0ce338fb40829ff8a345b3420cceb"
 }
