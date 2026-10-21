@@ -304,15 +304,15 @@
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.llvm",
       "source_ref": "feat/portable-compute-provider-g3",
-      "source_head": "375da6f1430d9fb5d496c933fcef0ca073fb0c0d",
+      "source_head": "192c02325bf49ec74994683dcbb451446341190b",
       "source_path": "src/main/cpp/oreslang/runtime/OpenClProvider.hpp",
-      "source_blob_sha": "a4249b3877547c109c0934797cd43aca0528cb1d",
+      "source_blob_sha": "5fdacab7f2f1ecdbf38dffbb4c0045e7f272b78a",
       "dest": "tmp/ores-compute-validation/cpp/oreslang/runtime/OpenClProvider.hpp"
     },
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.llvm",
       "source_ref": "feat/portable-compute-provider-g3",
-      "source_head": "375da6f1430d9fb5d496c933fcef0ca073fb0c0d",
+      "source_head": "192c02325bf49ec74994683dcbb451446341190b",
       "source_path": "src/main/cpp/oreslang/runtime/OpenClSystemApi.hpp",
       "source_blob_sha": "37f2cb8b1bc5aa2fa8f349d462f646fe85a13f7f",
       "dest": "tmp/ores-compute-validation/cpp/oreslang/runtime/OpenClSystemApi.hpp"
@@ -320,7 +320,7 @@
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.llvm",
       "source_ref": "feat/portable-compute-provider-g3",
-      "source_head": "375da6f1430d9fb5d496c933fcef0ca073fb0c0d",
+      "source_head": "192c02325bf49ec74994683dcbb451446341190b",
       "source_path": "tests/opencl_provider_g3_test.cpp",
       "source_blob_sha": "fc6cbfdcdbfa2fc13fea12d83d7699bc2291ffb9",
       "dest": "tmp/ores-compute-validation/cpp/opencl_provider_g3_test.cpp"
@@ -328,7 +328,7 @@
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.llvm",
       "source_ref": "feat/portable-compute-provider-g3",
-      "source_head": "375da6f1430d9fb5d496c933fcef0ca073fb0c0d",
+      "source_head": "192c02325bf49ec74994683dcbb451446341190b",
       "source_path": "tests/opencl_system_gpu_probe.cpp",
       "source_blob_sha": "d6f7c99225290b129bf72c5f5b4496ebc1381ae5",
       "dest": "tmp/ores-compute-validation/cpp/opencl_system_gpu_probe.cpp"
@@ -346,7 +346,7 @@
   "opencl_llvm_head": "b8bcebb98b7e5b66f22ff31f5c1776152097886e",
   "opencl_common_head": "9f26644e15733bdb82e396f54608579564889c60",
   "g3_java_head": "b85f150d69e2e9fe046c6139e0c71172002cad79",
-  "g3_llvm_head": "375da6f1430d9fb5d496c933fcef0ca073fb0c0d",
+  "g3_llvm_head": "192c02325bf49ec74994683dcbb451446341190b",
   "g3_common_head": "bace655d0205324267df6a298b185d3c643c3e49",
   "g3_profiles_head": "8bc8f0c9eb6845f0d0bc87452a477cf607dc91ce"
 }
