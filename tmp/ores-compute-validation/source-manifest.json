@@ -43,6 +43,21 @@
       "source_path": "contracts/v1/portable-compute-stdlib.json",
       "source_blob_sha": "c744bb24b26eb654befbf45dcd00867eb0d23e6e",
       "dest": "tmp/ores-compute-validation/contract/portable-compute-stdlib.json"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-source.llvm",
+      "source_ref": "feat/portable-compute-stdlib-v1",
+      "source_path": "src/main/cpp/oreslang/runtime/PortableComputeDescriptor.hpp",
+      "source_blob_sha": "8a75221803b582d4aae95a25878b3cab617227d9",
+      "dest": "tmp/ores-compute-validation/cpp/oreslang/runtime/PortableComputeDescriptor.hpp"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-source.llvm",
+      "source_ref": "feat/portable-compute-stdlib-v1",
+      "source_path": "tests/portable_compute_descriptor_test.cpp",
+      "source_blob_sha": "bd3a9fd02ca879986280d0aab604eea554d3f078",
+      "dest": "tmp/ores-compute-validation/cpp/portable_compute_descriptor_test.cpp"
     }
-  ]
+  ],
+  "llvm_head": "b7faaa70fc61c504dd641b97bfa2ad96901caa8b"
 }
