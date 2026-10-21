@@ -64,8 +64,8 @@ jobs:
         run: |
           set -euo pipefail
           rustc --edition 2021 --test -D warnings src/recovery.rs -o "$RUNNER_TEMP/recovery-tests"
-          "$RUNNER_TEMP/recovery-tests" | tee "$RUNNER_TEMP/run-a"
-          "$RUNNER_TEMP/recovery-tests" > "$RUNNER_TEMP/run-b"
+          "$RUNNER_TEMP/recovery-tests" --test-threads=1 | tee "$RUNNER_TEMP/run-a"
+          "$RUNNER_TEMP/recovery-tests" --test-threads=1 > "$RUNNER_TEMP/run-b"
           cmp "$RUNNER_TEMP/run-a" "$RUNNER_TEMP/run-b"
       - name: Enforce non-activating observer boundary
         shell: bash
