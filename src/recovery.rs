@@ -19,14 +19,12 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RecoveryCandidate {
     pub(crate) identity: RunIdentity,
-    pub(crate) head_branch: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CandidateError {
     MissingRun,
     InvalidIdentity,
-    InvalidBranch,
 }
 
 #[derive(Debug)]
@@ -66,11 +64,6 @@ fn valid_head_sha(sha: &str) -> bool {
     sha.len() == 40 && sha.bytes().all(|c| c.is_ascii_hexdigit())
 }
 
-fn valid_branch(branch: &str) -> bool {
-    !branch.is_empty()
-        && branch.len() <= 255
-        && !branch.bytes().any(|b| b.is_ascii_control())
-}
 
 pub(crate) fn workflow_run_candidate(
     payload: &Value,
@@ -110,18 +103,9 @@ pub(crate) fn workflow_run_candidate(
         .get("head_sha")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let head_branch = run
-        .get("head_branch")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-
     if !valid_repo(repo) || run_id == 0 || attempt == 0 || !valid_head_sha(head_sha) {
         return Err(CandidateError::InvalidIdentity);
     }
-    if !valid_branch(head_branch) {
-        return Err(CandidateError::InvalidBranch);
-    }
-
     Ok(Some(RecoveryCandidate {
         identity: RunIdentity {
             repo: repo.to_ascii_lowercase(),
@@ -129,7 +113,6 @@ pub(crate) fn workflow_run_candidate(
             attempt,
             head_sha: head_sha.to_ascii_lowercase(),
         },
-        head_branch: head_branch.to_string(),
     }))
 }
 
@@ -240,7 +223,6 @@ mod tests {
             candidate.identity.head_sha,
             "abcdef0123456789abcdef0123456789abcdef01"
         );
-        assert_eq!(candidate.head_branch, "main");
     }
 
     #[test]
