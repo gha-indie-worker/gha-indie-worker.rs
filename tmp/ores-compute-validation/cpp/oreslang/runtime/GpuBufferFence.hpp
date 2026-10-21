@@ -51,6 +51,7 @@ class BufferFence {
         std::shared_ptr<const std::uint8_t> active_ticket_proof;
         Status status = Status::Idle;
         bool backend_quiescent = true;
+        bool submitted = false;
         bool paired = false;
         std::shared_ptr<const std::uint8_t> active_pair_proof;
         mutable std::mutex lock;
@@ -167,10 +168,21 @@ public:
         ++b->sequence;
         a->backend_quiescent = false;
         b->backend_quiescent = false;
+        a->submitted = b->submitted = false;
         a->paired = b->paired = true;
         a->status = Status::InFlight;
         b->status = Status::InFlight;
         return tickets;
+    }
+
+    static void mark_pair_submitted(BufferFence& input, BufferFence& output,
+                                    const PairTickets& pair) {
+        transition_pair(input, output, pair, PairAction::MarkSubmitted);
+    }
+
+    static void abort_unsubmitted_pair(BufferFence& input, BufferFence& output,
+                                       const PairTickets& pair) {
+        transition_pair(input, output, pair, PairAction::AbortUnsubmitted);
     }
 
     static void complete_pair(BufferFence& input, BufferFence& output,
@@ -207,24 +219,49 @@ public:
         state_->active_ticket_proof = std::move(proof);
         state_->sequence = next;
         state_->backend_quiescent = false;
+        state_->submitted = false;
         state_->status = Status::InFlight;
         return ticket;
+    }
+
+    void mark_submitted(Ticket ticket) {
+        std::lock_guard<std::mutex> owner(owner_lock_);
+        active();
+        std::lock_guard<std::mutex> guard(state_->lock);
+        validate_inflight(ticket);
+        if (state_->submitted)
+            throw std::logic_error("device command already submitted");
+        state_->submitted = true;
+    }
+
+    void abort_unsubmitted(Ticket ticket) {
+        std::lock_guard<std::mutex> owner(owner_lock_);
+        active();
+        std::lock_guard<std::mutex> guard(state_->lock);
+        validate_inflight(ticket);
+        if (state_->submitted)
+            throw std::logic_error("submitted device command cannot use pre-enqueue abort");
+        state_->status = Status::Idle;
+        state_->backend_quiescent = true;
+        state_->submitted = false;
+        state_->active_ticket_proof.reset();
     }
 
     void complete(Ticket ticket, bool succeeded) {
         std::lock_guard<std::mutex> owner(owner_lock_);
         active();
         std::lock_guard<std::mutex> guard(state_->lock);
-        validate_inflight(ticket);
+        validate_submitted_inflight(ticket);
         state_->status = succeeded ? Status::Idle : Status::Poisoned;
         state_->backend_quiescent = true;
+        state_->submitted = false;
         state_->active_ticket_proof.reset();
     }
     void cancel_pending(Ticket ticket) {
         std::lock_guard<std::mutex> owner(owner_lock_);
         active();
         std::lock_guard<std::mutex> guard(state_->lock);
-        validate_inflight(ticket);
+        validate_submitted_inflight(ticket);
         state_->status = Status::Poisoned;
     }
     void acknowledge_cancelled_device_event(Ticket ticket, const Identity& caller) {
@@ -232,13 +269,14 @@ public:
         active();
         std::lock_guard<std::mutex> guard(state_->lock);
         if (!(state_->identity == caller) || state_->status != Status::Poisoned
-            || state_->backend_quiescent || state_->paired
+            || state_->backend_quiescent || !state_->submitted || state_->paired
             || ticket.generation_ != state_->identity.allocation_generation
             || ticket.sequence_ != state_->sequence
             || !ticket.proof_
             || ticket.proof_ != state_->active_ticket_proof)
             throw std::logic_error("stale cancelled device fence acknowledgement");
         state_->backend_quiescent = true;
+        state_->submitted = false;
         state_->active_ticket_proof.reset();
     }
     void retire_after_backend_release(const Identity& caller) {
@@ -259,22 +297,30 @@ public:
     }
     Status status() const {
         std::lock_guard<std::mutex> owner(owner_lock_);
-        active();
+        if (!state_) throw std::logic_error("device ownership moved");
         std::lock_guard<std::mutex> guard(state_->lock);
         return state_->status;
     }
 
     // A per-allocation metadata snapshot, not provider authorization.
+    // Closed allocations remain observable as Closed; moved-from wrappers do not.
     struct Snapshot { Identity identity; std::uint64_t bytes; Status status; };
     Snapshot snapshot() const {
         std::lock_guard<std::mutex> owner_guard(owner_lock_);
-        active();
+        if (!state_) throw std::logic_error("device ownership moved");
         std::lock_guard<std::mutex> guard(state_->lock);
         return Snapshot{state_->identity, state_->bytes, state_->status};
     }
 
 private:
-    enum class PairAction { CompleteOk, CompleteFailed, Cancel, AcknowledgeCancelled };
+    enum class PairAction {
+        MarkSubmitted,
+        AbortUnsubmitted,
+        CompleteOk,
+        CompleteFailed,
+        Cancel,
+        AcknowledgeCancelled
+    };
 
     static void transition_pair(BufferFence& input, BufferFence& output,
                                 const PairTickets& pair, PairAction action) {
@@ -307,9 +353,11 @@ private:
             throw std::logic_error("stale or foreign GPU pair tickets");
         if (action == PairAction::AcknowledgeCancelled) {
             if (a->status != Status::Poisoned || b->status != Status::Poisoned
-                    || a->backend_quiescent || b->backend_quiescent)
+                    || a->backend_quiescent || b->backend_quiescent
+                    || !a->submitted || !b->submitted)
                 throw std::logic_error("device pair has not been cancelled or is partly acknowledged");
             a->backend_quiescent = b->backend_quiescent = true;
+            a->submitted = b->submitted = false;
             a->paired = b->paired = false;
             a->active_pair_proof.reset();
             b->active_pair_proof.reset();
@@ -320,6 +368,27 @@ private:
         if (a->status != Status::InFlight || b->status != Status::InFlight
                 || a->backend_quiescent || b->backend_quiescent)
             throw std::logic_error("GPU pair is not jointly in flight");
+        if (action == PairAction::MarkSubmitted) {
+            if (a->submitted || b->submitted)
+                throw std::logic_error("GPU pair already submitted");
+            a->submitted = b->submitted = true;
+            return;
+        }
+        if (action == PairAction::AbortUnsubmitted) {
+            if (a->submitted || b->submitted)
+                throw std::logic_error("submitted GPU pair cannot use pre-enqueue abort");
+            a->status = b->status = Status::Idle;
+            a->backend_quiescent = b->backend_quiescent = true;
+            a->submitted = b->submitted = false;
+            a->paired = b->paired = false;
+            a->active_pair_proof.reset();
+            b->active_pair_proof.reset();
+            a->active_ticket_proof.reset();
+            b->active_ticket_proof.reset();
+            return;
+        }
+        if (!a->submitted || !b->submitted)
+            throw std::logic_error("GPU pair has not been submitted");
         if (action == PairAction::Cancel) {
             a->status = b->status = Status::Poisoned;
             return; // seals retained and both physical allocations still live
@@ -327,9 +396,10 @@ private:
         a->status = b->status =
                 action == PairAction::CompleteOk ? Status::Idle : Status::Poisoned;
         a->backend_quiescent = b->backend_quiescent = true;
+        a->submitted = b->submitted = false;
         a->paired = b->paired = false;
-            a->active_pair_proof.reset();
-            b->active_pair_proof.reset();
+        a->active_pair_proof.reset();
+        b->active_pair_proof.reset();
         a->active_ticket_proof.reset();
         b->active_ticket_proof.reset();
     }
@@ -347,6 +417,11 @@ private:
             ticket.sequence_ != state_->sequence ||
             !ticket.proof_ || ticket.proof_ != state_->active_ticket_proof)
             throw std::logic_error("stale or mismatched device event");
+    }
+    void validate_submitted_inflight(Ticket ticket) const {
+        validate_inflight(ticket);
+        if (!state_->submitted)
+            throw std::logic_error("device command has not been submitted");
     }
     // Protects the *wrapper handle* (not just the shared device state).
     // Lock order: owner_lock_ -> State::lock throughout this class.
