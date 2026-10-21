@@ -111,6 +111,13 @@ pub(crate) async fn descriptor(State(state): State<AppState>) -> impl IntoRespon
             "registry": config.registry_webhook_secret.is_some(),
             "rules": config.webhook_rules.len()
         },
+        "recovery": {
+            "githubActions": {
+                "enabled": config.github_recovery_enabled,
+                "tokenConfigured": config.github_recovery_token.is_some(),
+                "mode": "observe-only"
+            }
+        },
         "secretSync": { "enabled": config.gh_sync_enabled, "rules": config.gh_sync_rules.len() }
     }))
 }
@@ -254,6 +261,29 @@ pub(crate) async fn metrics(State(state): State<AppState>) -> impl IntoResponse 
         state.counters.nats_publish_failures.load(Ordering::Relaxed),
         state.counters.gh_secrets_synced.load(Ordering::Relaxed),
         state.counters.gh_secret_sync_failures.load(Ordering::Relaxed),
+    ));
+    body.push_str(&format!(
+        "# HELP dd_build_server_github_recovery_observed_total Durable GitHub recovery receipts recorded.\n\
+         # TYPE dd_build_server_github_recovery_observed_total counter\n\
+         dd_build_server_github_recovery_observed_total {}\n\
+         # HELP dd_build_server_github_recovery_duplicates_total Duplicate GitHub recovery identities observed after durable recording.\n\
+         # TYPE dd_build_server_github_recovery_duplicates_total counter\n\
+         dd_build_server_github_recovery_duplicates_total {}\n\
+         # HELP dd_build_server_github_recovery_fail_closed_total GitHub recovery attempts denied because evidence, auth, or durability was insufficient.\n\
+         # TYPE dd_build_server_github_recovery_fail_closed_total counter\n\
+         dd_build_server_github_recovery_fail_closed_total {}\n",
+        state
+            .counters
+            .github_recovery_observed
+            .load(Ordering::Relaxed),
+        state
+            .counters
+            .github_recovery_duplicates
+            .load(Ordering::Relaxed),
+        state
+            .counters
+            .github_recovery_fail_closed
+            .load(Ordering::Relaxed),
     ));
     body.push_str(&format!(
         "# HELP dd_build_server_dependencies_ready Whether auth, work storage, and required build tools are available.\n\
