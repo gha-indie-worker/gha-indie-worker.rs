@@ -79,7 +79,11 @@
       "cancellationQuiescence": "verified-fence-only",
       "strictAotKernelVariants": "precompiled-only",
       "hardRtResourceBounds": "required",
-      "hardRtProviderCompilation": "forbidden-in-execution-phase"
+      "hardRtProviderCompilation": "forbidden-in-execution-phase",
+      "sourceAcceleratorSyntax": "fail-closed-until-typed-effects",
+      "cpuReferenceProvider": "explicit-test-only",
+      "kernelIrReflection": "forbidden",
+      "gpuArtifactEmissionEvidence": "not-execution-evidence"
     }
   }
 }
