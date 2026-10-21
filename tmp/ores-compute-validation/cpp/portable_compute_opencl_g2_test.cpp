@@ -17,6 +17,10 @@ int main() {
                 << " bytes=" << artifact.required_bytes
                 << " rows=" << artifact.global_rows
                 << " fields=" << artifact.global_fields
+                << " abi=" << artifact.artifact_abi_version
+                << " addr=" << artifact.required_address_bits
+                << " f32=" << (artifact.required_float32 ? "true" : "false")
+                << " le=" << (artifact.required_little_endian ? "true" : "false")
                 << "\n";
             std::cout << artifact.device_source;
             std::cout << "--\n";
