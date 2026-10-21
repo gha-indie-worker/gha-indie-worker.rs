@@ -49,3 +49,10 @@ jobs:
         run: |
           set -euo pipefail
           python3 tmp/ores-compute-validation/validate.py
+      - name: Compile and run native descriptor parity
+        shell: bash
+        run: |
+          set -euo pipefail
+          c++ --version
+          c++ -std=c++17 -Wall -Wextra -Wpedantic -Werror             -Itmp/ores-compute-validation/cpp             tmp/ores-compute-validation/cpp/portable_compute_descriptor_test.cpp             -o "${RUNNER_TEMP}/ores-compute-descriptor-test"
+          "${RUNNER_TEMP}/ores-compute-descriptor-test"
