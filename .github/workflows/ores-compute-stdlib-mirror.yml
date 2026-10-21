@@ -3,7 +3,7 @@ name: Ores compute stdlib mirror validation
 on:
   push:
     branches:
-      - test/ores-compute-stdlib-pr1780-112
+      - test/ores-compute-main-hardening-20261021
   pull_request:
 
 permissions:
@@ -32,6 +32,29 @@ jobs:
           expected='${{ github.event.pull_request.head.sha || github.sha }}'
           test "$(git rev-parse HEAD)" = "$expected"
           git diff --check
+      - name: Verify mirrored source provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          manifest = json.loads(Path("tmp/ores-compute-validation/source-manifest.json").read_text())
+          expected_heads = {
+              "java_head": "82f02cc3b4d096ec014104a51dfaceab5b4688c4",
+              "llvm_head": "a23d0b30ef8f05a786e01ee2c26cdd475071be68",
+              "common_head": "c3740b580d6c38653a5943bff7dee0cb9e472949",
+              "profiles_head": "d6b8a032b3a6751e4c44b822221623048bcd841f",
+          }
+          for key, value in expected_heads.items():
+              assert manifest[key] == value, (key, manifest[key], value)
+          for item in manifest["files"]:
+              data = Path(item["dest"]).read_bytes()
+              payload = f"blob {len(data)}\0".encode() + data
+              actual = hashlib.sha1(payload).hexdigest()
+              assert actual == item["source_blob_sha"], (item["dest"], actual, item["source_blob_sha"])
+          print("mirror-provenance-ok")
+          PY
       - name: Compile mirrored Java compute SPI
         shell: bash
         run: |
@@ -75,6 +98,7 @@ jobs:
               "cancellationQuiescence": "verified-fence-only",
               "strictAotKernelVariants": "precompiled-only",
               "hardRtResourceBounds": "required",
+              "hardRtProviderCompilation": "forbidden-in-execution-phase",
           }
           assert accel == expected
           assert "accelerators" in schema["properties"]["constraints"]["required"]
