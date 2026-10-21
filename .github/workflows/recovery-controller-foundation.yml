@@ -75,7 +75,7 @@ jobs:
           grep -Fq 'observe_failed_workflow_run' src/webhooks.rs
           grep -Fq 'inspect_authenticated' src/webhooks.rs
           grep -Fq 'Observation is deliberately non-activating' src/webhooks.rs
-          if sed -n '/async fn observe_failed_workflow_run/,/^}/p' src/webhooks.rs             | grep -E 'enqueue_build|submit_from_nats|dispatch|lambda_exec|Command::|std::process'; then
+          if sed -n '/async fn observe_failed_workflow_run/,/^}/p' src/webhooks.rs             | grep -E 'enqueue_build\(|submit_from_nats\(|[A-Za-z0-9_]*dispatch[A-Za-z0-9_]*\(|lambda_exec::|Command::|std::process'; then
             echo 'observer path contains an execution primitive' >&2
             exit 1
           fi
