@@ -48,7 +48,9 @@
     "hardRealtimeClaim": false,
     "layoutAware": true,
     "inputOutputAlias": "forbidden",
-    "floatingPointContraction": "forbidden-for-scale-bias-reference"
+    "floatingPointContraction": "forbidden-for-scale-bias-reference",
+    "wholeKernelHostBufferLeaseRequired": true,
+    "concurrentHostMutation": "serialized-during-execution"
   },
   "gpuLowering": {
     "firstPortableArtifact": "opencl-c-1.2",
