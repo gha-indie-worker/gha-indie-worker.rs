@@ -58,7 +58,21 @@
     "deviceEventEvidenceRequired": true,
     "javaEmitterImplemented": true,
     "nativeEmitterImplemented": true,
-    "exactArtifactParityRequired": true
+    "exactArtifactParityRequired": true,
+    "artifactAbi": {
+      "version": 1,
+      "requiredAddressBits": 64,
+      "requiredFloat32": true,
+      "requiredLittleEndian": true,
+      "providerMustValidate": [
+        "requiredBytes",
+        "globalRows",
+        "globalFields",
+        "requiredAddressBits",
+        "requiredFloat32",
+        "requiredLittleEndian"
+      ]
+    }
   },
   "promotion": {
     "requiresJavaCpuReferenceExecution": true,
