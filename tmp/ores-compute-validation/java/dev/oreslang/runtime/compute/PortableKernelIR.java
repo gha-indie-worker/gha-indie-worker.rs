@@ -3,6 +3,7 @@ package dev.oreslang.runtime.compute;
 import java.util.Arrays;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Source-neutral portable compute IR used for backend conformance.
@@ -200,11 +201,18 @@ public final class PortableKernelIR {
      * hard-realtime allocation strategy and never an implicit GPU fallback.
      */
     public static final class HostBuffer {
+        private static final AtomicLong NEXT_RANK = new AtomicLong();
         private final Plan layout;
         private final byte[] bytes;
+        private final Object executionLock = new Object();
+        private final long rank;
 
         public HostBuffer(Plan layout) {
             this.layout = Objects.requireNonNull(layout, "layout");
+            this.rank = NEXT_RANK.incrementAndGet();
+            if (rank <= 0) {
+                throw new IllegalStateException("CPU reference buffer rank exhausted");
+            }
             long byteLength = layout.byteLength();
             if (byteLength > Integer.MAX_VALUE) {
                 throw new IllegalArgumentException(
@@ -218,6 +226,24 @@ public final class PortableKernelIR {
         }
 
         public float read(long row, int field) {
+            synchronized (executionLock) {
+                return readLocked(row, field);
+            }
+        }
+
+        public void write(long row, int field, float value) {
+            synchronized (executionLock) {
+                writeLocked(row, field, value);
+            }
+        }
+
+        byte[] snapshotBytes() {
+            synchronized (executionLock) {
+                return Arrays.copyOf(bytes, bytes.length);
+            }
+        }
+
+        private float readLocked(long row, int field) {
             int offset = Math.toIntExact(layout.byteOffset(row, field));
             int bits = (bytes[offset] & 0xff)
                     | ((bytes[offset + 1] & 0xff) << 8)
@@ -226,17 +252,13 @@ public final class PortableKernelIR {
             return Float.intBitsToFloat(bits);
         }
 
-        public void write(long row, int field, float value) {
+        private void writeLocked(long row, int field, float value) {
             int offset = Math.toIntExact(layout.byteOffset(row, field));
             int bits = Float.floatToRawIntBits(value);
             bytes[offset] = (byte) bits;
             bytes[offset + 1] = (byte) (bits >>> 8);
             bytes[offset + 2] = (byte) (bits >>> 16);
             bytes[offset + 3] = (byte) (bits >>> 24);
-        }
-
-        byte[] snapshotBytes() {
-            return Arrays.copyOf(bytes, bytes.length);
         }
     }
 
@@ -251,6 +273,18 @@ public final class PortableKernelIR {
             if (input == output) {
                 throw new IllegalArgumentException("portable kernel input/output alias forbidden");
             }
+
+            HostBuffer first = input.rank < output.rank ? input : output;
+            HostBuffer second = input.rank < output.rank ? output : input;
+            synchronized (first.executionLock) {
+                synchronized (second.executionLock) {
+                    executeLocked(kernel, input, output);
+                }
+            }
+        }
+
+        private static void executeLocked(
+                Kernel kernel, HostBuffer input, HostBuffer output) {
             if (!kernel.layout().equals(input.layout())
                     || !kernel.layout().equals(output.layout())) {
                 throw new IllegalArgumentException("portable kernel layout mismatch");
@@ -259,20 +293,18 @@ public final class PortableKernelIR {
             Plan plan = kernel.layout();
             for (long row = 0; row < plan.rows(); row++) {
                 for (int field = 0; field < plan.fields(); field++) {
-                    float value = input.read(row, field);
+                    float value = input.readLocked(row, field);
                     float result;
                     switch (kernel.operation()) {
                         case SCALE -> result = value * kernel.scale();
                         case BIAS -> result = value + kernel.bias();
                         case SCALE_BIAS -> {
-                            // Java's always-strict FP semantics require the
-                            // intermediate f32 rounding; do not replace with Math.fma.
                             float product = value * kernel.scale();
                             result = product + kernel.bias();
                         }
                         default -> throw new IllegalStateException("unsupported portable kernel op");
                     }
-                    output.write(row, field, result);
+                    output.writeLocked(row, field, result);
                 }
             }
         }
