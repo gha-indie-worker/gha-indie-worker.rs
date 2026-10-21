@@ -16,6 +16,7 @@ public final class ComputeBufferHandle<T> {
     private State state = State.IDLE;
     private long sequence;
     private boolean backendQuiescent = true;
+    private boolean submitted;
     private Object activeProof;
     private ComputeFenceHandle.Direction activeDirection;
 
@@ -83,30 +84,54 @@ public final class ComputeBufferHandle<T> {
         activeProof = proof;
         activeDirection = direction;
         backendQuiescent = false;
+        submitted = false;
         state = State.IN_FLIGHT;
         return fence;
     }
 
-    synchronized void complete(ComputeFenceHandle fence, boolean succeeded) {
+    synchronized void markSubmitted(ComputeFenceHandle fence) {
         validateActiveFence(fence);
+        if (submitted) {
+            throw new IllegalStateException("compute transfer already submitted");
+        }
+        submitted = true;
+    }
+
+    synchronized void abortBeforeEnqueue(ComputeFenceHandle fence) {
+        validateActiveFence(fence);
+        if (submitted) {
+            throw new IllegalStateException(
+                    "submitted compute transfer cannot use pre-enqueue abort");
+        }
+        state = State.IDLE;
+        backendQuiescent = true;
+        submitted = false;
+        activeProof = null;
+        activeDirection = null;
+    }
+
+    synchronized void complete(ComputeFenceHandle fence, boolean succeeded) {
+        validateSubmittedFence(fence);
         state = succeeded ? State.IDLE : State.POISONED;
         backendQuiescent = true;
+        submitted = false;
         activeProof = null;
         activeDirection = null;
     }
 
     synchronized void cancel(ComputeFenceHandle fence) {
-        validateActiveFence(fence);
+        validateSubmittedFence(fence);
         state = State.POISONED;
         // The backend may still be touching the allocation.
     }
 
     synchronized void acknowledgeCancelled(ComputeFenceHandle fence) {
-        if (state != State.POISONED || backendQuiescent) {
+        if (state != State.POISONED || backendQuiescent || !submitted) {
             throw new IllegalStateException("cancelled transfer is not awaiting quiescence");
         }
         validateReceipt(fence);
         backendQuiescent = true;
+        submitted = false;
         activeProof = null;
         activeDirection = null;
     }
@@ -114,6 +139,9 @@ public final class ComputeBufferHandle<T> {
     synchronized void retire(ComputeDeviceHandle expectedDevice, String expectedOwnerDomain) {
         if (!device.sameAuthority(expectedDevice) || !ownerDomain.equals(expectedOwnerDomain)) {
             throw new IllegalArgumentException("foreign compute retirement authority");
+        }
+        if (state == State.RETIRED) {
+            throw new IllegalStateException("compute allocation already retired");
         }
         if (state == State.IN_FLIGHT || !backendQuiescent) {
             throw new IllegalStateException("compute allocation is not quiescent");
@@ -128,6 +156,13 @@ public final class ComputeBufferHandle<T> {
             throw new IllegalStateException("compute buffer has no in-flight transfer");
         }
         validateReceipt(fence);
+    }
+
+    private void validateSubmittedFence(ComputeFenceHandle fence) {
+        validateActiveFence(fence);
+        if (!submitted) {
+            throw new IllegalStateException("compute transfer has not been submitted");
+        }
     }
 
     private void validateReceipt(ComputeFenceHandle fence) {
