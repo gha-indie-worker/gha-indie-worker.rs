@@ -331,16 +331,16 @@ pub(crate) fn classify_admission_failure(
 mod tests {
     use super::*;
 
-    const BILLING: PlatformDiagnostic<'static> = PlatformDiagnostic {
-        source: PlatformDiagnosticSource::AuthorizedActionsApi,
-        kind: PlatformDiagnosticKind::BillingOrSpending,
-        evidence_ref: "https://api.github.test/check-runs/42/annotations/1",
-    };
-    const CAPACITY: PlatformDiagnostic<'static> = PlatformDiagnostic {
-        source: PlatformDiagnosticSource::AuthorizedActionsApi,
-        kind: PlatformDiagnosticKind::RunnerLabelOrCapacity,
-        evidence_ref: "actions-job:42:runner-capacity",
-    };
+    const BILLING: PlatformDiagnostic<'static> = PlatformDiagnostic::synthetic_for_test(
+        PlatformDiagnosticSource::AuthorizedActionsApi,
+        PlatformDiagnosticKind::BillingOrSpending,
+        "https://api.github.test/check-runs/42/annotations/1",
+    );
+    const CAPACITY: PlatformDiagnostic<'static> = PlatformDiagnostic::synthetic_for_test(
+        PlatformDiagnosticSource::AuthorizedActionsApi,
+        PlatformDiagnosticKind::RunnerLabelOrCapacity,
+        "actions-job:42:runner-capacity",
+    );
 
     fn failed<'a>(diagnostics: &'a [PlatformDiagnostic<'a>]) -> WorkflowAdmissionEvidence<'a> {
         WorkflowAdmissionEvidence {
@@ -369,11 +369,11 @@ mod tests {
             PlatformDiagnosticKind::BillingOrSpending,
             PlatformDiagnosticKind::RunnerLabelOrCapacity,
         ] {
-            let annotation = PlatformDiagnostic {
-                source: PlatformDiagnosticSource::CheckRunAnnotation,
+            let annotation = PlatformDiagnostic::synthetic_for_test(
+                PlatformDiagnosticSource::CheckRunAnnotation,
                 kind,
-                evidence_ref: "check-run:42:app-authored",
-            };
+                "check-run:42:app-authored",
+            );
             let result = classify_admission_failure(&failed(&[annotation]));
             assert!(!result.fallback_allowed, "{kind:?}");
         }
@@ -486,11 +486,11 @@ mod tests {
             ),
         ];
         for (kind, expected) in cases {
-            let diagnostic = PlatformDiagnostic {
-                source: PlatformDiagnosticSource::AuthorizedActionsApi,
+            let diagnostic = PlatformDiagnostic::synthetic_for_test(
+                PlatformDiagnosticSource::AuthorizedActionsApi,
                 kind,
-                evidence_ref: "actions-api:run:42",
-            };
+                "actions-api:run:42",
+            );
             let result = classify_admission_failure(&failed(&[diagnostic]));
             assert_eq!(result.kind, expected);
             assert!(!result.fallback_allowed);
@@ -499,11 +499,11 @@ mod tests {
 
     #[test]
     fn checkout_after_runner_execution_remains_a_checkout_failure() {
-        let diagnostic = PlatformDiagnostic {
-            source: PlatformDiagnosticSource::CheckRunAnnotation,
-            kind: PlatformDiagnosticKind::CredentialOrCheckout,
-            evidence_ref: "check-run:42:checkout-404",
-        };
+        let diagnostic = PlatformDiagnostic::synthetic_for_test(
+            PlatformDiagnosticSource::CheckRunAnnotation,
+            PlatformDiagnosticKind::CredentialOrCheckout,
+            "check-run:42:checkout-404",
+        );
         let result = classify_admission_failure(&WorkflowAdmissionEvidence {
             conclusion: Some("failure"),
             status: Some("completed"),
@@ -549,10 +549,11 @@ mod tests {
         assert_eq!(conflict.confidence, AdmissionEvidenceConfidence::Ambiguous);
         assert!(!conflict.fallback_allowed);
 
-        let missing_reference = PlatformDiagnostic {
-            evidence_ref: "",
-            ..BILLING
-        };
+        let missing_reference = PlatformDiagnostic::synthetic_for_test(
+            PlatformDiagnosticSource::AuthorizedActionsApi,
+            PlatformDiagnosticKind::BillingOrSpending,
+            "",
+        );
         let invalid = classify_admission_failure(&failed(&[missing_reference]));
         assert_eq!(invalid.kind, AdmissionFailureKind::Unknown);
         assert!(!invalid.fallback_allowed);
