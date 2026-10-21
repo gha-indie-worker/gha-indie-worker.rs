@@ -167,7 +167,13 @@
             "sourceAcceleratorSyntax",
             "cpuReferenceProvider",
             "kernelIrReflection",
-            "gpuArtifactEmissionEvidence"
+            "gpuArtifactEmissionEvidence",
+            "physicalProviderBackend",
+            "physicalProviderGuestLoad",
+            "providerQuotaAuthority",
+            "providerPreEnqueueAbort",
+            "realGpuExecutionEvidence",
+            "hardRtPhysicalProvider"
           ],
           "properties": {
             "providerDiscovery": {
@@ -205,6 +211,24 @@
             },
             "gpuArtifactEmissionEvidence": {
               "const": "not-execution-evidence"
+            },
+            "physicalProviderBackend": {
+              "const": "opencl-1.2"
+            },
+            "physicalProviderGuestLoad": {
+              "const": "forbidden"
+            },
+            "providerQuotaAuthority": {
+              "const": "provider-owned"
+            },
+            "providerPreEnqueueAbort": {
+              "const": "reserved-only"
+            },
+            "realGpuExecutionEvidence": {
+              "const": "exact-device-event-plus-download"
+            },
+            "hardRtPhysicalProvider": {
+              "const": "bounded-certified-only"
             }
           }
         }
