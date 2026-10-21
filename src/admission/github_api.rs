@@ -456,10 +456,7 @@ mod tests {
     fn double_snapshot_accepts_identical_complete_pages() {
         let id = id();
         let first = vec![json!({"total_count":1,"jobs":[job(&id,7,0)]})];
-        assert_eq!(
-            validate_consistent_snapshots(&first, &first, &id),
-            Ok(())
-        );
+        assert_eq!(validate_consistent_snapshots(&first, &first, &id), Ok(()));
     }
 
     #[test]
