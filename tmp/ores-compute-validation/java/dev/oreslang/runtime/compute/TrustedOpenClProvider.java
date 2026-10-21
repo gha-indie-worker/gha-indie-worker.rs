@@ -58,6 +58,12 @@ final class TrustedOpenClProvider {
 
         EventStatus poll(NativeEvent event);
         void releaseEvent(NativeEvent event);
+
+        /**
+         * Returns true only when provider/device recovery proves that no
+         * command from the lost queue can still access its allocations.
+         */
+        boolean proveDeviceLossQuiescence();
     }
 
     record Limits(
@@ -86,6 +92,7 @@ final class TrustedOpenClProvider {
             int addressBits,
             long maximumBufferBytes,
             long maximumRows,
+            int maximumFields,
             boolean float32,
             boolean littleEndian) {
         DeviceProfile {
@@ -93,6 +100,7 @@ final class TrustedOpenClProvider {
                     || addressBits != 64
                     || maximumBufferBytes <= 0
                     || maximumRows <= 0
+                    || maximumFields <= 0
                     || !float32
                     || !littleEndian) {
                 throw new IllegalArgumentException(
@@ -114,6 +122,7 @@ final class TrustedOpenClProvider {
         private final OpenClArtifact artifact;
         private Program program;
         private int activeOperations;
+        private boolean releaseInProgress;
 
         PreparedKernel(
                 TrustedOpenClProvider owner,
@@ -126,27 +135,21 @@ final class TrustedOpenClProvider {
 
         OpenClArtifact artifact() {
             synchronized (this) {
-                if (program == null) {
-                    throw new IllegalStateException("prepared kernel already closed");
-                }
+                requireUsableLocked();
                 return artifact;
             }
         }
 
         Program program() {
             synchronized (this) {
-                if (program == null) {
-                    throw new IllegalStateException("prepared kernel already closed");
-                }
+                requireUsableLocked();
                 return program;
             }
         }
 
         void retainOperation() {
             synchronized (this) {
-                if (program == null) {
-                    throw new IllegalStateException("prepared kernel already closed");
-                }
+                requireUsableLocked();
                 if (activeOperations == Integer.MAX_VALUE) {
                     throw new IllegalStateException("prepared kernel operation count exhausted");
                 }
@@ -168,21 +171,43 @@ final class TrustedOpenClProvider {
             Program held;
             synchronized (this) {
                 if (program == null) return;
+                if (releaseInProgress) {
+                    throw new IllegalStateException(
+                            "prepared kernel release already in progress");
+                }
                 if (activeOperations != 0) {
                     throw new IllegalStateException(
                             "prepared kernel still has active provider operations");
                 }
+                releaseInProgress = true;
                 held = program;
             }
-            // Do not clear authority before physical release succeeds. A
-            // driver release failure leaves close() safely retryable.
-            owner.driver.releaseProgram(held);
+            try {
+                owner.driver.releaseProgram(held);
+            } catch (RuntimeException | Error failure) {
+                synchronized (this) {
+                    releaseInProgress = false;
+                }
+                throw failure;
+            }
             synchronized (this) {
                 if (program != held) {
+                    releaseInProgress = false;
                     throw new IllegalStateException(
                             "prepared kernel authority changed during release");
                 }
                 program = null;
+                releaseInProgress = false;
+            }
+        }
+
+        private void requireUsableLocked() {
+            if (program == null) {
+                throw new IllegalStateException("prepared kernel already closed");
+            }
+            if (releaseInProgress) {
+                throw new IllegalStateException(
+                        "prepared kernel release in progress");
             }
         }
     }
@@ -271,8 +296,10 @@ final class TrustedOpenClProvider {
     private final Limits limits;
     private final ComputeQueueHandle queueAuthority;
     private final DeviceProfile deviceProfile;
+    private final List<Operation> activeOperations;
     private final List<Operation> quarantinedOperations;
     private final List<PreEnqueueRecovery> preEnqueueRecoveries;
+    private boolean quarantineLatched;
 
     private long residentBytes;
     private long pinnedHostBytes;
@@ -290,12 +317,14 @@ final class TrustedOpenClProvider {
                 queueAuthority, "queueAuthority");
         this.deviceProfile = Objects.requireNonNull(
                 deviceProfile, "deviceProfile");
+        this.activeOperations = new ArrayList<>(limits.queueSlots());
         this.quarantinedOperations = new ArrayList<>(limits.queueSlots());
         this.preEnqueueRecoveries = new ArrayList<>(limits.queueSlots());
     }
 
     PreparedKernel prepare(Kernel kernel) {
         OpenClArtifact artifact = lowerOpenCl(kernel, deviceProfile.target());
+        validateArtifact(artifact);
         Program program = Objects.requireNonNull(
                 driver.prepare(artifact),
                 "OpenCL driver returned null program");
@@ -314,7 +343,8 @@ final class TrustedOpenClProvider {
         Objects.requireNonNull(expectedOwnerDomain, "expectedOwnerDomain");
         Objects.requireNonNull(hostInput, "hostInput");
         synchronized (this) {
-            if (!quarantinedOperations.isEmpty()
+            if (quarantineLatched
+                    || !quarantinedOperations.isEmpty()
                     || !preEnqueueRecoveries.isEmpty()) {
                 throw new IllegalStateException(
                         "compute provider quarantined until physical recovery completes");
@@ -380,6 +410,7 @@ final class TrustedOpenClProvider {
                     inputPhysical,
                     outputPhysical,
                     null);
+            registerActive(operation);
 
             NativeEvent upload = Objects.requireNonNull(
                     driver.enqueueUpload(inputPhysical, inputStaging),
@@ -406,6 +437,9 @@ final class TrustedOpenClProvider {
                     ComputeAuthority.abortPairBeforeEnqueue(input, output, pair);
                 } catch (RuntimeException abortFailure) {
                     failure.addSuppressed(abortFailure);
+                    synchronized (this) {
+                        quarantineLatched = true;
+                    }
                 }
             }
             PhysicalBuffer retainedInput =
@@ -427,6 +461,9 @@ final class TrustedOpenClProvider {
                             retainedInput,
                             retainedOutput));
                 }
+            }
+            if (operation != null) {
+                removeActive(operation);
             }
             throw failure;
         }
@@ -466,13 +503,17 @@ final class TrustedOpenClProvider {
             }
 
             if (status == EventStatus.DEVICE_LOST) {
-                ComputeAuthority.completePair(
+                ComputeAuthority.cancelPair(
                         operation.inputAuthority,
                         operation.outputAuthority,
-                        operation.fencePair,
-                        false);
+                        operation.fencePair);
+                operation.cancelRequested = true;
                 operation.state = OperationState.DEVICE_LOST;
-                finishCleanup(operation);
+                synchronized (this) {
+                    if (!quarantinedOperations.contains(operation)) {
+                        quarantinedOperations.add(operation);
+                    }
+                }
                 return operation.state;
             }
 
@@ -582,6 +623,12 @@ final class TrustedOpenClProvider {
         }
     }
 
+    int activeOperationCount() {
+        synchronized (this) {
+            return activeOperations.size();
+        }
+    }
+
     void retryRelease(Operation operation) {
         Objects.requireNonNull(operation, "operation");
         synchronized (operation) {
@@ -590,6 +637,41 @@ final class TrustedOpenClProvider {
                 throw new IllegalStateException("operation has no failed physical release");
             }
             finishCleanup(operation);
+            if (operation.cleanupComplete
+                    && operation.state == OperationState.DEVICE_LOST) {
+                synchronized (this) {
+                    quarantinedOperations.remove(operation);
+                }
+            }
+        }
+    }
+
+    void recoverDeviceLoss(Operation operation) {
+        Objects.requireNonNull(operation, "operation");
+        synchronized (operation) {
+            requireOwner(operation);
+            if (operation.state != OperationState.DEVICE_LOST) {
+                throw new IllegalStateException(
+                        "operation is not awaiting device-loss recovery");
+            }
+            if (!driver.proveDeviceLossQuiescence()) {
+                throw new IllegalStateException(
+                        "provider could not prove device-loss quiescence");
+            }
+
+            ComputeAuthority.acknowledgeCancelledPair(
+                    operation.inputAuthority,
+                    operation.outputAuthority,
+                    operation.fencePair);
+            try {
+                finishCleanup(operation);
+            } finally {
+                if (operation.cleanupComplete) {
+                    synchronized (this) {
+                        quarantinedOperations.remove(operation);
+                    }
+                }
+            }
         }
     }
 
@@ -680,6 +762,7 @@ final class TrustedOpenClProvider {
             operation.lease.release();
             operation.prepared.releaseOperation();
             operation.cleanupComplete = true;
+            removeActive(operation);
         }
         if (operation.state == OperationState.RELEASE_FAILED) {
             if (operation.terminalBeforeReleaseFailure == null) {
@@ -700,6 +783,22 @@ final class TrustedOpenClProvider {
         } catch (RuntimeException failure) {
             original.addSuppressed(failure);
             return buffer;
+        }
+    }
+
+    private void registerActive(Operation operation) {
+        synchronized (this) {
+            if (activeOperations.size() >= limits.queueSlots()) {
+                throw new IllegalStateException(
+                        "compute provider active-operation registry exhausted");
+            }
+            activeOperations.add(operation);
+        }
+    }
+
+    private void removeActive(Operation operation) {
+        synchronized (this) {
+            activeOperations.remove(operation);
         }
     }
 
@@ -739,6 +838,22 @@ final class TrustedOpenClProvider {
                     || queueSlots < 0) {
                 throw new IllegalStateException("compute provider quota accounting underflow");
             }
+        }
+    }
+
+    private void validateArtifact(OpenClArtifact artifact) {
+        if (artifact.artifactAbiVersion() != deviceProfile.artifactAbiVersion()
+                || artifact.requiredAddressBits() != deviceProfile.addressBits()
+                || (artifact.requiredFloat32() && !deviceProfile.float32())
+                || (artifact.requiredLittleEndian() && !deviceProfile.littleEndian())
+                || artifact.requiredBytes() <= 0
+                || artifact.requiredBytes() > deviceProfile.maximumBufferBytes()
+                || artifact.globalRows() <= 0
+                || artifact.globalRows() > deviceProfile.maximumRows()
+                || artifact.globalFields() <= 0
+                || artifact.globalFields() > deviceProfile.maximumFields()) {
+            throw new IllegalArgumentException(
+                    "OpenCL artifact ABI incompatible with authenticated device");
         }
     }
 
