@@ -15,12 +15,16 @@ public final class PortableOpenClConformanceMain {
                 OpenClArtifact artifact =
                         lowerOpenCl(kernel, new GpuTarget(64, 4096, 100, true));
                 System.out.printf(
-                        "layout=%d op=%d bytes=%d rows=%d fields=%d%n",
+                        "layout=%d op=%d bytes=%d rows=%d fields=%d abi=%d addr=%d f32=%s le=%s%n",
                         layout.ordinal(),
                         op.ordinal(),
                         artifact.requiredBytes(),
                         artifact.globalRows(),
-                        artifact.globalFields());
+                        artifact.globalFields(),
+                        artifact.artifactAbiVersion(),
+                        artifact.requiredAddressBits(),
+                        artifact.requiredFloat32(),
+                        artifact.requiredLittleEndian());
                 System.out.print(artifact.deviceSource());
                 System.out.println("--");
             }
