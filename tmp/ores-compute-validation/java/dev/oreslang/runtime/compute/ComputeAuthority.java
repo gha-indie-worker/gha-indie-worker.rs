@@ -45,6 +45,14 @@ final class ComputeAuthority {
                 ComputeFenceHandle.Direction.DOWNLOAD);
     }
 
+    static void markSubmitted(ComputeBufferHandle<?> buffer, ComputeFenceHandle fence) {
+        buffer.markSubmitted(fence);
+    }
+
+    static void abortBeforeEnqueue(ComputeBufferHandle<?> buffer, ComputeFenceHandle fence) {
+        buffer.abortBeforeEnqueue(fence);
+    }
+
     static void complete(ComputeBufferHandle<?> buffer, ComputeFenceHandle fence, boolean succeeded) {
         buffer.complete(fence, succeeded);
     }
