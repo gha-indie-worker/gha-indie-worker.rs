@@ -1,0 +1,150 @@
+name: recovery controller
+
+on:
+  pull_request:
+    paths:
+      - src/admission.rs
+      - src/admission/github_api.rs
+      - src/config.rs
+      - src/db.rs
+      - src/main.rs
+      - src/recovery.rs
+      - src/webhooks.rs
+      - .github/workflows/recovery-controller.yml
+  push:
+    branches: [agent/den-3440-recovery-controller-foundation-20261021]
+    paths:
+      - src/admission.rs
+      - src/admission/github_api.rs
+      - src/config.rs
+      - src/db.rs
+      - src/main.rs
+      - src/recovery.rs
+      - src/webhooks.rs
+      - .github/workflows/recovery-controller.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: recovery-controller-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  recovery-rust:
+    name: recovery-rust
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Check out exact candidate without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          show-progress: false
+          submodules: false
+      - name: Assert exact head
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --check
+      - name: Install pinned Rust 1.97.0
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: '1.97.0'
+          components: rustfmt
+      - name: Format recovery slice
+        run: |
+          rustfmt --edition 2021 --check             src/admission.rs             src/admission/github_api.rs             src/config.rs             src/db.rs             src/main.rs             src/recovery.rs             src/webhooks.rs
+      - name: Compile and test recovery controller in hermetic harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          scratch="$RUNNER_TEMP/recovery-controller"
+          mkdir -p "$scratch/src/admission"
+          cp src/admission.rs "$scratch/src/admission.rs"
+          cp src/recovery.rs "$scratch/src/recovery.rs"
+
+          cat > "$scratch/Cargo.toml" <<'TOML'
+          [package]
+          name = "recovery-controller-harness"
+          version = "0.0.0"
+          edition = "2021"
+
+          [features]
+          admission-api-harness = []
+
+          [dependencies]
+          hex = "0.4"
+          serde_json = "1"
+          sha2 = "0.10"
+          TOML
+
+          cat > "$scratch/src/lib.rs" <<'RS'
+          mod admission;
+
+          mod state {
+              use std::sync::Arc;
+
+              #[derive(Clone)]
+              pub(crate) struct Config {
+                  pub(crate) github_recovery_enabled: bool,
+                  pub(crate) github_recovery_token: Option<String>,
+              }
+
+              #[derive(Clone, Debug)]
+              pub(crate) struct Database;
+
+              #[derive(Clone)]
+              pub(crate) struct AppState {
+                  pub(crate) config: Arc<Config>,
+                  pub(crate) db: Option<Database>,
+              }
+          }
+
+          mod db {
+              use crate::state::Database;
+
+              pub(crate) async fn record_recovery_receipt_strict(
+                  _db: &Database,
+                  _recovery_key: &str,
+                  _repo: &str,
+                  _head_sha: &str,
+                  _action: &str,
+              ) -> Result<bool, ()> {
+                  Ok(true)
+              }
+          }
+
+          mod recovery;
+          RS
+
+          cargo generate-lockfile --manifest-path "$scratch/Cargo.toml"
+          RUSTFLAGS="-D warnings" cargo test             --manifest-path "$scratch/Cargo.toml"             --locked             --lib             -- --nocapture
+      - name: Verify production fail-closed wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          recovery_call="$(grep -nF 'maybe_handle_github_recovery(&state, &event, &payload).await' src/webhooks.rs | cut -d: -f1)"
+          ordinary_dedupe="$(grep -nF 'let fresh = db::record_webhook_delivery(' src/webhooks.rs | head -1 | cut -d: -f1)"
+          test -n "$recovery_call"
+          test -n "$ordinary_dedupe"
+          test "$recovery_call" -lt "$ordinary_dedupe"
+
+          grep -Fq 'BUILD_SERVER_GH_RECOVERY_TOKEN' src/config.rs
+          grep -Fq 'record_recovery_receipt_strict' src/recovery.rs
+          grep -Fq '"dispatch": false' src/webhooks.rs
+
+          for forbidden in             'enqueue_build'             'submit_from_nats'             'std::process'             'Command::'             'idempotency_finish'; do
+            if grep -Fq "$forbidden" src/recovery.rs; then
+              echo "recovery controller contains forbidden execution primitive: $forbidden" >&2
+              exit 1
+            fi
+          done
+
+          echo 'Recovery controller remains observe-only and precedes ordinary webhook dedupe.'
