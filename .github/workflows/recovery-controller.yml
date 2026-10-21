@@ -120,6 +120,7 @@ jobs:
               }
           }
 
+          #[allow(dead_code)]
           mod recovery;
           RS
 
