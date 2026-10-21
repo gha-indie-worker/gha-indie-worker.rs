@@ -58,6 +58,10 @@ struct OpenClArtifact {
     std::uint64_t required_bytes;
     std::uint64_t global_rows;
     std::uint32_t global_fields;
+    std::uint32_t artifact_abi_version;
+    std::uint32_t required_address_bits;
+    bool required_float32;
+    bool required_little_endian;
 };
 
 class HostBuffer {
@@ -308,7 +312,16 @@ inline OpenClArtifact lower_opencl(const Kernel& kernel, GpuTarget target) {
         "  const ulong slot = byteOffset / 4UL;\n"
         "  const float v = src[slot];\n"
         "  dst[slot] = " + rhs + ";\n}\n";
-    return OpenClArtifact{name, source, p.byte_length(), p.rows(), p.fields()};
+    return OpenClArtifact{
+        name,
+        source,
+        p.byte_length(),
+        p.rows(),
+        p.fields(),
+        1,
+        64,
+        true,
+        true};
 }
 
 } // namespace oreslang::dop
