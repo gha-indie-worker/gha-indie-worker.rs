@@ -158,7 +158,7 @@ fn all_756_valid_evidence_states_obey_the_fallback_safety_contract() {
                             DiagnosticCase::Billing | DiagnosticCase::Capacity
                         ));
                         assert!(is_terminal_admission_failure(status, conclusion));
-                        assert!(!steps_observed.is_some_and(|steps| steps > 0));
+                        assert_eq!(steps_observed, Some(0));
                     }
 
                     if is_canceled(conclusion) {
@@ -185,6 +185,7 @@ fn all_756_valid_evidence_states_obey_the_fallback_safety_contract() {
                             assert_eq!(
                                 result.fallback_allowed,
                                 is_terminal_admission_failure(status, conclusion)
+                                    && steps_observed == Some(0)
                             );
                         }
                         DiagnosticCase::Capacity => {
@@ -192,6 +193,7 @@ fn all_756_valid_evidence_states_obey_the_fallback_safety_contract() {
                             assert_eq!(
                                 result.fallback_allowed,
                                 is_terminal_admission_failure(status, conclusion)
+                                    && steps_observed == Some(0)
                             );
                         }
                         DiagnosticCase::None => {
@@ -249,6 +251,29 @@ fn all_108_conflicting_diagnostic_states_fail_closed() {
     }
 
     assert_eq!(checked, 108);
+}
+
+#[test]
+fn incomplete_step_and_job_telemetry_never_authorizes_fallback() {
+    for diagnostic in [DiagnosticCase::Billing, DiagnosticCase::Capacity] {
+        for jobs_observed in [None, Some(0), Some(1)] {
+            for steps_observed in [None, Some(0), Some(1)] {
+                let result = classify_admission_failure(&WorkflowAdmissionEvidence {
+                    conclusion: Some("failure"),
+                    status: Some("completed"),
+                    jobs_observed,
+                    steps_observed,
+                    platform_diagnostics: diagnostic.evidence(),
+                    ..WorkflowAdmissionEvidence::default()
+                });
+                assert_eq!(
+                    result.fallback_allowed,
+                    jobs_observed.is_some() && steps_observed == Some(0),
+                    "{diagnostic:?}, jobs={jobs_observed:?}, steps={steps_observed:?}"
+                );
+            }
+        }
+    }
 }
 
 #[test]
