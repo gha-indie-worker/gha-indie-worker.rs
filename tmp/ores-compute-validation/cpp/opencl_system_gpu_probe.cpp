@@ -75,24 +75,18 @@ int main() {
             plan.byte_length());
     const dop::DeviceBuffer input(plan, input_fence);
     const dop::DeviceBuffer output(plan, output_fence);
-    const dop::GpuQueueLocation queue{
-            tenant,
-            device,
-            1,
-            1,
-            1};
-
     opencl::Provider provider(
             *api,
-            {tenant, device, 1, 1},
+            {tenant, device, 1, 1, 4},
             {
                 plan.byte_length() * 4,
                 plan.byte_length() * 4,
                 2,
                 1
-            });
+            },
+            target);
 
-    auto prepared = provider.prepare(kernel, target);
+    auto prepared = provider.prepare(kernel);
 
     std::vector<unsigned char> host(
             static_cast<std::size_t>(plan.byte_length()),
@@ -109,7 +103,6 @@ int main() {
             prepared,
             input,
             output,
-            queue,
             host);
 
     opencl::Provider::OperationState state = operation->state();
