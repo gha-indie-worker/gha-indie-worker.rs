@@ -63,5 +63,18 @@ assert kernel["gpuLowering"]["providerAuthenticationRequired"] is True
 assert kernel["gpuLowering"]["javaEmitterImplemented"] is True
 assert kernel["gpuLowering"]["nativeEmitterImplemented"] is True
 assert kernel["gpuLowering"]["exactArtifactParityRequired"] is True
+abi = kernel["gpuLowering"]["artifactAbi"]
+assert abi["version"] == 1
+assert abi["requiredAddressBits"] == 64
+assert abi["requiredFloat32"] is True
+assert abi["requiredLittleEndian"] is True
+assert set(abi["providerMustValidate"]) == {
+    "requiredBytes",
+    "globalRows",
+    "globalFields",
+    "requiredAddressBits",
+    "requiredFloat32",
+    "requiredLittleEndian",
+}
 assert kernel["promotion"]["requiresJavaNativeOpenClArtifactParity"] is True
 print("portable-compute-kernel-g2-contract-ok")
