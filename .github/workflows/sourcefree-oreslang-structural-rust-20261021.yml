@@ -1,0 +1,26 @@
+name: Source-free Oreslang structural Rust reference
+on:
+  push:
+    branches: [ci/sourcefree-structural-rust-20261021]
+  workflow_dispatch:
+permissions: {}
+jobs:
+  structural-sourcefree:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Execute pinned source-free Rust reference (no private checkout or credentials)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'SOURCE_FREE_ONLY: public independent Rust reference; no private Git tree, compiler or tokens'
+          test "${RUNNER_OS}" = Linux
+          command -v rustc
+          rustc --version
+          curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 --max-time 60 \
+            "https://raw.githubusercontent.com/gha-indie-worker/gha-indie-worker.rs/${GITHUB_SHA}/tests/sourcefree_structural_reference.rs" \
+            --output "${RUNNER_TEMP}/sourcefree_structural_reference.rs"
+          rustc --edition=2021 --test "${RUNNER_TEMP}/sourcefree_structural_reference.rs" \
+            -o "${RUNNER_TEMP}/sourcefree_structural_tests"
+          "${RUNNER_TEMP}/sourcefree_structural_tests" --nocapture
+          echo 'SOURCE_FREE_ONLY: Rust reference suite passed; NOT Java/LLVM/Wasm/JS/.NET compiler verification'
