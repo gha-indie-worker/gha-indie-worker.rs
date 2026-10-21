@@ -1,0 +1,176 @@
+{
+  "java_head": "f39152d64025a1cd73ae939590e6779ee2114a72",
+  "llvm_head": "e769573854697b4eeba7898fa9435896e0e5cdaf",
+  "common_head": "a3f6b345a03247d513d2fb48143090ba7478e8c8",
+  "profiles_head": "12583ddad6d5b4463f9ad7d8d207d0eb96b6b77a",
+  "files": [
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-source.java",
+      "source_head": "f39152d64025a1cd73ae939590e6779ee2114a72",
+      "source_path": "src/main/java/dev/oreslang/runtime/compute/PortableKernelIR.java",
+      "source_blob_sha": "f3338b893ecde0b17d5af5eb75efaf0b70d99b8c",
+      "dest": "tmp/ores-compute-g2/java/dev/oreslang/runtime/compute/PortableKernelIR.java"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-source.java",
+      "source_head": "f39152d64025a1cd73ae939590e6779ee2114a72",
+      "source_path": "src/test/java/dev/oreslang/runtime/compute/PortableKernelConformanceMain.java",
+      "source_blob_sha": "2b39927aa257fde92c5612e99bdbeecba4ee91a0",
+      "dest": "tmp/ores-compute-g2/java/dev/oreslang/runtime/compute/PortableKernelConformanceMain.java"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-source.java",
+      "source_head": "f39152d64025a1cd73ae939590e6779ee2114a72",
+      "source_path": "src/main/java/dev/oreslang/runtime/compute/ComputeAuthority.java",
+      "source_blob_sha": "fba108191b6c0e091d1a17c781954f562f30febd",
+      "dest": "tmp/ores-compute-g2/java/dev/oreslang/runtime/compute/ComputeAuthority.java"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-source.java",
+      "source_head": "f39152d64025a1cd73ae939590e6779ee2114a72",
+      "source_path": "src/main/java/dev/oreslang/runtime/compute/ComputeBufferHandle.java",
+      "source_blob_sha": "9efe1f2b9ebb9ce12417a90386df635916153e01",
+      "dest": "tmp/ores-compute-g2/java/dev/oreslang/runtime/compute/ComputeBufferHandle.java"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-source.java",
+      "source_head": "f39152d64025a1cd73ae939590e6779ee2114a72",
+      "source_path": "src/main/java/dev/oreslang/runtime/compute/ComputeDeviceHandle.java",
+      "source_blob_sha": "6afab62e82908f5c81fd85b34c883ee789312ff8",
+      "dest": "tmp/ores-compute-g2/java/dev/oreslang/runtime/compute/ComputeDeviceHandle.java"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-source.java",
+      "source_head": "f39152d64025a1cd73ae939590e6779ee2114a72",
+      "source_path": "src/main/java/dev/oreslang/runtime/compute/ComputeFenceHandle.java",
+      "source_blob_sha": "ed1f88f1bb4969d7ccb88bcbab03024e066bb4bf",
+      "dest": "tmp/ores-compute-g2/java/dev/oreslang/runtime/compute/ComputeFenceHandle.java"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-source.java",
+      "source_head": "f39152d64025a1cd73ae939590e6779ee2114a72",
+      "source_path": "src/main/java/dev/oreslang/parser/Parser.java",
+      "source_blob_sha": "002aeae87830ac01d356e252a91a6e81976cacd5",
+      "dest": "tmp/ores-compute-g2/parser-java/Parser.java"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-source.java",
+      "source_head": "f39152d64025a1cd73ae939590e6779ee2114a72",
+      "source_path": "src/main/java/dev/oreslang/parser/Lexer.java",
+      "source_blob_sha": "8e5b7a0affc3f322995496c73936a2adfe7f7330",
+      "dest": "tmp/ores-compute-g2/parser-java/Lexer.java"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-source.java",
+      "source_head": "f39152d64025a1cd73ae939590e6779ee2114a72",
+      "source_path": "src/main/java/dev/oreslang/parser/Token.java",
+      "source_blob_sha": "c36716c321e0071bb75c7495f749c04e95466062",
+      "dest": "tmp/ores-compute-g2/parser-java/Token.java"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-source.llvm",
+      "source_head": "e769573854697b4eeba7898fa9435896e0e5cdaf",
+      "source_path": "src/main/cpp/oreslang/runtime/DopLayout.hpp",
+      "source_blob_sha": "fea958c2fffd2a3023819c7afff2a8ddc9e82db3",
+      "dest": "tmp/ores-compute-g2/cpp/oreslang/runtime/DopLayout.hpp"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-source.llvm",
+      "source_head": "e769573854697b4eeba7898fa9435896e0e5cdaf",
+      "source_path": "src/main/cpp/oreslang/runtime/TargetAbi.hpp",
+      "source_blob_sha": "b451be07dc8bef0ff1cc26bc4bbf23a3c24c02b2",
+      "dest": "tmp/ores-compute-g2/cpp/oreslang/runtime/TargetAbi.hpp"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-source.llvm",
+      "source_head": "e769573854697b4eeba7898fa9435896e0e5cdaf",
+      "source_path": "src/main/cpp/oreslang/runtime/DopKernelIR.hpp",
+      "source_blob_sha": "d9615cd27ece152b6f98706e99e8f5808a71c347",
+      "dest": "tmp/ores-compute-g2/cpp/oreslang/runtime/DopKernelIR.hpp"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-source.llvm",
+      "source_head": "e769573854697b4eeba7898fa9435896e0e5cdaf",
+      "source_path": "src/main/cpp/oreslang/runtime/GpuBufferFence.hpp",
+      "source_blob_sha": "99c10660c5ba9a2e836921c5d15e24f15da15779",
+      "dest": "tmp/ores-compute-g2/cpp/oreslang/runtime/GpuBufferFence.hpp"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-source.llvm",
+      "source_head": "e769573854697b4eeba7898fa9435896e0e5cdaf",
+      "source_path": "src/main/cpp/oreslang/runtime/PortableComputeAuthority.hpp",
+      "source_blob_sha": "474cf04fb1bb7f36058adb6e701c22a9cff655ab",
+      "dest": "tmp/ores-compute-g2/cpp/oreslang/runtime/PortableComputeAuthority.hpp"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-source.llvm",
+      "source_head": "e769573854697b4eeba7898fa9435896e0e5cdaf",
+      "source_path": "src/main/cpp/oreslang/runtime/DopGpuAdmission.hpp",
+      "source_blob_sha": "f276854cb3feb29707a3c1c6ae2e96af39bb259d",
+      "dest": "tmp/ores-compute-g2/cpp/oreslang/runtime/DopGpuAdmission.hpp"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-source.llvm",
+      "source_head": "e769573854697b4eeba7898fa9435896e0e5cdaf",
+      "source_path": "tests/portable_compute_kernel_g2_test.cpp",
+      "source_blob_sha": "74742dc8d757f0c3d44ca2b6cb57cfcfccde51bb",
+      "dest": "tmp/ores-compute-g2/cpp/portable_compute_kernel_g2_test.cpp"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-source.llvm",
+      "source_head": "e769573854697b4eeba7898fa9435896e0e5cdaf",
+      "source_path": "tests/gpu_buffer_fence_test.cpp",
+      "source_blob_sha": "24dc76658be9af6db01bbac0304b26058a9507e0",
+      "dest": "tmp/ores-compute-g2/cpp/gpu_buffer_fence_test.cpp"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-source.llvm",
+      "source_head": "e769573854697b4eeba7898fa9435896e0e5cdaf",
+      "source_path": "tests/portable_compute_authority_test.cpp",
+      "source_blob_sha": "5b560143b38fc600a104b1e35bebe16784490b5c",
+      "dest": "tmp/ores-compute-g2/cpp/portable_compute_authority_test.cpp"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-source.llvm",
+      "source_head": "e769573854697b4eeba7898fa9435896e0e5cdaf",
+      "source_path": "tests/dop_gpu_admission_test.cpp",
+      "source_blob_sha": "a39382dfcf27fe275cf207b790b903b804fb0831",
+      "dest": "tmp/ores-compute-g2/cpp/dop_gpu_admission_test.cpp"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-source.llvm",
+      "source_head": "e769573854697b4eeba7898fa9435896e0e5cdaf",
+      "source_path": "src/main/cpp/oreslang/frontend/Parser.cpp",
+      "source_blob_sha": "2cce6a1748f9d9447bc9b3b1aa4b39a66a76ebe3",
+      "dest": "tmp/ores-compute-g2/parser-native/Parser.cpp"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-common-source",
+      "source_head": "a3f6b345a03247d513d2fb48143090ba7478e8c8",
+      "source_path": "contracts/v1/portable-compute-kernel.json",
+      "source_blob_sha": "f720d47915b44e213749733dc63c2d8c8d8a7ea1",
+      "dest": "tmp/ores-compute-g2/contracts/portable-compute-kernel.json"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-common-source",
+      "source_head": "a3f6b345a03247d513d2fb48143090ba7478e8c8",
+      "source_path": "contracts/v1/portable-compute-authority.json",
+      "source_blob_sha": "3dcf3d609c4f0b17e0b28f58665295831b123396",
+      "dest": "tmp/ores-compute-g2/contracts/portable-compute-authority.json"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-target-profiles",
+      "source_head": "12583ddad6d5b4463f9ad7d8d207d0eb96b6b77a",
+      "source_path": "build-profiles/v1.json",
+      "source_blob_sha": "0267dab80f2e87f9e6d212b7ec2a154d4f55f125",
+      "dest": "tmp/ores-compute-g2/profiles/build-profiles-v1.json"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-target-profiles",
+      "source_head": "12583ddad6d5b4463f9ad7d8d207d0eb96b6b77a",
+      "source_path": "schemas/build-profiles.schema.json",
+      "source_blob_sha": "b288cfaa18e4531f046f33a385094286c6e04982",
+      "dest": "tmp/ores-compute-g2/profiles/build-profiles.schema.json"
+    }
+  ]
+}
