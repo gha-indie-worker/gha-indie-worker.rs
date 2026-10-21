@@ -277,6 +277,34 @@ fn incomplete_step_and_job_telemetry_never_authorizes_fallback() {
 }
 
 #[test]
+fn zero_job_runner_observations_fail_closed_in_bounded_matrix() {
+    for diagnostic in [DiagnosticCase::Billing, DiagnosticCase::Capacity] {
+        for jobs_observed in [Some(0), Some(1)] {
+            for runner_name in [None, Some("runner-42")] {
+                for runner_labels in [&[][..], &["linux"][..]] {
+                    let result = classify_admission_failure(&WorkflowAdmissionEvidence {
+                        conclusion: Some("failure"),
+                        status: Some("completed"),
+                        jobs_observed,
+                        steps_observed: Some(0),
+                        runner_name,
+                        runner_labels,
+                        platform_diagnostics: diagnostic.evidence(),
+                    });
+                    let consistent = jobs_observed == Some(1)
+                        || (runner_name.is_none() && runner_labels.is_empty());
+                    assert_eq!(
+                        result.fallback_allowed,
+                        consistent,
+                        "{diagnostic:?}, jobs={jobs_observed:?}, runner={runner_name:?}, labels={runner_labels:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn application_authored_annotations_never_authorize_replay() {
     for kind in [
         PlatformDiagnosticKind::BillingOrSpending,
