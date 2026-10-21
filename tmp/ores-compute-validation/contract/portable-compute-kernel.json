@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "gate": "G2",
+  "namespace": "std/compute",
+  "sourceNeutralKernelIR": true,
+  "sourceSyntaxEnabled": false,
+  "sourceSyntaxGate": "fail-closed-until-typed-effects-and-lowering",
+  "elementTypes": ["f32"],
+  "operations": ["scale", "bias", "scale-bias"],
+  "layouts": ["aos", "soa", "aosoa"],
+  "layoutRules": {
+    "scalarBytes": 4,
+    "alignmentPowerOfTwo": true,
+    "maximumAlignment": 4096,
+    "aosoaLanesPowerOfTwo": true,
+    "maximumAosoaLanes": 1024,
+    "nonAosoaLanes": 1,
+    "byteLengthDomain": "signed-i64",
+    "checkedArithmeticRequired": true
+  },
+  "kernelRules": {
+    "finiteCoefficientsRequired": true,
+    "pureNumericOnly": true,
+    "hostIo": "forbidden",
+    "allocation": "forbidden",
+    "locks": "forbidden",
+    "actorState": "forbidden",
+    "mailboxEffects": "forbidden",
+    "exceptions": "forbidden",
+    "panicUnwind": "forbidden",
+    "deviceSideLaunch": "forbidden",
+    "reflection": "forbidden"
+  },
+  "cpuReferenceProvider": {
+    "explicitSelectionRequired": true,
+    "implicitGpuFallback": false,
+    "testingAndConformanceOnly": true,
+    "hardRealtimeClaim": false,
+    "layoutAware": true,
+    "inputOutputAlias": "forbidden",
+    "floatingPointContraction": "forbidden-for-scale-bias-reference"
+  },
+  "gpuLowering": {
+    "firstPortableArtifact": "opencl-c-1.2",
+    "emissionIsExecutionEvidence": false,
+    "providerAuthenticationRequired": true,
+    "physicalBufferProvenanceRequired": true,
+    "deviceEventEvidenceRequired": true
+  },
+  "promotion": {
+    "requiresJavaCpuReferenceExecution": true,
+    "requiresNativeCpuReferenceExecution": true,
+    "requiresJavaNativeResultParity": true,
+    "requiresSourceSyntaxToRemainFailClosed": true
+  }
+}
