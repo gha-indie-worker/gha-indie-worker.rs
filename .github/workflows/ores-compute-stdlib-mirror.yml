@@ -1,22 +1,22 @@
-name: Ores compute stdlib mirror validation
+name: Ores compute G2 mirror validation
 
 on:
   push:
     branches:
-      - test/ores-compute-authority-g1-20261021
+      - test/ores-compute-g2-main-20261021
   pull_request:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ores-compute-stdlib-${{ github.event.pull_request.number || github.ref }}
+  group: ores-compute-g2-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   validate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
       - name: Check out exact candidate without persisted credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -25,78 +25,154 @@ jobs:
           persist-credentials: false
           show-progress: false
           submodules: false
-      - name: Assert exact head
+
+      - name: Assert exact carrier head
         shell: bash
         run: |
           set -euo pipefail
           expected='${{ github.event.pull_request.head.sha || github.sha }}'
           test "$(git rev-parse HEAD)" = "$expected"
           git diff --check
-      - name: Verify mirrored source provenance
+
+      - name: Verify exact mirrored source provenance
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           import hashlib, json
           from pathlib import Path
-          manifest = json.loads(Path("tmp/ores-compute-validation/source-manifest.json").read_text())
-          expected_heads = {
-              "java_head": "82f02cc3b4d096ec014104a51dfaceab5b4688c4",
-              "llvm_head": "a23d0b30ef8f05a786e01ee2c26cdd475071be68",
-              "common_head": "c3740b580d6c38653a5943bff7dee0cb9e472949",
-              "profiles_head": "d6b8a032b3a6751e4c44b822221623048bcd841f",
-              "authority_java_head": "9a31229971c2dfdf4dfc179f632dd393e4c3dad6",
-              "authority_llvm_head": "0ef608479c8a8ddf56e57a27c299e136bd07e22b",
-              "authority_common_head": "28c57af6eaf0ce338fb40829ff8a345b3420cceb",
+
+          manifest = json.loads(
+              Path("tmp/ores-compute-validation/source-manifest.json").read_text()
+          )
+          expected = {
+              "java_head": "66971839c52c241e0c5203ad43efc3c65c4a975d",
+              "llvm_head": "6f181e79164c5b0c45067aabd32da55e90cb64c1",
+              "common_head": "3b36e9ee1a940c708c532742a87071c5b04b829f",
+              "profiles_head": "a9f06703926ffedb48d031db835cb6920033f65f",
           }
-          for key, value in expected_heads.items():
+          for key, value in expected.items():
               assert manifest[key] == value, (key, manifest[key], value)
+
           for item in manifest["files"]:
               data = Path(item["dest"]).read_bytes()
               payload = f"blob {len(data)}\0".encode() + data
               actual = hashlib.sha1(payload).hexdigest()
-              assert actual == item["source_blob_sha"], (item["dest"], actual, item["source_blob_sha"])
-          print("mirror-provenance-ok")
+              assert actual == item["source_blob_sha"], (
+                  item["dest"], actual, item["source_blob_sha"]
+              )
+              assert item["source_ref"] == "main"
+          print("exact-g2-mirror-provenance-ok")
           PY
-      - name: Compile mirrored Java compute SPI
+
+      - name: Compile mirrored Java compute runtime and conformance
         shell: bash
         run: |
           set -euo pipefail
           javac -version
+          rm -rf tmp/ores-compute-validation/out
           mkdir -p tmp/ores-compute-validation/out
-          javac -d tmp/ores-compute-validation/out             tmp/ores-compute-validation/java/dev/oreslang/runtime/compute/*.java
-      - name: Run provider-registry smoke
-        shell: bash
-        run: |
-          set -euo pipefail
-          java -cp tmp/ores-compute-validation/out             dev.oreslang.runtime.compute.ComputeRegistrySmoke
-      - name: Run sealed authority adversarial smoke
+          javac -Xlint:all -Werror \
+            -d tmp/ores-compute-validation/out \
+            tmp/ores-compute-validation/java/dev/oreslang/runtime/compute/*.java
+
+      - name: Run Java registry and authority adversarial gates
         shell: bash
         run: |
           set -euo pipefail
           java -cp tmp/ores-compute-validation/out \
+            dev.oreslang.runtime.compute.ComputeRegistrySmoke
+          java -cp tmp/ores-compute-validation/out \
             dev.oreslang.runtime.compute.ComputeAuthoritySmoke
-      - name: Validate portable stdlib contract
+
+      - name: Run Java G2 CPU reference gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -cp tmp/ores-compute-validation/out \
+            dev.oreslang.runtime.compute.PortableKernelSmoke
+          java -cp tmp/ores-compute-validation/out \
+            dev.oreslang.runtime.compute.PortableKernelConformanceMain \
+            > "${RUNNER_TEMP}/java-kernel.txt"
+          cat "${RUNNER_TEMP}/java-kernel.txt"
+
+      - name: Validate common compute contracts
         shell: bash
         run: |
           set -euo pipefail
           python3 tmp/ores-compute-validation/validate.py
-      - name: Compile and run native descriptor parity
+
+      - name: Verify accelerator source syntax remains fail closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          token = Path("tmp/ores-compute-validation/parser-java/Token.java").read_text()
+          lexer = Path("tmp/ores-compute-validation/parser-java/Lexer.java").read_text()
+          parser = Path("tmp/ores-compute-validation/parser-java/Parser.java").read_text()
+          native = Path("tmp/ores-compute-validation/parser-native/Parser.cpp").read_text()
+
+          assert "GPU, CPU, QUANTUM" in token
+          for word in ("gpu", "cpu", "quantum"):
+              assert f'KEYWORDS.put("{word}"' in lexer
+              assert f"execution domain '" in parser
+              assert "no implicit CPU fallback" in parser
+              assert word in native
+          assert "native execution domain lowering unsupported" in native
+          assert "no implicit CPU fallback" in native
+          print("accelerator-source-syntax-fail-closed-ok")
+          PY
+
+      - name: Compile and run native descriptor and authority gates
         shell: bash
         run: |
           set -euo pipefail
           c++ --version
-          c++ -std=c++17 -Wall -Wextra -Wpedantic -Werror             -Itmp/ores-compute-validation/cpp             tmp/ores-compute-validation/cpp/portable_compute_descriptor_test.cpp             -o "${RUNNER_TEMP}/ores-compute-descriptor-test"
-          "${RUNNER_TEMP}/ores-compute-descriptor-test"
-      - name: Compile and run native authority lifecycle
+          CXXFLAGS="-std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror"
+          INC="-Itmp/ores-compute-validation/cpp"
+          c++ $CXXFLAGS $INC \
+            tmp/ores-compute-validation/cpp/portable_compute_descriptor_test.cpp \
+            -o "${RUNNER_TEMP}/descriptor"
+          "${RUNNER_TEMP}/descriptor"
+
+          c++ $CXXFLAGS -pthread $INC \
+            tmp/ores-compute-validation/cpp/portable_compute_authority_test.cpp \
+            -o "${RUNNER_TEMP}/authority"
+          "${RUNNER_TEMP}/authority"
+
+      - name: Run native reserved-submitted GPU fence gates
         shell: bash
         run: |
           set -euo pipefail
-          c++ -std=c++17 -Wall -Wextra -Wpedantic -Werror -pthread \
-            -Itmp/ores-compute-validation/cpp \
-            tmp/ores-compute-validation/cpp/portable_compute_authority_test.cpp \
-            -o "${RUNNER_TEMP}/ores-compute-authority-test"
-          "${RUNNER_TEMP}/ores-compute-authority-test"
+          CXXFLAGS="-std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror"
+          INC="-Itmp/ores-compute-validation/cpp"
+
+          c++ $CXXFLAGS -pthread $INC \
+            tmp/ores-compute-validation/cpp/gpu_buffer_fence_test.cpp \
+            -o "${RUNNER_TEMP}/gpu-fence"
+          "${RUNNER_TEMP}/gpu-fence"
+
+          c++ $CXXFLAGS -pthread $INC \
+            tmp/ores-compute-validation/cpp/dop_gpu_admission_test.cpp \
+            -o "${RUNNER_TEMP}/gpu-admission"
+          "${RUNNER_TEMP}/gpu-admission"
+
+      - name: Run native G2 CPU reference and compare bit transcript
+        shell: bash
+        run: |
+          set -euo pipefail
+          CXXFLAGS="-std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror"
+          INC="-Itmp/ores-compute-validation/cpp"
+          c++ $CXXFLAGS $INC \
+            tmp/ores-compute-validation/cpp/portable_compute_kernel_g2_test.cpp \
+            -o "${RUNNER_TEMP}/kernel-g2"
+          "${RUNNER_TEMP}/kernel-g2" > "${RUNNER_TEMP}/native-kernel.txt"
+          cat "${RUNNER_TEMP}/native-kernel.txt"
+          diff -u "${RUNNER_TEMP}/java-kernel.txt" "${RUNNER_TEMP}/native-kernel.txt"
+          echo "java-native-kernel-bit-parity-ok"
+
       - name: Validate accelerator build-profile constraints
         shell: bash
         run: |
@@ -104,6 +180,7 @@ jobs:
           python3 - <<'PY'
           import json
           from pathlib import Path
+
           root = Path("tmp/ores-compute-validation/profiles")
           contract = json.loads((root / "build-profiles-v1.json").read_text())
           schema = json.loads((root / "build-profiles.schema.json").read_text())
@@ -117,13 +194,16 @@ jobs:
               "strictAotKernelVariants": "precompiled-only",
               "hardRtResourceBounds": "required",
               "hardRtProviderCompilation": "forbidden-in-execution-phase",
+              "sourceAcceleratorSyntax": "fail-closed-until-typed-effects",
+              "cpuReferenceProvider": "explicit-test-only",
+              "kernelIrReflection": "forbidden",
+              "gpuArtifactEmissionEvidence": "not-execution-evidence",
           }
           assert accel == expected
-          assert "accelerators" in schema["properties"]["constraints"]["required"]
           props = schema["properties"]["constraints"]["properties"]["accelerators"]
           assert props["additionalProperties"] is False
           assert set(props["required"]) == set(expected)
           for key, value in expected.items():
               assert props["properties"][key]["const"] == value
-          print("accelerator-build-profile-contract-ok")
+          print("accelerator-g2-build-profile-contract-ok")
           PY
