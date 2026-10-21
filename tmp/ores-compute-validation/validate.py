@@ -58,6 +58,8 @@ assert kernel["cpuReferenceProvider"]["explicitSelectionRequired"] is True
 assert kernel["cpuReferenceProvider"]["implicitGpuFallback"] is False
 assert kernel["cpuReferenceProvider"]["testingAndConformanceOnly"] is True
 assert kernel["cpuReferenceProvider"]["floatingPointContraction"] == "forbidden-for-scale-bias-reference"
+assert kernel["cpuReferenceProvider"]["wholeKernelHostBufferLeaseRequired"] is True
+assert kernel["cpuReferenceProvider"]["concurrentHostMutation"] == "serialized-during-execution"
 assert kernel["gpuLowering"]["emissionIsExecutionEvidence"] is False
 assert kernel["gpuLowering"]["providerAuthenticationRequired"] is True
 assert kernel["gpuLowering"]["javaEmitterImplemented"] is True
