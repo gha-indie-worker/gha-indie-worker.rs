@@ -191,6 +191,40 @@ pub async fn record_webhook_delivery(
     }
 }
 
+/// Strict recovery receipt insert. Unlike ordinary webhook intake, any database
+/// error is returned to the caller so recovery remains fail-closed and retryable.
+/// The unique (provider, delivery_id) key is the durable identity claim.
+pub async fn record_recovery_receipt_strict(
+    db: &DatabaseConnection,
+    recovery_key: &str,
+    repo: &str,
+    head_sha: &str,
+    action: &str,
+) -> Result<bool, sea_orm::DbErr> {
+    let model = webhook_deliveries::ActiveModel {
+        provider: Set("github-recovery".to_string()),
+        delivery_id: Set(recovery_key.to_string()),
+        event_kind: Set(Some("workflow_run".to_string())),
+        repo: Set(Some(repo.to_string())),
+        git_ref: Set(Some(head_sha.to_string())),
+        action: Set(action.to_string()),
+        ..Default::default()
+    };
+    let result = webhook_deliveries::Entity::insert(model)
+        .on_conflict(
+            OnConflict::columns([
+                webhook_deliveries::Column::Provider,
+                webhook_deliveries::Column::DeliveryId,
+            ])
+            .do_nothing()
+            .to_owned(),
+        )
+        .do_nothing()
+        .exec(db)
+        .await?;
+    Ok(matches!(result, sea_orm::TryInsertResult::Inserted(_)))
+}
+
 /// Latest synced value hash for a (repo, secret) pair, to skip unchanged values.
 pub async fn last_synced_sha256(
     db: &DatabaseConnection,
