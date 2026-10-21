@@ -175,11 +175,7 @@ fn build_request_from_rule(
 }
 
 #[cfg(not(test))]
-async fn observe_failed_workflow_run(
-    state: &AppState,
-    payload: &serde_json::Value,
-    repo: &str,
-) {
+async fn observe_failed_workflow_run(state: &AppState, payload: &serde_json::Value, repo: &str) {
     if !state.config.github_actions_observer_enabled {
         return;
     }
@@ -200,7 +196,10 @@ async fn observe_failed_workflow_run(
         .recovery_observations
         .fetch_add(1, Ordering::Relaxed);
 
-    let run_id = run.get("id").and_then(serde_json::Value::as_u64).unwrap_or(0);
+    let run_id = run
+        .get("id")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
     let attempt = run
         .get("run_attempt")
         .and_then(serde_json::Value::as_u64)
