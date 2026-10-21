@@ -40,6 +40,24 @@ assert authority["transfers"]["crossOwnerDomainForbidden"] is True
 assert authority["transfers"]["staleGenerationForbidden"] is True
 assert authority["transfers"]["cancellationImpliesQuiescence"] is False
 assert authority["transfers"]["reclaimRequiresVerifiedQuiescence"] is True
+assert authority["transfers"]["preEnqueueAbortRequiresExactFence"] is True
+assert authority["transfers"]["preEnqueueAbortRestoresIdle"] is True
+assert authority["transfers"]["preEnqueueAbortForbiddenAfterSubmission"] is True
 assert authority["authorityRules"]["numericIdsAreNotCapabilities"] is True
 assert authority["authorityRules"]["metadataDescriptorsAreNotCapabilities"] is True
 print("portable-compute-authority-g1-contract-ok")
+
+kernel = json.loads((root / "contract" / "portable-compute-kernel.json").read_text(encoding="utf-8"))
+assert kernel["gate"] == "G2"
+assert kernel["sourceNeutralKernelIR"] is True
+assert kernel["sourceSyntaxEnabled"] is False
+assert kernel["sourceSyntaxGate"] == "fail-closed-until-typed-effects-and-lowering"
+assert kernel["elementTypes"] == ["f32"]
+assert kernel["operations"] == ["scale", "bias", "scale-bias"]
+assert kernel["cpuReferenceProvider"]["explicitSelectionRequired"] is True
+assert kernel["cpuReferenceProvider"]["implicitGpuFallback"] is False
+assert kernel["cpuReferenceProvider"]["testingAndConformanceOnly"] is True
+assert kernel["cpuReferenceProvider"]["floatingPointContraction"] == "forbidden-for-scale-bias-reference"
+assert kernel["gpuLowering"]["emissionIsExecutionEvidence"] is False
+assert kernel["gpuLowering"]["providerAuthenticationRequired"] is True
+print("portable-compute-kernel-g2-contract-ok")
