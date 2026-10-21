@@ -31,7 +31,11 @@ struct ObservationRequest {
 }
 
 fn error(status: StatusCode, message: &'static str) -> Response {
-    (status, Json(json!({ "error": message, "fallbackAllowed": false }))).into_response()
+    (
+        status,
+        Json(json!({ "error": message, "fallbackAllowed": false })),
+    )
+        .into_response()
 }
 
 pub(crate) async fn observe(
@@ -56,11 +60,17 @@ pub(crate) async fn observe(
     };
 
     let Some(database) = state.db.as_ref() else {
-        return error(StatusCode::SERVICE_UNAVAILABLE, "recovery persistence unavailable");
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "recovery persistence unavailable",
+        );
     };
     // Require a dedicated read-scoped token, never GH_PAT or a clone token.
     let Some(token) = first_env(&["BUILD_SERVER_GH_RECOVERY_READ_TOKEN"]) else {
-        return error(StatusCode::SERVICE_UNAVAILABLE, "recovery observer disabled");
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "recovery observer disabled",
+        );
     };
     let identity = RunIdentity {
         repo: key.repo.clone(),
@@ -74,7 +84,10 @@ pub(crate) async fn observe(
             return error(StatusCode::BAD_REQUEST, "invalid GitHub run identity");
         }
         Err(_) => {
-            return error(StatusCode::SERVICE_UNAVAILABLE, "provider observation incomplete");
+            return error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "provider observation incomplete",
+            );
         }
     };
     let denial = decide(
@@ -92,18 +105,18 @@ pub(crate) async fn observe(
         receipt.steps_observed,
         receipt.runner_assigned,
     );
-    let inserted = match db::record_recovery_denial(
-        database,
-        &delivery_id,
-        &key.repo,
-        &key.head_sha,
-        &action,
-    )
-    .await
-    {
-        Ok(value) => value,
-        Err(_) => return error(StatusCode::SERVICE_UNAVAILABLE, "recovery audit unavailable"),
-    };
+    let inserted =
+        match db::record_recovery_denial(database, &delivery_id, &key.repo, &key.head_sha, &action)
+            .await
+        {
+            Ok(value) => value,
+            Err(_) => {
+                return error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "recovery audit unavailable",
+                )
+            }
+        };
     (
         if inserted {
             StatusCode::ACCEPTED
