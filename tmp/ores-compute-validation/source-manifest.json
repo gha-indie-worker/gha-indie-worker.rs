@@ -71,10 +71,10 @@
     },
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.java",
-      "source_ref": "feat/portable-compute-opencl-g2",
-      "source_head": "d23d433e4f8964cf917cf0a8045b4230704deaec",
+      "source_ref": "feat/portable-compute-artifact-abi-hardening",
+      "source_head": "6be59ea96215d7027cc931c8e1108eb3c8a7a650",
       "source_path": "src/main/java/dev/oreslang/runtime/compute/PortableKernelIR.java",
-      "source_blob_sha": "f56e0e92d11ef91f15068dacbf0bda9d19ab7882",
+      "source_blob_sha": "a1d08a514c8df086f6a4fb1f2efae72bc7dd30bf",
       "dest": "tmp/ores-compute-validation/java/dev/oreslang/runtime/compute/PortableKernelIR.java"
     },
     {
@@ -135,10 +135,10 @@
     },
     {
       "source_repo": "ores-truffle-oreslang/oreslang-common-source",
-      "source_ref": "feat/portable-compute-opencl-g2",
-      "source_head": "9f26644e15733bdb82e396f54608579564889c60",
+      "source_ref": "feat/portable-compute-artifact-abi-hardening",
+      "source_head": "e6de5d452d53535794eb01cd70f5cf8eb381bf59",
       "source_path": "contracts/v1/portable-compute-kernel.json",
-      "source_blob_sha": "efcd5faf9e917f499dbbb2e3ec7eb06a012f14b4",
+      "source_blob_sha": "d1feebb01cb4d2ce5aeaecd83582b090e2805aef",
       "dest": "tmp/ores-compute-validation/contract/portable-compute-kernel.json"
     },
     {
@@ -191,10 +191,10 @@
     },
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.llvm",
-      "source_ref": "main",
-      "source_head": "6f181e79164c5b0c45067aabd32da55e90cb64c1",
+      "source_ref": "feat/portable-compute-artifact-abi-hardening",
+      "source_head": "06e573731b9b324d491ee111c8cb1e850e687780",
       "source_path": "src/main/cpp/oreslang/runtime/DopKernelIR.hpp",
-      "source_blob_sha": "d9615cd27ece152b6f98706e99e8f5808a71c347",
+      "source_blob_sha": "6bfd1147f55448a84f1a0cb11e63e3e1b6ac3ae3",
       "dest": "tmp/ores-compute-validation/cpp/oreslang/runtime/DopKernelIR.hpp"
     },
     {
@@ -263,22 +263,25 @@
     },
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.java",
-      "source_ref": "feat/portable-compute-opencl-g2",
-      "source_head": "d23d433e4f8964cf917cf0a8045b4230704deaec",
+      "source_ref": "feat/portable-compute-artifact-abi-hardening",
+      "source_head": "6be59ea96215d7027cc931c8e1108eb3c8a7a650",
       "source_path": "src/test/java/dev/oreslang/runtime/compute/PortableOpenClConformanceMain.java",
-      "source_blob_sha": "6c8bca27ac8c2e4d0c85a2c018c4b74e55d1c828",
+      "source_blob_sha": "c361504e070e7f5677428d7b09612f65882fda55",
       "dest": "tmp/ores-compute-validation/java/dev/oreslang/runtime/compute/PortableOpenClConformanceMain.java"
     },
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.llvm",
-      "source_ref": "feat/portable-compute-opencl-g2",
-      "source_head": "b8bcebb98b7e5b66f22ff31f5c1776152097886e",
+      "source_ref": "feat/portable-compute-artifact-abi-hardening",
+      "source_head": "06e573731b9b324d491ee111c8cb1e850e687780",
       "source_path": "tests/portable_compute_opencl_g2_test.cpp",
-      "source_blob_sha": "f6e106eb1dab0732b3b2e253b581f270a5a9cb9d",
+      "source_blob_sha": "be4f8399d56f078cfd45c84ac0b2b213c1736cb7",
       "dest": "tmp/ores-compute-validation/cpp/portable_compute_opencl_g2_test.cpp"
     }
   ],
   "opencl_java_head": "d23d433e4f8964cf917cf0a8045b4230704deaec",
   "opencl_llvm_head": "b8bcebb98b7e5b66f22ff31f5c1776152097886e",
-  "opencl_common_head": "9f26644e15733bdb82e396f54608579564889c60"
+  "opencl_common_head": "9f26644e15733bdb82e396f54608579564889c60",
+  "artifact_abi_java_head": "6be59ea96215d7027cc931c8e1108eb3c8a7a650",
+  "artifact_abi_llvm_head": "06e573731b9b324d491ee111c8cb1e850e687780",
+  "artifact_abi_common_head": "e6de5d452d53535794eb01cd70f5cf8eb381bf59"
 }
