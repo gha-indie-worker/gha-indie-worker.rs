@@ -24,21 +24,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  rust:
-    name: rust
+  admission-rust:
+    name: admission-rust
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Check out without persisted credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
           show-progress: false
           submodules: false
-      - name: Install stable Rust
+      - name: Assert exact head
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+      - name: Install pinned Rust 1.97.0
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
-          toolchain: stable
+          toolchain: '1.97.0'
           components: rustfmt
       - name: Check formatting
         run: |
@@ -62,17 +70,25 @@ jobs:
             -o "${RUNNER_TEMP}/admission-classifier-formal-tests"
           "${RUNNER_TEMP}/admission-classifier-formal-tests"
 
-  provenance:
-    name: provenance
+  admission-provenance:
+    name: admission-provenance
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Check out without persisted credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
           show-progress: false
           submodules: false
+      - name: Assert exact head
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
       - name: Verify pure classifier and bounded-model inventory
         shell: bash
         run: |
@@ -113,7 +129,7 @@ jobs:
           ):
               assert token in model, token
 
-          for required_job in ("  rust:\n", "  provenance:\n", "  gitleaks:\n"):
+          for required_job in ("  admission-rust:\n", "  admission-provenance:\n", "  admission-credential-guard:\n"):
               assert required_job in workflow, required_job
           PY
           sha256sum \
@@ -121,22 +137,30 @@ jobs:
             src/admission_formal.rs \
             .github/workflows/admission-classifier.yml
 
-  gitleaks:
-    name: gitleaks
+  admission-credential-guard:
+    name: admission-credential-guard
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Check out without persisted credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
           show-progress: false
           submodules: false
+      - name: Assert exact head
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
       - name: Reject credential-shaped material in the classifier slice
         shell: bash
         run: |
           set -euo pipefail
-          if grep -RInE \
+          if grep -RqE \
             '(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|lin_api_[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)' \
             src/admission.rs \
             src/admission_formal.rs \
