@@ -271,10 +271,10 @@
     },
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.llvm",
-      "source_ref": "feat/portable-compute-opencl-g2",
-      "source_head": "b8bcebb98b7e5b66f22ff31f5c1776152097886e",
+      "source_ref": "main",
+      "source_head": "7ef39d2c1b35cc1965030d79bee0ed3f822375c3",
       "source_path": "tests/portable_compute_opencl_g2_test.cpp",
-      "source_blob_sha": "f6e106eb1dab0732b3b2e253b581f270a5a9cb9d",
+      "source_blob_sha": "be4f8399d56f078cfd45c84ac0b2b213c1736cb7",
       "dest": "tmp/ores-compute-validation/cpp/portable_compute_opencl_g2_test.cpp"
     },
     {
