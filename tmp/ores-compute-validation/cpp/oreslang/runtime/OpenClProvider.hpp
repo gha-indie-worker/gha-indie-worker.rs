@@ -303,7 +303,7 @@ public:
         authenticate_queue(queue);
         {
             std::lock_guard<std::mutex> quarantine_guard(quarantine_lock_);
-            if (!quarantined_operations_.empty())
+            if (quarantine_latched_ || !quarantined_operations_.empty())
                 throw std::logic_error(
                         "OpenCL provider quarantined after post-enqueue invariant failure");
         }
@@ -507,14 +507,32 @@ public:
             }
         } catch (...) {
             auto failure = std::current_exception();
-            gpu::BufferFence::complete_pair(
-                    operation.input_.fence,
-                    operation.output_.fence,
-                    operation.claim_.claim().tickets,
-                    false);
-            operation.state_ = OperationState::Failed;
-            try { finish_cleanup(operation); }
-            catch (...) { }
+
+            if (operation.state_ == OperationState::UploadSubmitted
+                    || operation.state_ == OperationState::KernelSubmitted) {
+                try {
+                    gpu::BufferFence::complete_pair(
+                            operation.input_.fence,
+                            operation.output_.fence,
+                            operation.claim_.claim().tickets,
+                            false);
+                } catch (...) {
+                    std::lock_guard<std::mutex> quarantine_guard(quarantine_lock_);
+                    quarantine_latched_ = true;
+                    std::rethrow_exception(failure);
+                }
+                operation.state_ = OperationState::Failed;
+                try { finish_cleanup(operation); }
+                catch (...) { }
+                std::rethrow_exception(failure);
+            }
+
+            if (operation.state_ == OperationState::DownloadSubmitted) {
+                std::lock_guard<std::mutex> quarantine_guard(quarantine_lock_);
+                quarantine_latched_ = true;
+            }
+            // Succeeded/ReleaseFailed means host fences already terminalized;
+            // only physical cleanup failed, so never replay pair completion.
             std::rethrow_exception(failure);
         }
 
@@ -720,6 +738,7 @@ private:
     mutable std::mutex quota_lock_;
     mutable std::mutex quarantine_lock_;
     std::vector<std::unique_ptr<Operation>> quarantined_operations_;
+    bool quarantine_latched_ = false;
     std::uint64_t resident_bytes_ = 0;
     std::uint64_t pinned_host_bytes_ = 0;
     std::uint32_t outstanding_events_ = 0;
