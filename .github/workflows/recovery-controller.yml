@@ -13,6 +13,7 @@ on:
       - src/jobs.rs
       - src/main.rs
       - src/recovery.rs
+      - src/state.rs
       - src/webhooks.rs
       - .github/workflows/recovery-controller.yml
   push:
@@ -24,6 +25,7 @@ on:
       - src/db.rs
       - src/main.rs
       - src/recovery.rs
+      - src/state.rs
       - src/webhooks.rs
       - .github/workflows/recovery-controller.yml
   workflow_dispatch:
@@ -63,7 +65,7 @@ jobs:
           components: rustfmt
       - name: Format recovery slice
         run: |
-          rustfmt --edition 2021 --check             src/admission.rs             src/admission/github_api.rs             src/config.rs             src/db.rs             src/http.rs             src/jobs.rs             src/main.rs             src/recovery.rs             src/webhooks.rs
+          rustfmt --edition 2021 --check             src/admission.rs             src/admission/github_api.rs             src/config.rs             src/db.rs             src/http.rs             src/jobs.rs             src/main.rs             src/recovery.rs             src/state.rs             src/webhooks.rs
       - name: Compile and test recovery controller in hermetic harness
         shell: bash
         run: |
@@ -148,6 +150,10 @@ jobs:
           grep -Fq 'github_recovery_token: None' src/http.rs
           grep -Fq 'github_recovery_enabled: false' src/jobs.rs
           grep -Fq 'github_recovery_token: None' src/jobs.rs
+          grep -Fq 'github_recovery_observed' src/state.rs
+          grep -Fq 'github_recovery_duplicates' src/state.rs
+          grep -Fq 'github_recovery_fail_closed' src/state.rs
+          grep -Fq '"mode": "observe-only"' src/http.rs
 
           for forbidden in             'enqueue_build'             'submit_from_nats'             'std::process'             'Command::'             'idempotency_finish'; do
             if grep -Fq "$forbidden" src/recovery.rs; then
