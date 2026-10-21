@@ -200,6 +200,11 @@ pub(crate) fn classify_admission_failure(
     let steps_started = evidence.steps_observed.is_some_and(|steps| steps > 0);
     let observation_complete =
         evidence.jobs_observed.is_some() && evidence.steps_observed == Some(0);
+    // Application-authored check annotations are not independent platform
+    // admission evidence, even if they describe billing or runner capacity.
+    let trusted_fallback_source = evidence.platform_diagnostics.iter().all(|item| {
+        item.source == PlatformDiagnosticSource::AuthorizedActionsApi
+    });
 
     let diagnostic = match unique_diagnostic_kind(evidence.platform_diagnostics) {
         Ok(diagnostic) => diagnostic,
@@ -260,8 +265,8 @@ pub(crate) fn classify_admission_failure(
         Some(PlatformDiagnosticKind::BillingOrSpending) => {
             return AdmissionClassification::explicit(
                 AdmissionFailureKind::BillingOrSpending,
-                terminal && observation_complete,
-                if terminal && observation_complete {
+                terminal && observation_complete && trusted_fallback_source,
+                if terminal && observation_complete && trusted_fallback_source {
                     "an authorized billing diagnostic accompanies a completed admission failure with complete zero-step evidence"
                 } else {
                     "billing evidence or complete zero-step observations are insufficient for fallback"
@@ -271,8 +276,8 @@ pub(crate) fn classify_admission_failure(
         Some(PlatformDiagnosticKind::RunnerLabelOrCapacity) => {
             return AdmissionClassification::explicit(
                 AdmissionFailureKind::RunnerLabelOrCapacity,
-                terminal && observation_complete,
-                if terminal && observation_complete {
+                terminal && observation_complete && trusted_fallback_source,
+                if terminal && observation_complete && trusted_fallback_source {
                     "an authorized runner diagnostic accompanies a completed admission failure with complete zero-step evidence"
                 } else {
                     "runner evidence or complete zero-step observations are insufficient for fallback"
@@ -306,7 +311,7 @@ mod tests {
     use super::*;
 
     const BILLING: PlatformDiagnostic<'static> = PlatformDiagnostic {
-        source: PlatformDiagnosticSource::CheckRunAnnotation,
+        source: PlatformDiagnosticSource::AuthorizedActionsApi,
         kind: PlatformDiagnosticKind::BillingOrSpending,
         evidence_ref: "https://api.github.test/check-runs/42/annotations/1",
     };
@@ -335,6 +340,22 @@ mod tests {
         assert!(result.fallback_allowed);
         assert_eq!(result.kind.as_str(), "billing_or_spending");
         assert!(!result.reason.is_empty());
+    }
+
+    #[test]
+    fn application_check_annotation_cannot_authorize_fallback() {
+        for kind in [
+            PlatformDiagnosticKind::BillingOrSpending,
+            PlatformDiagnosticKind::RunnerLabelOrCapacity,
+        ] {
+            let annotation = PlatformDiagnostic {
+                source: PlatformDiagnosticSource::CheckRunAnnotation,
+                kind,
+                evidence_ref: "check-run:42:app-authored",
+            };
+            let result = classify_admission_failure(&failed(&[annotation]));
+            assert!(!result.fallback_allowed, "{kind:?}");
+        }
     }
 
     #[test]
