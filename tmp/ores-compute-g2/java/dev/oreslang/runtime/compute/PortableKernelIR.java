@@ -44,11 +44,11 @@ public final class PortableKernelIR {
                 throw new IllegalArgumentException("invalid AoSoA lane count");
             }
             // Force construction-time overflow validation.
-            byteLength(layout, rows, fields, scalarBytes, alignment, lanes);
+            PortableKernelIR.byteLength(layout, rows, fields, scalarBytes, alignment, lanes);
         }
 
         public long byteLength() {
-            return byteLength(layout, rows, fields, scalarBytes, alignment, lanes);
+            return PortableKernelIR.byteLength(layout, rows, fields, scalarBytes, alignment, lanes);
         }
 
         public long byteOffset(long row, int field) {
