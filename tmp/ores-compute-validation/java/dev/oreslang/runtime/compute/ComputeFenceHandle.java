@@ -2,7 +2,7 @@ package dev.oreslang.runtime.compute;
 
 /** Unforgeable runtime transfer receipt. Cancellation is not completion. */
 public final class ComputeFenceHandle {
-    public enum Direction { UPLOAD, DOWNLOAD }
+    public enum Direction { UPLOAD, DOWNLOAD, KERNEL_INPUT, KERNEL_OUTPUT }
 
     private final ComputeDeviceHandle device;
     private final long allocationGeneration;
