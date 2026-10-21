@@ -21,13 +21,19 @@ public final class TrustedOpenClProviderSmoke {
         boolean failUpload;
         boolean failKernel;
         boolean failReleaseBufferOnce;
+        boolean failReleaseProgramOnce;
         final Deque<TrustedOpenClProvider.EventStatus> statuses = new ArrayDeque<>();
         EventHandle lastEvent;
 
         public TrustedOpenClProvider.Program prepare(OpenClArtifact artifact) {
             return new ProgramHandle();
         }
-        public void releaseProgram(TrustedOpenClProvider.Program program) {}
+        public void releaseProgram(TrustedOpenClProvider.Program program) {
+            if (failReleaseProgramOnce) {
+                failReleaseProgramOnce = false;
+                throw new IllegalStateException("program release failed");
+            }
+        }
         public TrustedOpenClProvider.PhysicalBuffer allocate(long bytes) {
             return new BufferHandle(Math.toIntExact(bytes));
         }
@@ -76,6 +82,7 @@ public final class TrustedOpenClProviderSmoke {
 
     private record Fixture(
             ComputeDeviceHandle device,
+            ComputeQueueHandle queue,
             ComputeBufferHandle<Byte> input,
             ComputeBufferHandle<Byte> output,
             Plan plan,
@@ -84,6 +91,7 @@ public final class TrustedOpenClProviderSmoke {
 
     private static Fixture fixture() {
         var device = ComputeAuthority.issueDevice("opencl", "gpu0", 1, "tenant-a");
+        var queue = ComputeAuthority.issueQueue(device, 1);
         var plan = new Plan(Layout.AOS, 4, 2, 4, 16, 1);
         var kernel = new Kernel(plan, Element.F32, Operation.SCALE_BIAS, 1.5f, -2.0f);
         long bytes = plan.byteLength();
@@ -91,7 +99,7 @@ public final class TrustedOpenClProviderSmoke {
         var output = ComputeAuthority.<Byte>bindBuffer(device, 102, bytes, 16, "f32", "actor:1");
         byte[] host = new byte[Math.toIntExact(bytes)];
         for (int i = 0; i < host.length; i++) host[i] = (byte) i;
-        return new Fixture(device, input, output, plan, kernel, host);
+        return new Fixture(device, queue, input, output, plan, kernel, host);
     }
 
     private static TrustedOpenClProvider provider(Driver driver, Fixture f) {
@@ -99,11 +107,9 @@ public final class TrustedOpenClProviderSmoke {
         return new TrustedOpenClProvider(
                 driver,
                 new TrustedOpenClProvider.Limits(bytes * 4, bytes * 4, 4, 4),
-                f.device);
-    }
-
-    private static GpuTarget target(Fixture f) {
-        return new GpuTarget(64, f.plan.byteLength() * 2, 100, true);
+                f.queue,
+                new TrustedOpenClProvider.DeviceProfile(
+                        1, 64, bytes * 2, 100, true, true));
     }
 
     private static void expectFailure(Runnable action, String message) {
@@ -120,7 +126,7 @@ public final class TrustedOpenClProviderSmoke {
             var f = fixture();
             var driver = new Driver();
             var provider = provider(driver, f);
-            var prepared = provider.prepare(f.kernel, target(f));
+            var prepared = provider.prepare(f.kernel);
             var operation = provider.begin(prepared, f.input, f.output, "actor:1", f.host);
             expectFailure(prepared::close, "prepared kernel closed while active");
             if (provider.poll(operation) != TrustedOpenClProvider.OperationState.KERNEL_SUBMITTED)
@@ -143,7 +149,7 @@ public final class TrustedOpenClProviderSmoke {
             var driver = new Driver();
             driver.failUpload = true;
             var provider = provider(driver, f);
-            var prepared = provider.prepare(f.kernel, target(f));
+            var prepared = provider.prepare(f.kernel);
             expectFailure(
                     () -> provider.begin(prepared, f.input, f.output, "actor:1", f.host),
                     "first enqueue failure accepted");
@@ -160,7 +166,7 @@ public final class TrustedOpenClProviderSmoke {
             var driver = new Driver();
             driver.failKernel = true;
             var provider = provider(driver, f);
-            var prepared = provider.prepare(f.kernel, target(f));
+            var prepared = provider.prepare(f.kernel);
             var operation = provider.begin(prepared, f.input, f.output, "actor:1", f.host);
             expectFailure(() -> provider.poll(operation), "post-submit kernel failure accepted");
             if (f.input.state() != ComputeBufferHandle.State.POISONED
@@ -176,7 +182,7 @@ public final class TrustedOpenClProviderSmoke {
             var driver = new Driver();
             driver.statuses.add(TrustedOpenClProvider.EventStatus.PENDING);
             var provider = provider(driver, f);
-            var prepared = provider.prepare(f.kernel, target(f));
+            var prepared = provider.prepare(f.kernel);
             var operation = provider.begin(prepared, f.input, f.output, "actor:1", f.host);
             provider.requestTimeoutCancellation(operation);
             var before = provider.usage();
@@ -196,7 +202,7 @@ public final class TrustedOpenClProviderSmoke {
             var f = fixture();
             var driver = new Driver();
             var provider = provider(driver, f);
-            var prepared = provider.prepare(f.kernel, target(f));
+            var prepared = provider.prepare(f.kernel);
             var operation = provider.begin(prepared, f.input, f.output, "actor:1", f.host);
             provider.poll(operation);
             provider.poll(operation);
@@ -209,6 +215,35 @@ public final class TrustedOpenClProviderSmoke {
             provider.retryRelease(operation);
             if (operation.state() != TrustedOpenClProvider.OperationState.SUCCEEDED)
                 throw new AssertionError("release retry did not restore terminal state");
+            prepared.close();
+        }
+
+        {
+            var f = fixture();
+            var driver = new Driver();
+            driver.failUpload = true;
+            driver.failReleaseBufferOnce = true;
+            var provider = provider(driver, f);
+            var prepared = provider.prepare(f.kernel);
+            expectFailure(
+                    () -> provider.begin(prepared, f.input, f.output, "actor:1", f.host),
+                    "pre-enqueue physical cleanup failure was hidden");
+            if (provider.usage().residentBytes() == 0)
+                throw new AssertionError("pre-enqueue release failure dropped quota authority");
+            expectFailure(prepared::close, "prepared kernel lost recovery pin");
+            provider.retryPreEnqueueCleanup();
+            if (!provider.usage().equals(new TrustedOpenClProvider.Usage(0, 0, 0, 0)))
+                throw new AssertionError("pre-enqueue recovery retry leaked quota");
+            prepared.close();
+        }
+
+        {
+            var f = fixture();
+            var driver = new Driver();
+            driver.failReleaseProgramOnce = true;
+            var provider = provider(driver, f);
+            var prepared = provider.prepare(f.kernel);
+            expectFailure(prepared::close, "program release failure was hidden");
             prepared.close();
         }
 
