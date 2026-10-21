@@ -65,3 +65,22 @@ assert kernel["gpuLowering"]["nativeEmitterImplemented"] is True
 assert kernel["gpuLowering"]["exactArtifactParityRequired"] is True
 assert kernel["promotion"]["requiresJavaNativeOpenClArtifactParity"] is True
 print("portable-compute-kernel-g2-contract-ok")
+
+provider = json.loads((root / "contract" / "portable-compute-provider.json").read_text(encoding="utf-8"))
+assert provider["gate"] == "G3"
+assert provider["trustedRuntimeOnly"] is True
+assert provider["sourceSyntaxEnabled"] is False
+assert provider["implicitCpuFallback"] is False
+assert provider["physicalProvider"]["backend"] == "opencl-1.2"
+assert provider["physicalProvider"]["guestCanLoadProvider"] is False
+assert provider["physicalProvider"]["opaquePhysicalAllocationCapabilities"] is True
+assert provider["quotas"]["reserveBeforeFenceClaim"] is True
+assert provider["quotas"]["residentReleaseAfterPhysicalRelease"] is True
+assert provider["submissionRules"]["markSubmittedOnlyAfterDurableEnqueue"] is True
+assert provider["submissionRules"]["preEnqueueFailureUsesExactAbort"] is True
+assert provider["submissionRules"]["submittedWorkCannotUseAbort"] is True
+assert provider["submissionRules"]["cancellationImpliesQuiescence"] is False
+assert provider["submissionRules"]["timeoutDoesNotFreeDeviceMemory"] is True
+assert provider["testing"]["mockProviderSuccessIsNotGpuExecutionEvidence"] is True
+assert provider["testing"]["realGpuExecutionEvidenceRequiresDeviceEvent"] is True
+print("portable-compute-provider-g3-contract-ok")
