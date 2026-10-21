@@ -280,6 +280,20 @@ async fn maybe_handle_github_recovery(
             )
                 .into_response(),
         ),
+        recovery::RecoveryOutcome::Contradictory { key, receipt } => Some(
+            (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "contradictory GitHub recovery observation for canonical run identity",
+                    "action": "recovery-conflict",
+                    "recoveryKey": key,
+                    "classification": receipt.classification.kind.as_str(),
+                    "fallbackEligible": false,
+                    "dispatch": false
+                })),
+            )
+                .into_response(),
+        ),
     }
 }
 
