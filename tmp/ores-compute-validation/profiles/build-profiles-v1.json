@@ -78,7 +78,8 @@
       "sourceForgeableAuthority": "forbidden",
       "cancellationQuiescence": "verified-fence-only",
       "strictAotKernelVariants": "precompiled-only",
-      "hardRtResourceBounds": "required"
+      "hardRtResourceBounds": "required",
+      "hardRtProviderCompilation": "forbidden-in-execution-phase"
     }
   }
 }
