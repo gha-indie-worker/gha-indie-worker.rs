@@ -140,6 +140,12 @@ fn rule_matches(rule: &WebhookRule, event: &str, repo: &str, git_ref: &str) -> b
     }
 }
 
+fn recovery_observation_allowed(rules: &[WebhookRule], repo: &str, git_ref: &str) -> bool {
+    rules
+        .iter()
+        .any(|rule| rule_matches(rule, "workflow_run", repo, git_ref))
+}
+
 fn build_request_from_rule(
     rule: &WebhookRule,
     repo: &str,
@@ -183,6 +189,23 @@ async fn observe_failed_workflow_run(state: &AppState, payload: &serde_json::Val
         return;
     }
     let run = payload.get("workflow_run").cloned().unwrap_or_default();
+    if let Some(run_repo) = run
+        .pointer("/repository/full_name")
+        .and_then(serde_json::Value::as_str)
+    {
+        if !run_repo.eq_ignore_ascii_case(repo) {
+            state
+                .counters
+                .recovery_observation_failures
+                .fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(
+                outer_repo = repo,
+                workflow_run_repo = run_repo,
+                "recovery observation denied: webhook repository identity mismatch"
+            );
+            return;
+        }
+    }
     let conclusion = run
         .get("conclusion")
         .and_then(serde_json::Value::as_str)
@@ -339,11 +362,6 @@ pub async fn github_webhook(
         .unwrap_or_default()
         .to_string();
 
-    #[cfg(not(test))]
-    if event == "workflow_run" {
-        observe_failed_workflow_run(&state, &payload, &repo).await;
-    }
-
     let (git_ref, sha, actionable) = match event.as_str() {
         "push" => {
             let git_ref = payload
@@ -418,6 +436,13 @@ pub async fn github_webhook(
             // Fail open: Postgres dedupe above remains the local guard.
             tracing::warn!("webhook idempotency claim failed (continuing): {error}");
         }
+    }
+
+    #[cfg(not(test))]
+    if event == "workflow_run"
+        && recovery_observation_allowed(&state.config.webhook_rules, &repo, &git_ref)
+    {
+        observe_failed_workflow_run(&state, &payload, &repo).await;
     }
 
     // `valid_commit_sha` subsumes the empty check and rejects a malformed or
@@ -722,6 +747,43 @@ mod tests {
             Some("flutter-android-debug")
         );
         assert!(profile_request.image.is_empty());
+    }
+
+    #[test]
+    fn recovery_observation_requires_explicit_workflow_run_rule() {
+        let push_only: WebhookRule = serde_json::from_value(json!({
+            "repo": "ORESoftware/example",
+            "branch": "main",
+            "image": "example:{shortSha}"
+        }))
+        .unwrap();
+        let workflow: WebhookRule = serde_json::from_value(json!({
+            "repo": "ORESoftware/example",
+            "branch": "main",
+            "events": ["workflow_run"],
+            "image": "example:{shortSha}"
+        }))
+        .unwrap();
+        assert!(!recovery_observation_allowed(
+            &[push_only],
+            "oresoftware/example",
+            "main"
+        ));
+        assert!(recovery_observation_allowed(
+            &[workflow.clone()],
+            "oresoftware/example",
+            "main"
+        ));
+        assert!(!recovery_observation_allowed(
+            &[workflow.clone()],
+            "other/repo",
+            "main"
+        ));
+        assert!(!recovery_observation_allowed(
+            &[workflow],
+            "oresoftware/example",
+            "dev"
+        ));
     }
 
     #[test]
