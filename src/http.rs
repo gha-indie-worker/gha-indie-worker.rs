@@ -109,7 +109,9 @@ pub(crate) async fn descriptor(State(state): State<AppState>) -> impl IntoRespon
         "webhooks": {
             "github": config.github_webhook_secret.is_some(),
             "registry": config.registry_webhook_secret.is_some(),
-            "rules": config.webhook_rules.len()
+            "rules": config.webhook_rules.len(),
+            "actionsRecoveryObserver": config.github_actions_observer_enabled,
+            "actionsRecoveryObserverCredential": config.github_actions_observer_token.is_some()
         },
         "secretSync": { "enabled": config.gh_sync_enabled, "rules": config.gh_sync_rules.len() }
     }))
@@ -254,6 +256,20 @@ pub(crate) async fn metrics(State(state): State<AppState>) -> impl IntoResponse 
         state.counters.nats_publish_failures.load(Ordering::Relaxed),
         state.counters.gh_secrets_synced.load(Ordering::Relaxed),
         state.counters.gh_secret_sync_failures.load(Ordering::Relaxed),
+    ));
+    body.push_str(&format!(
+        "# HELP dd_build_server_recovery_observations_total Failed workflow runs presented to the read-only recovery observer.\n\
+         # TYPE dd_build_server_recovery_observations_total counter\n\
+         dd_build_server_recovery_observations_total {}\n\
+         # HELP dd_build_server_recovery_observation_failures_total Recovery observations denied due to invalid identity, missing credentials, transport, or malformed evidence.\n\
+         # TYPE dd_build_server_recovery_observation_failures_total counter\n\
+         dd_build_server_recovery_observation_failures_total {}\n\
+         # HELP dd_build_server_recovery_candidates_total Observer receipts whose classifier marked fallback eligible; observation never dispatches them.\n\
+         # TYPE dd_build_server_recovery_candidates_total counter\n\
+         dd_build_server_recovery_candidates_total {}\n",
+        state.counters.recovery_observations.load(Ordering::Relaxed),
+        state.counters.recovery_observation_failures.load(Ordering::Relaxed),
+        state.counters.recovery_candidates.load(Ordering::Relaxed),
     ));
     body.push_str(&format!(
         "# HELP dd_build_server_dependencies_ready Whether auth, work storage, and required build tools are available.\n\
