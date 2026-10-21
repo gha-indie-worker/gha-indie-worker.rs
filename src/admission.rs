@@ -74,11 +74,31 @@ impl PlatformDiagnosticKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PlatformDiagnostic<'a> {
-    pub(crate) source: PlatformDiagnosticSource,
-    pub(crate) kind: PlatformDiagnosticKind,
-    /// Stable provider evidence reference (for example, a check-run annotation
-    /// URL or an authorized API resource ID), never a log body or secret.
-    pub(crate) evidence_ref: &'a str,
+    // These fields must NOT be crate-visible: otherwise any caller can claim
+    // AuthorizedActionsApi provenance and authorize an unsafe fallback.
+    // A production issuer must only be added here alongside a verified,
+    // identity-bound GitHub API response adapter, never from caller text.
+    source: PlatformDiagnosticSource,
+    kind: PlatformDiagnosticKind,
+    /// Stable provider evidence reference, never a log body or secret.
+    evidence_ref: &'a str,
+}
+
+// Test-only issuer preserves exhaustive model fixtures without providing a
+// production capability for manufacturing trusted platform diagnostics.
+#[cfg(test)]
+impl<'a> PlatformDiagnostic<'a> {
+    pub(crate) const fn synthetic_for_test(
+        source: PlatformDiagnosticSource,
+        kind: PlatformDiagnosticKind,
+        evidence_ref: &'a str,
+    ) -> Self {
+        Self {
+            source,
+            kind,
+            evidence_ref,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
