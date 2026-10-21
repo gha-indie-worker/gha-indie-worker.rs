@@ -244,3 +244,38 @@ pub async fn recent_secret_sync_runs(
             Vec::new()
         })
 }
+
+
+/// Durable recovery audit. Unlike normal webhook intake, a database error
+/// must never be treated as a fresh delivery. The existing unique index on
+/// (provider, delivery_id) fences concurrent replicas and webhook replays.
+pub(crate) async fn record_recovery_denial(
+    db: &DatabaseConnection,
+    delivery_id: &str,
+    repo: &str,
+    head_sha: &str,
+    action: &str,
+) -> Result<bool, sea_orm::DbErr> {
+    let model = webhook_deliveries::ActiveModel {
+        provider: Set("github-recovery-observer".to_string()),
+        delivery_id: Set(delivery_id.to_string()),
+        event_kind: Set(Some("run_observation".to_string())),
+        repo: Set(Some(repo.to_string())),
+        git_ref: Set(Some(head_sha.to_string())),
+        action: Set(action.to_string()),
+        ..Default::default()
+    };
+    let inserted = webhook_deliveries::Entity::insert(model)
+        .on_conflict(
+            OnConflict::columns([
+                webhook_deliveries::Column::Provider,
+                webhook_deliveries::Column::DeliveryId,
+            ])
+            .do_nothing()
+            .to_owned(),
+        )
+        .do_nothing()
+        .exec(db)
+        .await?;
+    Ok(matches!(inserted, sea_orm::TryInsertResult::Inserted(_)))
+}
