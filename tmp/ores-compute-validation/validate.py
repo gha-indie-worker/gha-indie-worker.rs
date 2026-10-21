@@ -90,10 +90,20 @@ assert provider["physicalProvider"]["providerReleaseRetryable"] is True
 assert provider["submissionRules"]["preEnqueueCleanupFailureRetainsRecoveryAuthority"] is True
 assert provider["submissionRules"]["preEnqueueCleanupRetryRequired"] is True
 assert provider["submissionRules"]["programReleaseFailureRetainsPreparedAuthority"] is True
+assert provider["submissionRules"]["deviceLossDoesNotImplyQuiescence"] is True
+assert provider["submissionRules"]["deviceLossRecoveryRequiresProviderProof"] is True
+assert provider["submissionRules"]["deviceLossRetainsQuotaUntilRecovery"] is True
+assert provider["submissionRules"]["providerRetainsSubmittedOperationAuthority"] is True
+assert provider["submissionRules"]["callerHandleDropCannotReleasePhysicalResources"] is True
 assert provider["testing"]["preEnqueueReleaseFailureRecoveryRequired"] is True
 assert provider["testing"]["programReleaseRetryRequired"] is True
 assert provider["testing"]["queueAuthorityForgeryRequired"] is True
+assert provider["testing"]["deviceLossRecoveryFailureRetainsResources"] is True
+assert provider["testing"]["deviceLossRecoverySuccessRequired"] is True
+assert provider["testing"]["callerHandleDropRetentionRequired"] is True
 assert provider["promotion"]["requiresArtifactAbiProviderValidation"] is True
 assert provider["promotion"]["requiresRecoverablePreEnqueueCleanup"] is True
 assert provider["promotion"]["requiresOpaqueJavaQueueAuthority"] is True
+assert provider["promotion"]["requiresDeviceLossQuiescenceProof"] is True
+assert provider["promotion"]["requiresProviderOwnedActiveOperationRegistry"] is True
 print("portable-compute-provider-g3-contract-ok")
