@@ -1,0 +1,179 @@
+name: Oreslang generation restart source-free oracle
+on:
+  push:
+    branches: [test/oreslang-generation-restart-oracle-20261020]
+  workflow_dispatch:
+permissions: {}
+jobs:
+  public-reference-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Run independent generation/restart reference
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_OS" = Linux
+          echo "SOURCE_FREE_ONLY: no checkout, no tokens, no cross-org private source"
+          python3 - <<'PY'
+          import random
+          import threading
+          import uuid
+
+          class RestartPermit:
+              def __init__(self, actor_id, generation):
+                  self.actor_id = actor_id
+                  self.generation = generation
+                  self._lock = threading.Lock()
+                  self._consumed = False
+              def consume(self):
+                  with self._lock:
+                      if self._consumed:
+                          return False
+                      self._consumed = True
+                      return True
+
+          class Supervisor:
+              def __init__(self):
+                  self.lock = threading.Lock()
+                  self.pending = {}
+                  self.next_generation = 1
+              def fail(self, actor_id, generation):
+                  with self.lock:
+                      assert actor_id not in self.pending
+                      self.pending[actor_id] = {
+                          "generation": generation,
+                          "done": False,
+                          "observers_retired": False,
+                      }
+              def retire(self, actor_id):
+                  with self.lock:
+                      p = self.pending[actor_id]
+                      p["done"] = True
+                      p["observers_retired"] = True
+              def permit(self, actor_id, generation):
+                  with self.lock:
+                      p = self.pending.get(actor_id)
+                      if (
+                          p is None
+                          or p["generation"] != generation
+                          or not p["done"]
+                          or not p["observers_retired"]
+                      ):
+                          return None
+                      del self.pending[actor_id]
+                      return RestartPermit(actor_id, generation)
+              def restart(self, permit):
+                  assert permit.consume(), "restart permit reused"
+                  with self.lock:
+                      generation = max(self.next_generation, permit.generation + 1)
+                      self.next_generation = generation + 1
+                  return str(uuid.uuid4()), generation
+
+          class NativeRegistry:
+              def __init__(self):
+                  self.lock = threading.Lock()
+                  self.live = {}
+                  self.high = {}
+              def adopt(self, runtime, actor, generation, group):
+                  key = (runtime, actor)
+                  with self.lock:
+                      if key in self.live:
+                          return None
+                      if generation <= self.high.get(key, 0):
+                          return None
+                      ticket = object()
+                      self.high[key] = generation
+                      self.live[key] = (generation, group, ticket)
+                      return (runtime, actor, generation, ticket)
+              def finalize(self, ref):
+                  runtime, actor, generation, ticket = ref
+                  key = (runtime, actor)
+                  with self.lock:
+                      current = self.live.get(key)
+                      if current != (generation, current[1], ticket) if current else True:
+                          return False
+                      if current is None or current[0] != generation or current[2] is not ticket:
+                          return False
+                      del self.live[key]
+                      return True
+              def touches(self, ref):
+                  runtime, actor, generation, ticket = ref
+                  with self.lock:
+                      current = self.live.get((runtime, actor))
+                      return (
+                          current is not None
+                          and current[0] == generation
+                          and current[2] is ticket
+                      )
+
+          # Deterministic Java-style restart barrier.
+          sup = Supervisor()
+          old_id = str(uuid.uuid4())
+          sup.fail(old_id, 41)
+          assert sup.permit(old_id, 42) is None
+          assert sup.permit(old_id, 41) is None
+          sup.retire(old_id)
+          permit = sup.permit(old_id, 41)
+          assert permit is not None
+          new_id, new_generation = sup.restart(permit)
+          assert new_id != old_id
+          assert new_generation > 41
+          try:
+              sup.restart(permit)
+              raise AssertionError("restart permit was reusable")
+          except AssertionError as exc:
+              if str(exc) != "restart permit reused":
+                  raise
+
+          # Deterministic native high-water and stale-ref fencing.
+          reg = NativeRegistry()
+          old = reg.adopt(7, 99, 5, 1)
+          assert old is not None and reg.touches(old)
+          assert reg.finalize(old)
+          assert reg.adopt(7, 99, 5, 2) is None
+          assert reg.adopt(7, 99, 4, 2) is None
+          new = reg.adopt(7, 99, 6, 2)
+          assert new is not None
+          assert not reg.touches(old)
+          assert reg.touches(new)
+          assert not reg.finalize(old)
+          assert reg.finalize(new)
+
+          # Stress both state machines.
+          rng = random.Random(20261020)
+          for i in range(50000):
+              sup = Supervisor()
+              failed_id = str(uuid.uuid4())
+              failed_generation = rng.randrange(1, 1_000_000)
+              sup.fail(failed_id, failed_generation)
+              assert sup.permit(failed_id, failed_generation) is None
+              sup.retire(failed_id)
+              p = sup.permit(failed_id, failed_generation)
+              assert p is not None
+              replacement_id, replacement_generation = sup.restart(p)
+              assert replacement_id != failed_id
+              assert replacement_generation > failed_generation
+
+              reg = NativeRegistry()
+              runtime = rng.randrange(1, 1000)
+              actor = rng.randrange(1, 1000)
+              generation = rng.randrange(1, 1_000_000)
+              a = reg.adopt(runtime, actor, generation, 1)
+              assert a is not None
+              assert reg.finalize(a)
+              assert reg.adopt(runtime, actor, generation, 2) is None
+              b = reg.adopt(runtime, actor, generation + 1, 2)
+              assert b is not None
+              assert not reg.touches(a)
+              assert reg.touches(b)
+              assert reg.finalize(b)
+
+          print("PASS SOURCE-FREE generation/restart oracle: 50000 cycles")
+          print("PASS restart permit unavailable before DONE/observer retirement")
+          print("PASS restart permit is exact-generation and one-shot")
+          print("PASS replacement identity is fresh and generation advances")
+          print("PASS retired native wire generations can never be re-adopted")
+          print("PASS stale refs cannot mutate a newer incarnation")
+          print("NOT an Oreslang source, Java, LLVM, compiler, or exact-tree test")
+          PY
