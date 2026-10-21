@@ -9,22 +9,43 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ores-compute-stdlib-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - name: Check out exact candidate without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          distribution: temurin
-          java-version: '21'
-      - name: Compile mirrored Java compute SPI
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          show-progress: false
+          submodules: false
+      - name: Assert exact head
+        shell: bash
         run: |
+          set -euo pipefail
+          expected='${{ github.event.pull_request.head.sha || github.sha }}'
+          test "$(git rev-parse HEAD)" = "$expected"
+          git diff --check
+      - name: Compile mirrored Java compute SPI
+        shell: bash
+        run: |
+          set -euo pipefail
+          javac -version
           mkdir -p tmp/ores-compute-validation/out
           javac -d tmp/ores-compute-validation/out             tmp/ores-compute-validation/java/dev/oreslang/runtime/compute/*.java
       - name: Run provider-registry smoke
+        shell: bash
         run: |
+          set -euo pipefail
           java -cp tmp/ores-compute-validation/out             dev.oreslang.runtime.compute.ComputeRegistrySmoke
       - name: Validate portable stdlib contract
-        run: python3 tmp/ores-compute-validation/validate.py
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tmp/ores-compute-validation/validate.py
