@@ -1,0 +1,170 @@
+name: Oreslang DONE stop-return source-free oracle
+on:
+  push:
+    branches: [test/oreslang-done-stop-barrier-oracle-20261020]
+  workflow_dispatch:
+permissions: {}
+jobs:
+  public-reference-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Run independent DONE/quiescence reference
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_OS" = Linux
+          echo "SOURCE_FREE_ONLY: no checkout, no tokens, no cross-org private source"
+          python3 - <<'PY'
+          import random
+          import threading
+          import time
+
+          class Ticket:
+              def __init__(self):
+                  self.lock = threading.Lock()
+                  self.detached = False
+                  self.stop_issued = False
+                  self.stop_returned = False
+                  self.logical_turn = False
+                  self.control_active = False
+                  self.control_reserved = False
+                  self.done = False
+
+              def ready_for_reclaim(self):
+                  with self.lock:
+                      return (
+                          self.detached
+                          and self.stop_returned
+                          and not self.logical_turn
+                          and not self.control_active
+                          and not self.control_reserved
+                          and not self.done
+                      )
+
+              def finalize_after_close(self):
+                  with self.lock:
+                      if not (
+                          self.detached
+                          and self.stop_returned
+                          and not self.logical_turn
+                          and not self.control_active
+                          and not self.control_reserved
+                          and not self.done
+                      ):
+                          return False
+                      self.done = True
+                      return True
+
+              def close_and_dispatch_stop(self, entered, release, throw=False):
+                  with self.lock:
+                      self.detached = True
+                      if self.stop_issued:
+                          return
+                      self.stop_issued = True
+                  entered.set()
+                  try:
+                      if not release.wait(5):
+                          raise AssertionError("stop release timeout")
+                      if throw:
+                          raise RuntimeError("stop callback failure")
+                  except RuntimeError:
+                      pass
+                  finally:
+                      with self.lock:
+                          self.stop_returned = True
+
+          # Deterministic pre-dispatch/active-stop barrier.
+          t = Ticket()
+          entered = threading.Event()
+          release = threading.Event()
+          closer = threading.Thread(
+              target=t.close_and_dispatch_stop,
+              args=(entered, release),
+              daemon=True,
+          )
+          closer.start()
+          assert entered.wait(5)
+          assert t.detached and t.stop_issued and not t.stop_returned
+          assert not t.ready_for_reclaim()
+          assert not t.finalize_after_close()
+          assert not t.done
+          release.set()
+          closer.join(5)
+          assert not closer.is_alive()
+          assert t.ready_for_reclaim()
+          assert t.finalize_after_close()
+          assert t.done
+          assert not t.finalize_after_close()
+
+          # Exceptional stop return still retires callback authority.
+          t = Ticket()
+          entered = threading.Event()
+          release = threading.Event()
+          release.set()
+          t.close_and_dispatch_stop(entered, release, throw=True)
+          assert t.stop_returned
+          assert t.finalize_after_close()
+
+          # CONTROL and ordinary turns remain additional quiescence barriers.
+          for field in ("logical_turn", "control_active", "control_reserved"):
+              t = Ticket()
+              t.detached = t.stop_issued = t.stop_returned = True
+              setattr(t, field, True)
+              assert not t.ready_for_reclaim()
+              assert not t.finalize_after_close()
+              setattr(t, field, False)
+              assert t.ready_for_reclaim()
+              assert t.finalize_after_close()
+
+          # Randomized close/finalizer races. The finalizer may spin while
+          # detachment is visible, but DONE cannot win until stop returns.
+          rng = random.Random(20261020)
+          for _ in range(20000):
+              t = Ticket()
+              entered = threading.Event()
+              release = threading.Event()
+              retired = threading.Event()
+              early = []
+
+              def close():
+                  t.close_and_dispatch_stop(entered, release)
+
+              def finalize():
+                  while not retired.is_set():
+                      if t.finalize_after_close():
+                          with t.lock:
+                              if not t.stop_returned:
+                                  early.append("DONE before stop return")
+                          retired.set()
+                          return
+                      time.sleep(0)
+
+              closer = threading.Thread(target=close, daemon=True)
+              finisher = threading.Thread(target=finalize, daemon=True)
+              if rng.randrange(2):
+                  closer.start(); finisher.start()
+              else:
+                  finisher.start(); closer.start()
+              assert entered.wait(5)
+              # Widen the exact historical race: detached=true while callback
+              # remains in flight.
+              for _spin in range(rng.randrange(1, 8)):
+                  time.sleep(0)
+                  assert not t.done
+              release.set()
+              closer.join(5)
+              assert not closer.is_alive()
+              finisher.join(5)
+              assert not finisher.is_alive()
+              assert retired.is_set()
+              assert not early
+              assert t.done
+
+          print("PASS SOURCE-FREE DONE/stop barrier oracle: 20000 close/finalizer races")
+          print("PASS detachment alone never authorizes reclamation")
+          print("PASS DONE remains pending while stop callback is executing")
+          print("PASS exceptional stop return cannot strand the barrier")
+          print("PASS logical/user/CONTROL activity remains fenced")
+          print("NOT an Oreslang source, LLVM, C++, CMake, sanitizer, or exact-tree test")
+          PY
