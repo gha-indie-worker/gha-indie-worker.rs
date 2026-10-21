@@ -69,6 +69,12 @@ pub(crate) struct Config {
     pub(crate) github_webhook_secret: Option<String>,
     pub(crate) registry_webhook_secret: Option<String>,
     pub(crate) webhook_rules: Vec<webhooks::WebhookRule>,
+    /// Enables read-only observation of failed GitHub Actions runs.
+    /// This path never dispatches fallback work.
+    pub(crate) github_actions_observer_enabled: bool,
+    /// Dedicated read-scoped token for Actions run/job observation. Deliberately
+    /// does not fall back to GH_PAT/GITHUB_TOKEN or the secret-sync credential.
+    pub(crate) github_actions_observer_token: Option<String>,
 
     // --- GitHub Actions secret sync (see src/gh_secrets.rs) ---
     pub(crate) gh_sync_enabled: bool,
@@ -298,6 +304,13 @@ pub(crate) fn config_from_env() -> Config {
         github_webhook_secret: first_env(&["BUILD_SERVER_GITHUB_WEBHOOK_SECRET"]),
         registry_webhook_secret: first_env(&["BUILD_SERVER_REGISTRY_WEBHOOK_SECRET"]),
         webhook_rules,
+        github_actions_observer_enabled: env_bool(
+            "BUILD_SERVER_GITHUB_ACTIONS_OBSERVER_ENABLED",
+            false,
+        ),
+        github_actions_observer_token: first_env(&[
+            "BUILD_SERVER_GITHUB_ACTIONS_OBSERVER_TOKEN",
+        ]),
 
         gh_sync_enabled: env_bool("BUILD_SERVER_GH_SYNC_ENABLED", false),
         gh_sync_token: first_env(&["GH_SECRETS_SYNC_TOKEN", "GH_PAT", "GITHUB_TOKEN"]),
