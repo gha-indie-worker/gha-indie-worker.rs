@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "namespace": "std/compute",
+  "gate": "G1",
+  "sourceConstructibleHandles": false,
+  "handles": {
+    "Device": {
+      "sealed": true,
+      "identity": ["backendId", "deviceId", "providerGeneration", "tenantDomain"]
+    },
+    "Buffer<T>": {
+      "sealed": true,
+      "affineInSource": true,
+      "identity": ["deviceAuthority", "allocationGeneration", "ownerDomain"],
+      "metadata": ["byteLength", "alignment", "typeTag"],
+      "states": ["idle", "in-flight", "poisoned", "retired"]
+    },
+    "Fence": {
+      "sealed": true,
+      "identity": ["deviceAuthority", "allocationGeneration", "sequence", "direction", "opaqueProof"]
+    },
+    "KernelContext": {
+      "sealed": true,
+      "construction": "compiler-runtime-injected-only"
+    }
+  },
+  "transfers": {
+    "operations": ["upload", "download"],
+    "explicitOnly": true,
+    "implicitTransfer": false,
+    "implicitCpuFallback": false,
+    "positiveLengthRequired": true,
+    "checkedBoundsRequired": true,
+    "crossDeviceForbidden": true,
+    "crossOwnerDomainForbidden": true,
+    "staleGenerationForbidden": true,
+    "completionFenceRequired": true,
+    "cancellationImpliesQuiescence": false,
+    "reclaimRequiresVerifiedQuiescence": true
+  },
+  "generationRules": {
+    "providerGenerationNonzero": true,
+    "allocationGenerationNonzero": true,
+    "sequenceOverflowFailsClosed": true
+  },
+  "authorityRules": {
+    "numericIdsAreNotCapabilities": true,
+    "metadataDescriptorsAreNotCapabilities": true,
+    "runtimeHandleAliasingMustNotDuplicateInFlightAuthority": true
+  }
+}
