@@ -19,7 +19,8 @@ use sea_orm::{
 };
 use std::time::Duration;
 
-use crate::entity::{build_jobs, gh_secret_sync_runs, webhook_deliveries};
+use crate::admission::{AdmissionEvidenceConfidence, RunReceipt};
+use crate::entity::{build_jobs, gh_secret_sync_runs, gha_recovery_runs, webhook_deliveries};
 use crate::{BuildJobRecord, BuildStatus};
 
 pub async fn connect(database_url: &str) -> Result<DatabaseConnection, sea_orm::DbErr> {
@@ -191,30 +192,71 @@ pub async fn record_webhook_delivery(
     }
 }
 
-/// Strict recovery receipt insert. Unlike ordinary webhook intake, any database
-/// error is returned to the caller so recovery remains fail-closed and retryable.
-/// The unique (provider, delivery_id) key is the durable identity claim.
-pub async fn record_recovery_receipt_strict(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RecoveryObservationWrite {
+    Inserted,
+    DuplicateIdentical,
+    Contradictory,
+}
+
+fn recovery_confidence_label(confidence: AdmissionEvidenceConfidence) -> &'static str {
+    match confidence {
+        AdmissionEvidenceConfidence::Explicit => "explicit",
+        AdmissionEvidenceConfidence::Ambiguous => "ambiguous",
+    }
+}
+
+/// Insert the immutable, normalized recovery observation. Unlike ordinary
+/// webhook persistence this path is fail-closed: database errors are returned.
+///
+/// On a duplicate canonical identity, re-read the existing row and compare the
+/// immutable observation fields. A different observation for the same
+/// repo/run/attempt/SHA is a contradiction, not an idempotent duplicate.
+pub(crate) async fn record_recovery_observation_strict(
     db: &DatabaseConnection,
-    recovery_key: &str,
-    repo: &str,
-    head_sha: &str,
-    action: &str,
-) -> Result<bool, sea_orm::DbErr> {
-    let model = webhook_deliveries::ActiveModel {
-        provider: Set("github-recovery".to_string()),
-        delivery_id: Set(recovery_key.to_string()),
-        event_kind: Set(Some("workflow_run".to_string())),
-        repo: Set(Some(repo.to_string())),
-        git_ref: Set(Some(head_sha.to_string())),
-        action: Set(action.to_string()),
+    receipt: &RunReceipt,
+) -> Result<RecoveryObservationWrite, sea_orm::DbErr> {
+    let run_id = i64::try_from(receipt.identity.run_id)
+        .map_err(|_| sea_orm::DbErr::Custom("GitHub run id exceeds bigint".to_string()))?;
+    let run_attempt = i64::try_from(receipt.identity.attempt)
+        .map_err(|_| sea_orm::DbErr::Custom("GitHub run attempt exceeds bigint".to_string()))?;
+    let jobs_observed = i32::try_from(receipt.jobs_observed)
+        .map_err(|_| sea_orm::DbErr::Custom("GitHub job count exceeds integer".to_string()))?;
+    let steps_observed = i32::try_from(receipt.steps_observed)
+        .map_err(|_| sea_orm::DbErr::Custom("GitHub step count exceeds integer".to_string()))?;
+
+    let classification = receipt.classification.kind.as_str().to_string();
+    let confidence = recovery_confidence_label(receipt.classification.confidence).to_string();
+
+    let model = gha_recovery_runs::ActiveModel {
+        provider: Set("github".to_string()),
+        repo: Set(receipt.identity.repo.clone()),
+        run_id: Set(run_id),
+        run_attempt: Set(run_attempt),
+        head_sha: Set(receipt.identity.head_sha.clone()),
+        classification: Set(classification.clone()),
+        confidence: Set(confidence.clone()),
+        fallback_allowed: Set(receipt.classification.fallback_allowed),
+        jobs_observed: Set(jobs_observed),
+        steps_observed: Set(steps_observed),
+        runner_assigned: Set(receipt.runner_assigned),
+        evidence_ref: Set(None),
+        reason: Set(Some(receipt.classification.reason.to_string())),
+        state: Set("observed".to_string()),
+        claim_owner: Set(None),
+        fencing_token: Set(None),
+        claimed_at: Set(None),
         ..Default::default()
     };
-    let result = webhook_deliveries::Entity::insert(model)
+
+    let insert = gha_recovery_runs::Entity::insert(model)
         .on_conflict(
             OnConflict::columns([
-                webhook_deliveries::Column::Provider,
-                webhook_deliveries::Column::DeliveryId,
+                gha_recovery_runs::Column::Provider,
+                gha_recovery_runs::Column::Repo,
+                gha_recovery_runs::Column::RunId,
+                gha_recovery_runs::Column::RunAttempt,
+                gha_recovery_runs::Column::HeadSha,
             ])
             .do_nothing()
             .to_owned(),
@@ -222,7 +264,38 @@ pub async fn record_recovery_receipt_strict(
         .do_nothing()
         .exec(db)
         .await?;
-    Ok(matches!(result, sea_orm::TryInsertResult::Inserted(_)))
+
+    if matches!(insert, sea_orm::TryInsertResult::Inserted(_)) {
+        return Ok(RecoveryObservationWrite::Inserted);
+    }
+
+    let existing = gha_recovery_runs::Entity::find()
+        .filter(gha_recovery_runs::Column::Provider.eq("github"))
+        .filter(gha_recovery_runs::Column::Repo.eq(&receipt.identity.repo))
+        .filter(gha_recovery_runs::Column::RunId.eq(run_id))
+        .filter(gha_recovery_runs::Column::RunAttempt.eq(run_attempt))
+        .filter(gha_recovery_runs::Column::HeadSha.eq(&receipt.identity.head_sha))
+        .one(db)
+        .await?
+        .ok_or_else(|| {
+            sea_orm::DbErr::Custom(
+                "recovery identity conflict reported but canonical row was not readable".to_string(),
+            )
+        })?;
+
+    let same_observation = existing.classification == classification
+        && existing.confidence == confidence
+        && existing.fallback_allowed == receipt.classification.fallback_allowed
+        && existing.jobs_observed == jobs_observed
+        && existing.steps_observed == steps_observed
+        && existing.runner_assigned == receipt.runner_assigned
+        && existing.evidence_ref.is_none();
+
+    Ok(if same_observation {
+        RecoveryObservationWrite::DuplicateIdentical
+    } else {
+        RecoveryObservationWrite::Contradictory
+    })
 }
 
 /// Latest synced value hash for a (repo, secret) pair, to skip unchanged values.
