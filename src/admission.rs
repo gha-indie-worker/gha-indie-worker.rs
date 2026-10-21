@@ -14,7 +14,7 @@
 mod github_api;
 
 #[cfg(not(test))]
-pub(crate) use github_api::{inspect_authenticated, ObserveError, RunIdentity, RunReceipt};
+pub(crate) use github_api::{inspect_authenticated, RunIdentity};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AdmissionFailureKind {
