@@ -198,8 +198,8 @@ pub(crate) fn classify_admission_failure(
         .trim()
         .to_ascii_lowercase();
     let steps_started = evidence.steps_observed.is_some_and(|steps| steps > 0);
-    let observation_complete = evidence.jobs_observed.is_some()
-        && evidence.steps_observed == Some(0);
+    let observation_complete =
+        evidence.jobs_observed.is_some() && evidence.steps_observed == Some(0);
 
     let diagnostic = match unique_diagnostic_kind(evidence.platform_diagnostics) {
         Ok(diagnostic) => diagnostic,
