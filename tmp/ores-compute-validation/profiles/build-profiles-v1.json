@@ -83,7 +83,13 @@
       "sourceAcceleratorSyntax": "fail-closed-until-typed-effects",
       "cpuReferenceProvider": "explicit-test-only",
       "kernelIrReflection": "forbidden",
-      "gpuArtifactEmissionEvidence": "not-execution-evidence"
+      "gpuArtifactEmissionEvidence": "not-execution-evidence",
+      "physicalProviderBackend": "opencl-1.2",
+      "physicalProviderGuestLoad": "forbidden",
+      "providerQuotaAuthority": "provider-owned",
+      "providerPreEnqueueAbort": "reserved-only",
+      "realGpuExecutionEvidence": "exact-device-event-plus-download",
+      "hardRtPhysicalProvider": "bounded-certified-only"
     }
   }
 }
