@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "namespace": "std/compute",
+  "layer": "std",
+  "dependencies": [
+    "core"
+  ],
+  "sourceModule": "stdlib/compute.ores",
+  "compilerConstructs": [
+    "kernel",
+    "cpu-region",
+    "gpu-region",
+    "cpu-task",
+    "gpu-task"
+  ],
+  "descriptorTypes": [
+    "DeviceCapabilities",
+    "BufferLayout",
+    "DispatchShape",
+    "KernelRequirements"
+  ],
+  "sealedRuntimeHandles": [
+    "Device",
+    "Buffer<T>",
+    "Fence",
+    "KernelContext"
+  ],
+  "providerDiscovery": "explicit-registration",
+  "implicitTransfers": false,
+  "implicitCpuFallback": false,
+  "runtimeReflectionRequired": false,
+  "cancellationImpliesQuiescence": false,
+  "actorIsolationPreserved": true,
+  "strictAotRuntimeJit": false,
+  "vendorBackends": "optional-userland"
+}
