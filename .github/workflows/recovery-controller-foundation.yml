@@ -74,6 +74,10 @@ jobs:
         run: |
           set -euo pipefail
           grep -Fq 'BUILD_SERVER_GITHUB_ACTIONS_OBSERVER_TOKEN' src/config.rs
+          if grep -Fq 'actionsRecoveryObserverCredential' src/http.rs; then
+            echo 'public descriptor must not expose observer credential presence' >&2
+            exit 1
+          fi
           test "$(grep -h 'github_actions_observer_enabled:' src/config.rs src/http.rs src/jobs.rs | wc -l)" -eq 4
           test "$(grep -h 'github_actions_observer_token:' src/config.rs src/http.rs src/jobs.rs | wc -l)" -eq 4
           grep -Fq 'recovery_observation_allowed' src/webhooks.rs
