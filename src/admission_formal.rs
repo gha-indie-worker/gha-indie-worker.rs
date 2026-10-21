@@ -10,7 +10,7 @@ use admission::{
 };
 
 const BILLING: PlatformDiagnostic<'static> = PlatformDiagnostic {
-    source: PlatformDiagnosticSource::CheckRunAnnotation,
+    source: PlatformDiagnosticSource::AuthorizedActionsApi,
     kind: PlatformDiagnosticKind::BillingOrSpending,
     evidence_ref: "check-run:42:billing",
 };
@@ -271,6 +271,33 @@ fn incomplete_step_and_job_telemetry_never_authorizes_fallback() {
                     jobs_observed.is_some() && steps_observed == Some(0),
                     "{diagnostic:?}, jobs={jobs_observed:?}, steps={steps_observed:?}"
                 );
+            }
+        }
+    }
+}
+
+#[test]
+fn application_authored_annotations_never_authorize_replay() {
+    for kind in [
+        PlatformDiagnosticKind::BillingOrSpending,
+        PlatformDiagnosticKind::RunnerLabelOrCapacity,
+    ] {
+        for jobs in [Some(0), Some(1)] {
+            for steps in [None, Some(0), Some(1)] {
+                let diagnostic = PlatformDiagnostic {
+                    source: PlatformDiagnosticSource::CheckRunAnnotation,
+                    kind,
+                    evidence_ref: "check-run:42:untrusted-app",
+                };
+                let result = classify_admission_failure(&WorkflowAdmissionEvidence {
+                    status: Some("completed"),
+                    conclusion: Some("failure"),
+                    jobs_observed: jobs,
+                    steps_observed: steps,
+                    platform_diagnostics: &[diagnostic],
+                    ..WorkflowAdmissionEvidence::default()
+                });
+                assert!(!result.fallback_allowed, "{kind:?}, {jobs:?}, {steps:?}");
             }
         }
     }
