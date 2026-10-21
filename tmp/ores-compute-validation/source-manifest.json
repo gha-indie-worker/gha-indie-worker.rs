@@ -278,9 +278,9 @@
       "dest": "tmp/ores-compute-validation/cpp/portable_compute_opencl_g2_test.cpp"
     }
   ],
-  "opencl_java_head": "d23d433e4f8964cf917cf0a8045b4230704deaec",
-  "opencl_llvm_head": "b8bcebb98b7e5b66f22ff31f5c1776152097886e",
-  "opencl_common_head": "9f26644e15733bdb82e396f54608579564889c60",
+  "opencl_java_head": "6be59ea96215d7027cc931c8e1108eb3c8a7a650",
+  "opencl_llvm_head": "06e573731b9b324d491ee111c8cb1e850e687780",
+  "opencl_common_head": "e6de5d452d53535794eb01cd70f5cf8eb381bf59",
   "artifact_abi_java_head": "6be59ea96215d7027cc931c8e1108eb3c8a7a650",
   "artifact_abi_llvm_head": "06e573731b9b324d491ee111c8cb1e850e687780",
   "artifact_abi_common_head": "e6de5d452d53535794eb01cd70f5cf8eb381bf59"
