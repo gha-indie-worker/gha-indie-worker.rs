@@ -81,6 +81,34 @@ final class TrustedOpenClProvider {
             int outstandingEvents,
             int queueSlots) {}
 
+    record DeviceProfile(
+            int artifactAbiVersion,
+            int addressBits,
+            long maximumBufferBytes,
+            long maximumRows,
+            boolean float32,
+            boolean littleEndian) {
+        DeviceProfile {
+            if (artifactAbiVersion != 1
+                    || addressBits != 64
+                    || maximumBufferBytes <= 0
+                    || maximumRows <= 0
+                    || !float32
+                    || !littleEndian) {
+                throw new IllegalArgumentException(
+                        "physical OpenCL profile incompatible with portable G3 ABI");
+            }
+        }
+
+        GpuTarget target() {
+            return new GpuTarget(
+                    addressBits,
+                    maximumBufferBytes,
+                    maximumRows,
+                    float32);
+        }
+    }
+
     static final class PreparedKernel implements AutoCloseable {
         private final TrustedOpenClProvider owner;
         private final OpenClArtifact artifact;
@@ -145,9 +173,35 @@ final class TrustedOpenClProvider {
                             "prepared kernel still has active provider operations");
                 }
                 held = program;
+            }
+            // Do not clear authority before physical release succeeds. A
+            // driver release failure leaves close() safely retryable.
+            owner.driver.releaseProgram(held);
+            synchronized (this) {
+                if (program != held) {
+                    throw new IllegalStateException(
+                            "prepared kernel authority changed during release");
+                }
                 program = null;
             }
-            owner.driver.releaseProgram(held);
+        }
+    }
+
+    private static final class PreEnqueueRecovery {
+        private final PreparedKernel prepared;
+        private final Lease lease;
+        private PhysicalBuffer inputPhysical;
+        private PhysicalBuffer outputPhysical;
+
+        private PreEnqueueRecovery(
+                PreparedKernel prepared,
+                Lease lease,
+                PhysicalBuffer inputPhysical,
+                PhysicalBuffer outputPhysical) {
+            this.prepared = prepared;
+            this.lease = lease;
+            this.inputPhysical = inputPhysical;
+            this.outputPhysical = outputPhysical;
         }
     }
 
@@ -215,26 +269,33 @@ final class TrustedOpenClProvider {
 
     private final Driver driver;
     private final Limits limits;
-    private final ComputeDeviceHandle deviceAuthority;
+    private final ComputeQueueHandle queueAuthority;
+    private final DeviceProfile deviceProfile;
+    private final List<Operation> quarantinedOperations;
+    private final List<PreEnqueueRecovery> preEnqueueRecoveries;
 
     private long residentBytes;
     private long pinnedHostBytes;
     private int outstandingEvents;
     private int queueSlots;
-    private final List<Operation> quarantinedOperations = new ArrayList<>();
 
     TrustedOpenClProvider(
             Driver driver,
             Limits limits,
-            ComputeDeviceHandle deviceAuthority) {
+            ComputeQueueHandle queueAuthority,
+            DeviceProfile deviceProfile) {
         this.driver = Objects.requireNonNull(driver, "driver");
         this.limits = Objects.requireNonNull(limits, "limits");
-        this.deviceAuthority = Objects.requireNonNull(
-                deviceAuthority, "deviceAuthority");
+        this.queueAuthority = Objects.requireNonNull(
+                queueAuthority, "queueAuthority");
+        this.deviceProfile = Objects.requireNonNull(
+                deviceProfile, "deviceProfile");
+        this.quarantinedOperations = new ArrayList<>(limits.queueSlots());
+        this.preEnqueueRecoveries = new ArrayList<>(limits.queueSlots());
     }
 
-    PreparedKernel prepare(Kernel kernel, GpuTarget target) {
-        OpenClArtifact artifact = lowerOpenCl(kernel, target);
+    PreparedKernel prepare(Kernel kernel) {
+        OpenClArtifact artifact = lowerOpenCl(kernel, deviceProfile.target());
         Program program = Objects.requireNonNull(
                 driver.prepare(artifact),
                 "OpenCL driver returned null program");
@@ -253,9 +314,10 @@ final class TrustedOpenClProvider {
         Objects.requireNonNull(expectedOwnerDomain, "expectedOwnerDomain");
         Objects.requireNonNull(hostInput, "hostInput");
         synchronized (this) {
-            if (!quarantinedOperations.isEmpty()) {
+            if (!quarantinedOperations.isEmpty()
+                    || !preEnqueueRecoveries.isEmpty()) {
                 throw new IllegalStateException(
-                        "compute provider quarantined after post-enqueue invariant failure");
+                        "compute provider quarantined until physical recovery completes");
             }
         }
 
@@ -296,7 +358,7 @@ final class TrustedOpenClProvider {
             pair = ComputeAuthority.beginKernelPair(
                     input,
                     output,
-                    deviceAuthority,
+                    queueAuthority.deviceAuthority(),
                     expectedOwnerDomain,
                     bytes);
 
@@ -346,11 +408,26 @@ final class TrustedOpenClProvider {
                     failure.addSuppressed(abortFailure);
                 }
             }
-            boolean released = releasePhysicalQuietly(inputPhysical, outputPhysical, failure);
-            if (released) {
+            PhysicalBuffer retainedInput =
+                    releasePhysicalForRecovery(inputPhysical, failure);
+            PhysicalBuffer retainedOutput =
+                    releasePhysicalForRecovery(outputPhysical, failure);
+            if (retainedInput == null && retainedOutput == null) {
                 lease.release();
+                prepared.releaseOperation();
+            } else {
+                synchronized (this) {
+                    if (preEnqueueRecoveries.size() >= limits.queueSlots()) {
+                        throw new IllegalStateException(
+                                "pre-enqueue recovery capacity exhausted", failure);
+                    }
+                    preEnqueueRecoveries.add(new PreEnqueueRecovery(
+                            prepared,
+                            lease,
+                            retainedInput,
+                            retainedOutput));
+                }
             }
-            prepared.releaseOperation();
             throw failure;
         }
     }
@@ -516,6 +593,41 @@ final class TrustedOpenClProvider {
         }
     }
 
+    void retryPreEnqueueCleanup() {
+        synchronized (this) {
+            if (preEnqueueRecoveries.isEmpty()) {
+                throw new IllegalStateException("provider has no pre-enqueue recovery");
+            }
+            PreEnqueueRecovery recovery = preEnqueueRecoveries.get(0);
+            RuntimeException failure = null;
+
+            if (recovery.inputPhysical != null) {
+                try {
+                    driver.releaseBuffer(recovery.inputPhysical);
+                    recovery.inputPhysical = null;
+                } catch (RuntimeException releaseFailure) {
+                    failure = releaseFailure;
+                }
+            }
+            if (recovery.outputPhysical != null) {
+                try {
+                    driver.releaseBuffer(recovery.outputPhysical);
+                    recovery.outputPhysical = null;
+                } catch (RuntimeException releaseFailure) {
+                    if (failure == null) failure = releaseFailure;
+                    else failure.addSuppressed(releaseFailure);
+                }
+            }
+            if (failure != null) {
+                throw failure;
+            }
+
+            recovery.lease.release();
+            recovery.prepared.releaseOperation();
+            preEnqueueRecoveries.remove(0);
+        }
+    }
+
     private void requestCancel(Operation operation, boolean timeout) {
         Objects.requireNonNull(operation, "operation");
         synchronized (operation) {
@@ -578,28 +690,17 @@ final class TrustedOpenClProvider {
         }
     }
 
-    private boolean releasePhysicalQuietly(
-            PhysicalBuffer input,
-            PhysicalBuffer output,
+    private PhysicalBuffer releasePhysicalForRecovery(
+            PhysicalBuffer buffer,
             Throwable original) {
-        boolean released = true;
-        if (input != null) {
-            try {
-                driver.releaseBuffer(input);
-            } catch (RuntimeException failure) {
-                original.addSuppressed(failure);
-                released = false;
-            }
+        if (buffer == null) return null;
+        try {
+            driver.releaseBuffer(buffer);
+            return null;
+        } catch (RuntimeException failure) {
+            original.addSuppressed(failure);
+            return buffer;
         }
-        if (output != null) {
-            try {
-                driver.releaseBuffer(output);
-            } catch (RuntimeException failure) {
-                original.addSuppressed(failure);
-                released = false;
-            }
-        }
-        return released;
     }
 
     private Lease reserve(
