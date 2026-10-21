@@ -320,6 +320,8 @@ mod tests {
         WorkflowAdmissionEvidence {
             conclusion: Some("failure"),
             status: Some("completed"),
+            jobs_observed: Some(0),
+            steps_observed: Some(0),
             platform_diagnostics: diagnostics,
             ..WorkflowAdmissionEvidence::default()
         }
@@ -363,6 +365,40 @@ mod tests {
         assert_eq!(result.kind, AdmissionFailureKind::Unknown);
         assert_eq!(result.confidence, AdmissionEvidenceConfidence::Ambiguous);
         assert!(!result.fallback_allowed);
+    }
+
+    #[test]
+    fn missing_observations_never_authorize_fallback() {
+        for diagnostic in [BILLING, CAPACITY] {
+            for (jobs, steps) in [
+                (None, None),
+                (None, Some(0)),
+                (Some(0), None),
+                (Some(1), None),
+                (Some(2), Some(1)),
+            ] {
+                let result = classify_admission_failure(&WorkflowAdmissionEvidence {
+                    conclusion: Some("failure"),
+                    status: Some("completed"),
+                    jobs_observed: jobs,
+                    steps_observed: steps,
+                    platform_diagnostics: &[diagnostic],
+                    ..WorkflowAdmissionEvidence::default()
+                });
+                assert!(!result.fallback_allowed, "{jobs:?}/{steps:?}");
+            }
+            for jobs in [0, 1, 5] {
+                let result = classify_admission_failure(&WorkflowAdmissionEvidence {
+                    conclusion: Some("failure"),
+                    status: Some("completed"),
+                    jobs_observed: Some(jobs),
+                    steps_observed: Some(0),
+                    platform_diagnostics: &[diagnostic],
+                    ..WorkflowAdmissionEvidence::default()
+                });
+                assert!(result.fallback_allowed, "confirmed zero steps, jobs={jobs}");
+            }
+        }
     }
 
     #[test]
