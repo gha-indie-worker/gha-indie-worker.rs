@@ -97,6 +97,7 @@ pub(crate) struct RecoveryRecord {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TransitionError {
     VersionMismatch,
+    VersionOverflow,
     InvalidTransition,
     MissingOwner,
     MissingDispatchId,
@@ -127,6 +128,12 @@ impl RecoveryRecord {
         if self.state.terminal() {
             return Err(TransitionError::InvalidTransition);
         }
+        // Compute the next version before mutating any record fields so every
+        // error path is transactional, including the u64::MAX boundary.
+        let next_version = self
+            .version
+            .checked_add(1)
+            .ok_or(TransitionError::VersionOverflow)?;
 
         let allowed = matches!(
             (self.state, next),
@@ -187,10 +194,7 @@ impl RecoveryRecord {
         }
 
         self.state = next;
-        self.version = self
-            .version
-            .checked_add(1)
-            .ok_or(TransitionError::VersionMismatch)?;
+        self.version = next_version;
         Ok(())
     }
 }
@@ -347,6 +351,18 @@ mod tests {
             ),
             Err(TransitionError::InvalidTransition)
         );
+    }
+
+    #[test]
+    fn version_overflow_is_atomic() {
+        let mut record = RecoveryRecord::observed(key());
+        record.version = u64::MAX;
+        let before = record.clone();
+        assert_eq!(
+            record.apply(u64::MAX, RecoveryState::Verified, None, None),
+            Err(TransitionError::VersionOverflow)
+        );
+        assert_eq!(record, before);
     }
 
     #[test]
