@@ -13,7 +13,7 @@ public record ComputeCapabilities(
         String name,
         int addressBits,
         long maxBufferBytes,
-        int maxWorkgroupSize,
+        long maxWorkgroupSize,
         boolean float32,
         boolean unifiedMemory) {
 
