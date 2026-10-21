@@ -32,5 +32,9 @@
   "cancellationImpliesQuiescence": false,
   "actorIsolationPreserved": true,
   "strictAotRuntimeJit": false,
-  "vendorBackends": "optional-userland"
+  "vendorBackends": "optional-userland",
+  "descriptorIntegerDomain": "signed-i64",
+  "descriptorValidationScope": "portable-structural",
+  "providerValidationMayBeStricter": true,
+  "checkedByteArithmeticBeforeAllocationOrTransfer": true
 }
