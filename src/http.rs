@@ -110,8 +110,7 @@ pub(crate) async fn descriptor(State(state): State<AppState>) -> impl IntoRespon
             "github": config.github_webhook_secret.is_some(),
             "registry": config.registry_webhook_secret.is_some(),
             "rules": config.webhook_rules.len(),
-            "actionsRecoveryObserver": config.github_actions_observer_enabled,
-            "actionsRecoveryObserverCredential": config.github_actions_observer_token.is_some()
+            "actionsRecoveryObserver": config.github_actions_observer_enabled
         },
         "secretSync": { "enabled": config.gh_sync_enabled, "rules": config.gh_sync_rules.len() }
     }))
