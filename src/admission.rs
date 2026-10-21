@@ -13,6 +13,7 @@
 #[path = "admission/github_api.rs"]
 mod github_api;
 
+#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RunIdentity {
     pub(crate) repo: String,
@@ -21,6 +22,7 @@ pub(crate) struct RunIdentity {
     pub(crate) head_sha: String,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ObserveError {
     InvalidIdentity,
@@ -184,6 +186,7 @@ impl AdmissionClassification {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) struct RunReceipt {
     pub(crate) identity: RunIdentity,
@@ -206,6 +209,7 @@ pub(crate) async fn inspect_authenticated(
 /// Normal unit tests deliberately avoid network access. The API adapter has a
 /// separate hermetic harness under the admission-api-harness feature.
 #[cfg(all(test, not(feature = "admission-api-harness")))]
+#[allow(dead_code)]
 pub(crate) async fn inspect_authenticated(
     _token: &str,
     _id: &RunIdentity,
