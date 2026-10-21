@@ -1,9 +1,9 @@
-name: Ores compute G2 mirror validation
+name: Ores compute OpenCL G2 parity validation
 
 on:
   push:
     branches:
-      - test/ores-compute-g2-main-20261021
+      - test/ores-compute-opencl-g2-20261021
   pull_request:
 
 permissions:
@@ -50,6 +50,9 @@ jobs:
               "llvm_head": "6f181e79164c5b0c45067aabd32da55e90cb64c1",
               "common_head": "3b36e9ee1a940c708c532742a87071c5b04b829f",
               "profiles_head": "a9f06703926ffedb48d031db835cb6920033f65f",
+              "opencl_java_head": "d23d433e4f8964cf917cf0a8045b4230704deaec",
+              "opencl_llvm_head": "b8bcebb98b7e5b66f22ff31f5c1776152097886e",
+              "opencl_common_head": "9f26644e15733bdb82e396f54608579564889c60",
           }
           for key, value in expected.items():
               assert manifest[key] == value, (key, manifest[key], value)
@@ -61,8 +64,8 @@ jobs:
               assert actual == item["source_blob_sha"], (
                   item["dest"], actual, item["source_blob_sha"]
               )
-              assert item["source_ref"] == "main"
-          print("exact-g2-mirror-provenance-ok")
+              assert item["source_ref"] in ("main", "feat/portable-compute-opencl-g2")
+          print("exact-opencl-g2-mirror-provenance-ok")
           PY
 
       - name: Compile mirrored Java compute runtime and conformance
@@ -95,6 +98,10 @@ jobs:
             dev.oreslang.runtime.compute.PortableKernelConformanceMain \
             > "${RUNNER_TEMP}/java-kernel.txt"
           cat "${RUNNER_TEMP}/java-kernel.txt"
+          java -cp tmp/ores-compute-validation/out \
+            dev.oreslang.runtime.compute.PortableOpenClConformanceMain \
+            > "${RUNNER_TEMP}/java-opencl.txt"
+          cat "${RUNNER_TEMP}/java-opencl.txt"
 
       - name: Validate common compute contracts
         shell: bash
@@ -172,6 +179,14 @@ jobs:
           cat "${RUNNER_TEMP}/native-kernel.txt"
           diff -u "${RUNNER_TEMP}/java-kernel.txt" "${RUNNER_TEMP}/native-kernel.txt"
           echo "java-native-kernel-bit-parity-ok"
+
+          c++ $CXXFLAGS $INC \
+            tmp/ores-compute-validation/cpp/portable_compute_opencl_g2_test.cpp \
+            -o "${RUNNER_TEMP}/opencl-g2"
+          "${RUNNER_TEMP}/opencl-g2" > "${RUNNER_TEMP}/native-opencl.txt"
+          cat "${RUNNER_TEMP}/native-opencl.txt"
+          diff -u "${RUNNER_TEMP}/java-opencl.txt" "${RUNNER_TEMP}/native-opencl.txt"
+          echo "java-native-opencl-artifact-parity-ok"
 
       - name: Validate accelerator build-profile constraints
         shell: bash
