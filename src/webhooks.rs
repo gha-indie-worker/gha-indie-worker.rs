@@ -174,6 +174,106 @@ fn build_request_from_rule(
     }
 }
 
+#[cfg(not(test))]
+async fn observe_failed_workflow_run(
+    state: &AppState,
+    payload: &serde_json::Value,
+    repo: &str,
+) {
+    if !state.config.github_actions_observer_enabled {
+        return;
+    }
+    if payload.get("action").and_then(serde_json::Value::as_str) != Some("completed") {
+        return;
+    }
+    let run = payload.get("workflow_run").cloned().unwrap_or_default();
+    let conclusion = run
+        .get("conclusion")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if conclusion.is_empty() || conclusion == "success" {
+        return;
+    }
+
+    state
+        .counters
+        .recovery_observations
+        .fetch_add(1, Ordering::Relaxed);
+
+    let run_id = run.get("id").and_then(serde_json::Value::as_u64).unwrap_or(0);
+    let attempt = run
+        .get("run_attempt")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let head_sha = run
+        .get("head_sha")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+
+    let Some(key) = crate::recovery::RecoveryKey::new(repo, run_id, attempt, head_sha) else {
+        state
+            .counters
+            .recovery_observation_failures
+            .fetch_add(1, Ordering::Relaxed);
+        tracing::warn!("recovery observation denied: invalid workflow-run identity");
+        return;
+    };
+
+    let Some(token) = state.config.github_actions_observer_token.as_deref() else {
+        state
+            .counters
+            .recovery_observation_failures
+            .fetch_add(1, Ordering::Relaxed);
+        tracing::warn!(
+            recovery_id = %key.stable_id(),
+            "recovery observation denied: dedicated Actions observer credential is unavailable"
+        );
+        return;
+    };
+
+    let identity = crate::admission::RunIdentity {
+        repo: key.repo.clone(),
+        run_id: key.run_id,
+        attempt: key.attempt,
+        head_sha: key.head_sha.clone(),
+    };
+    match crate::admission::inspect_authenticated(token, &identity).await {
+        Ok(receipt) => {
+            let classification = receipt.classification;
+            if classification.fallback_allowed {
+                // Observation is deliberately non-activating. A future durable
+                // controller must independently persist, verify, claim and
+                // outbox this candidate before dispatch becomes possible.
+                state
+                    .counters
+                    .recovery_candidates
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            tracing::info!(
+                recovery_id = %key.stable_id(),
+                jobs_observed = receipt.jobs_observed,
+                steps_observed = receipt.steps_observed,
+                runner_assigned = receipt.runner_assigned,
+                kind = classification.kind.as_str(),
+                fallback_allowed = classification.fallback_allowed,
+                reason = classification.reason,
+                "GitHub Actions recovery observation completed"
+            );
+        }
+        Err(error) => {
+            state
+                .counters
+                .recovery_observation_failures
+                .fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(
+                recovery_id = %key.stable_id(),
+                error = ?error,
+                "recovery observation denied"
+            );
+        }
+    }
+}
+
 pub async fn github_webhook(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -239,6 +339,11 @@ pub async fn github_webhook(
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default()
         .to_string();
+
+    #[cfg(not(test))]
+    if event == "workflow_run" {
+        observe_failed_workflow_run(&state, &payload, &repo).await;
+    }
 
     let (git_ref, sha, actionable) = match event.as_str() {
         "push" => {
