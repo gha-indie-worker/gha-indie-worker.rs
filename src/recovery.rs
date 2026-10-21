@@ -7,6 +7,7 @@
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::sync::atomic::Ordering;
 
 use crate::{
     admission::{
@@ -136,10 +137,12 @@ fn confidence_label(confidence: AdmissionEvidenceConfidence) -> &'static str {
 
 fn durable_action(receipt: &RunReceipt) -> String {
     format!(
-        "observed:{}:{}:allow={}:jobs={}:steps={}:runner={}",
+        "observed:{}:{}:allow={}:run={}:attempt={}:jobs={}:steps={}:runner={}",
         receipt.classification.kind.as_str(),
         confidence_label(receipt.classification.confidence),
         receipt.classification.fallback_allowed,
+        receipt.identity.run_id,
+        receipt.identity.attempt,
         receipt.jobs_observed,
         receipt.steps_observed,
         receipt.runner_assigned
@@ -156,21 +159,39 @@ pub(crate) async fn observe_candidate(
         return RecoveryOutcome::Disabled;
     }
     let Some(db) = state.db.as_ref() else {
+        state
+            .counters
+            .github_recovery_fail_closed
+            .fetch_add(1, Ordering::Relaxed);
         return RecoveryOutcome::BlockedMissingDatabase;
     };
     let Some(token) = state.config.github_recovery_token.as_deref() else {
+        state
+            .counters
+            .github_recovery_fail_closed
+            .fetch_add(1, Ordering::Relaxed);
         return RecoveryOutcome::BlockedMissingToken;
     };
 
     let receipt = match inspect_authenticated(token, &candidate.identity).await {
         Ok(receipt) => receipt,
-        Err(error) => return RecoveryOutcome::ObservationFailed(error),
+        Err(error) => {
+            state
+                .counters
+                .github_recovery_fail_closed
+                .fetch_add(1, Ordering::Relaxed);
+            return RecoveryOutcome::ObservationFailed(error);
+        }
     };
 
     // Re-check the identity returned by the observer before persistence. The API
     // adapter already enforces this, but keeping the controller invariant
     // explicit prevents a future observer implementation from weakening it.
     if receipt.identity != candidate.identity {
+        state
+            .counters
+            .github_recovery_fail_closed
+            .fetch_add(1, Ordering::Relaxed);
         return RecoveryOutcome::ObservationFailed(ObserveError::MismatchedIdentity);
     }
 
@@ -185,9 +206,27 @@ pub(crate) async fn observe_candidate(
     )
     .await
     {
-        Ok(true) => RecoveryOutcome::Recorded { key, receipt },
-        Ok(false) => RecoveryOutcome::Duplicate { key, receipt },
-        Err(_) => RecoveryOutcome::PersistenceFailed,
+        Ok(true) => {
+            state
+                .counters
+                .github_recovery_observed
+                .fetch_add(1, Ordering::Relaxed);
+            RecoveryOutcome::Recorded { key, receipt }
+        }
+        Ok(false) => {
+            state
+                .counters
+                .github_recovery_duplicates
+                .fetch_add(1, Ordering::Relaxed);
+            RecoveryOutcome::Duplicate { key, receipt }
+        }
+        Err(_) => {
+            state
+                .counters
+                .github_recovery_fail_closed
+                .fetch_add(1, Ordering::Relaxed);
+            RecoveryOutcome::PersistenceFailed
+        }
     }
 }
 
