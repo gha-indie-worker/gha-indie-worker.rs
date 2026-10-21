@@ -106,6 +106,41 @@ jobs:
           assert t.stop_returned
           assert t.finalize_after_close()
 
+          # Live-group stop request: once stop is issued, physical DONE must
+          # remain fenced until the callback returns even without detachment.
+          t = Ticket()
+          entered = threading.Event()
+          release = threading.Event()
+
+          def live_stop():
+              with t.lock:
+                  assert not t.stop_issued
+                  t.stop_issued = True
+              entered.set()
+              assert release.wait(5)
+              with t.lock:
+                  t.stop_returned = True
+
+          def live_finalize():
+              with t.lock:
+                  if t.stop_issued and not t.stop_returned:
+                      return False
+                  if t.logical_turn or t.control_active or t.control_reserved or t.done:
+                      return False
+                  t.done = True
+                  return True
+
+          stopper = threading.Thread(target=live_stop, daemon=True)
+          stopper.start()
+          assert entered.wait(5)
+          assert not live_finalize()
+          assert not t.done
+          release.set()
+          stopper.join(5)
+          assert not stopper.is_alive()
+          assert live_finalize()
+          assert t.done
+
           # CONTROL and ordinary turns remain additional quiescence barriers.
           for field in ("logical_turn", "control_active", "control_reserved"):
               t = Ticket()
