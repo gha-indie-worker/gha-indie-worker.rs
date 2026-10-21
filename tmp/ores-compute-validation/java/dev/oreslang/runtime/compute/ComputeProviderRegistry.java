@@ -1,6 +1,7 @@
 package dev.oreslang.runtime.compute;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -23,8 +24,8 @@ public final class ComputeProviderRegistry {
     private ComputeProviderRegistry(
             Map<String, ComputeProvider> providers,
             Map<String, ComputeDevice> devices) {
-        this.providers = Map.copyOf(providers);
-        this.devices = Map.copyOf(devices);
+        this.providers = Collections.unmodifiableMap(new LinkedHashMap<>(providers));
+        this.devices = Collections.unmodifiableMap(new LinkedHashMap<>(devices));
     }
 
     public static ComputeProviderRegistry of(List<? extends ComputeProvider> input) {
