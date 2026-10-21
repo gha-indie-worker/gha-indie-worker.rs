@@ -12,7 +12,11 @@
     "guestCanLoadProvider": false,
     "opaquePhysicalAllocationCapabilities": true,
     "opaqueQueueCapabilities": true,
-    "opaqueDeviceEvents": true
+    "opaqueDeviceEvents": true,
+    "queueCapabilityBoundToDeviceAuthority": true,
+    "queueCapabilityGenerationRequired": true,
+    "artifactAbiValidationRequired": true,
+    "providerReleaseRetryable": true
   },
   "quotas": {
     "perTenantDevice": true,
@@ -45,7 +49,10 @@
     "cancellationImpliesQuiescence": false,
     "releaseRequiresQuiescence": true,
     "deviceLossPoisonsOutstandingAllocations": true,
-    "timeoutDoesNotFreeDeviceMemory": true
+    "timeoutDoesNotFreeDeviceMemory": true,
+    "preEnqueueCleanupFailureRetainsRecoveryAuthority": true,
+    "preEnqueueCleanupRetryRequired": true,
+    "programReleaseFailureRetainsPreparedAuthority": true
   },
   "transfers": {
     "uploadExplicit": true,
@@ -60,7 +67,10 @@
     "realDeviceProbeConditional": true,
     "mockProviderSuccessIsNotGpuExecutionEvidence": true,
     "artifactEmissionIsNotGpuExecutionEvidence": true,
-    "realGpuExecutionEvidenceRequiresDeviceEvent": true
+    "realGpuExecutionEvidenceRequiresDeviceEvent": true,
+    "preEnqueueReleaseFailureRecoveryRequired": true,
+    "programReleaseRetryRequired": true,
+    "queueAuthorityForgeryRequired": true
   },
   "promotion": {
     "requiresJavaProviderStateParity": true,
@@ -68,6 +78,9 @@
     "requiresQuotaRollbackTests": true,
     "requiresPreAndPostEnqueueFailureTests": true,
     "requiresTimeoutAndDeviceLossTests": true,
-    "requiresSourceSyntaxToRemainFailClosed": true
+    "requiresSourceSyntaxToRemainFailClosed": true,
+    "requiresArtifactAbiProviderValidation": true,
+    "requiresRecoverablePreEnqueueCleanup": true,
+    "requiresOpaqueJavaQueueAuthority": true
   }
 }
