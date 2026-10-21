@@ -11,7 +11,7 @@ use std::sync::atomic::Ordering;
 
 use crate::{
     admission::{
-        inspect_authenticated, AdmissionEvidenceConfidence, ObserveError, RunIdentity, RunReceipt,
+        inspect_authenticated, ObserveError, RunIdentity, RunReceipt,
     },
     db,
     state::AppState,
