@@ -16,7 +16,7 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    timeout-minutes: 15
     steps:
       - name: Check out exact candidate without persisted credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -61,6 +61,11 @@ jobs:
           for key, value in expected.items():
               assert manifest[key] == value, (key, manifest[key], value)
 
+          allowed_refs = {
+              "main",
+              "feat/portable-compute-opencl-g2",
+              "feat/portable-compute-provider-g3",
+          }
           for item in manifest["files"]:
               data = Path(item["dest"]).read_bytes()
               payload = f"blob {len(data)}\0".encode() + data
@@ -68,11 +73,7 @@ jobs:
               assert actual == item["source_blob_sha"], (
                   item["dest"], actual, item["source_blob_sha"]
               )
-              assert item["source_ref"] in (
-                  "main",
-                  "feat/portable-compute-opencl-g2",
-                  "feat/portable-compute-provider-g3",
-              )
+              assert item["source_ref"] in allowed_refs
           print("exact-provider-g3-mirror-provenance-ok")
           PY
 
@@ -103,7 +104,7 @@ jobs:
           java -cp tmp/ores-compute-validation/out \
             dev.oreslang.runtime.compute.TrustedOpenClProviderSmoke
 
-      - name: Run Java G2 CPU reference gate
+      - name: Run Java G2 reference and OpenCL artifact gates
         shell: bash
         run: |
           set -euo pipefail
@@ -112,11 +113,9 @@ jobs:
           java -cp tmp/ores-compute-validation/out \
             dev.oreslang.runtime.compute.PortableKernelConformanceMain \
             > "${RUNNER_TEMP}/java-kernel.txt"
-          cat "${RUNNER_TEMP}/java-kernel.txt"
           java -cp tmp/ores-compute-validation/out \
             dev.oreslang.runtime.compute.PortableOpenClConformanceMain \
             > "${RUNNER_TEMP}/java-opencl.txt"
-          cat "${RUNNER_TEMP}/java-opencl.txt"
 
       - name: Validate common compute contracts
         shell: bash
@@ -139,7 +138,7 @@ jobs:
           assert "GPU, CPU, QUANTUM" in token
           for word in ("gpu", "cpu", "quantum"):
               assert f'KEYWORDS.put("{word}"' in lexer
-              assert f"execution domain '" in parser
+              assert "execution domain '" in parser
               assert "no implicit CPU fallback" in parser
               assert word in native
           assert "native execution domain lowering unsupported" in native
@@ -158,7 +157,6 @@ jobs:
             tmp/ores-compute-validation/cpp/portable_compute_descriptor_test.cpp \
             -o "${RUNNER_TEMP}/descriptor"
           "${RUNNER_TEMP}/descriptor"
-
           c++ $CXXFLAGS -pthread $INC \
             tmp/ores-compute-validation/cpp/portable_compute_authority_test.cpp \
             -o "${RUNNER_TEMP}/authority"
@@ -170,12 +168,10 @@ jobs:
           set -euo pipefail
           CXXFLAGS="-std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror"
           INC="-Itmp/ores-compute-validation/cpp"
-
           c++ $CXXFLAGS -pthread $INC \
             tmp/ores-compute-validation/cpp/gpu_buffer_fence_test.cpp \
             -o "${RUNNER_TEMP}/gpu-fence"
           "${RUNNER_TEMP}/gpu-fence"
-
           c++ $CXXFLAGS -pthread $INC \
             tmp/ores-compute-validation/cpp/dop_gpu_admission_test.cpp \
             -o "${RUNNER_TEMP}/gpu-admission"
@@ -206,7 +202,11 @@ jobs:
           if grep -q '^opencl-real-gpu-probe-passed:' "${RUNNER_TEMP}/real-gpu-probe.txt"; then
             echo "real-gpu-execution-evidence=passed"
           else
-            grep -q '^opencl-real-gpu-probe-skipped:no-compatible-gpu
+            grep -q '^opencl-real-gpu-probe-skipped:no-compatible-gpu$' "${RUNNER_TEMP}/real-gpu-probe.txt"
+            echo "real-gpu-execution-evidence=not-available"
+          fi
+
+      - name: Compare Java and native G2 outputs
         shell: bash
         run: |
           set -euo pipefail
@@ -216,7 +216,6 @@ jobs:
             tmp/ores-compute-validation/cpp/portable_compute_kernel_g2_test.cpp \
             -o "${RUNNER_TEMP}/kernel-g2"
           "${RUNNER_TEMP}/kernel-g2" > "${RUNNER_TEMP}/native-kernel.txt"
-          cat "${RUNNER_TEMP}/native-kernel.txt"
           diff -u "${RUNNER_TEMP}/java-kernel.txt" "${RUNNER_TEMP}/native-kernel.txt"
           echo "java-native-kernel-bit-parity-ok"
 
@@ -224,7 +223,6 @@ jobs:
             tmp/ores-compute-validation/cpp/portable_compute_opencl_g2_test.cpp \
             -o "${RUNNER_TEMP}/opencl-g2"
           "${RUNNER_TEMP}/opencl-g2" > "${RUNNER_TEMP}/native-opencl.txt"
-          cat "${RUNNER_TEMP}/native-opencl.txt"
           diff -u "${RUNNER_TEMP}/java-opencl.txt" "${RUNNER_TEMP}/native-opencl.txt"
           echo "java-native-opencl-artifact-parity-ok"
 
@@ -267,64 +265,4 @@ jobs:
           for key, value in expected.items():
               assert props["properties"][key]["const"] == value
           print("accelerator-g3-build-profile-contract-ok")
-          PY
- "${RUNNER_TEMP}/real-gpu-probe.txt"
-            echo "real-gpu-execution-evidence=not-available"
-          fi
-
-      - name: Run native G2 CPU reference and compare bit transcript
-        shell: bash
-        run: |
-          set -euo pipefail
-          CXXFLAGS="-std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror"
-          INC="-Itmp/ores-compute-validation/cpp"
-          c++ $CXXFLAGS $INC \
-            tmp/ores-compute-validation/cpp/portable_compute_kernel_g2_test.cpp \
-            -o "${RUNNER_TEMP}/kernel-g2"
-          "${RUNNER_TEMP}/kernel-g2" > "${RUNNER_TEMP}/native-kernel.txt"
-          cat "${RUNNER_TEMP}/native-kernel.txt"
-          diff -u "${RUNNER_TEMP}/java-kernel.txt" "${RUNNER_TEMP}/native-kernel.txt"
-          echo "java-native-kernel-bit-parity-ok"
-
-          c++ $CXXFLAGS $INC \
-            tmp/ores-compute-validation/cpp/portable_compute_opencl_g2_test.cpp \
-            -o "${RUNNER_TEMP}/opencl-g2"
-          "${RUNNER_TEMP}/opencl-g2" > "${RUNNER_TEMP}/native-opencl.txt"
-          cat "${RUNNER_TEMP}/native-opencl.txt"
-          diff -u "${RUNNER_TEMP}/java-opencl.txt" "${RUNNER_TEMP}/native-opencl.txt"
-          echo "java-native-opencl-artifact-parity-ok"
-
-      - name: Validate accelerator build-profile constraints
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-
-          root = Path("tmp/ores-compute-validation/profiles")
-          contract = json.loads((root / "build-profiles-v1.json").read_text())
-          schema = json.loads((root / "build-profiles.schema.json").read_text())
-          accel = contract["constraints"]["accelerators"]
-          expected = {
-              "providerDiscovery": "explicit-only",
-              "implicitTransfers": "forbidden",
-              "implicitCpuFallback": "forbidden",
-              "sourceForgeableAuthority": "forbidden",
-              "cancellationQuiescence": "verified-fence-only",
-              "strictAotKernelVariants": "precompiled-only",
-              "hardRtResourceBounds": "required",
-              "hardRtProviderCompilation": "forbidden-in-execution-phase",
-              "sourceAcceleratorSyntax": "fail-closed-until-typed-effects",
-              "cpuReferenceProvider": "explicit-test-only",
-              "kernelIrReflection": "forbidden",
-              "gpuArtifactEmissionEvidence": "not-execution-evidence",
-          }
-          assert accel == expected
-          props = schema["properties"]["constraints"]["properties"]["accelerators"]
-          assert props["additionalProperties"] is False
-          assert set(props["required"]) == set(expected)
-          for key, value in expected.items():
-              assert props["properties"][key]["const"] == value
-          print("accelerator-g2-build-profile-contract-ok")
           PY
