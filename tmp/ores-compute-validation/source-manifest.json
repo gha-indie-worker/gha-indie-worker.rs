@@ -71,10 +71,10 @@
     },
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.java",
-      "source_ref": "main",
-      "source_head": "66971839c52c241e0c5203ad43efc3c65c4a975d",
+      "source_ref": "feat/portable-compute-opencl-g2",
+      "source_head": "d23d433e4f8964cf917cf0a8045b4230704deaec",
       "source_path": "src/main/java/dev/oreslang/runtime/compute/PortableKernelIR.java",
-      "source_blob_sha": "8232513d0dc83d75f1cbd39eee1b088575401da0",
+      "source_blob_sha": "f56e0e92d11ef91f15068dacbf0bda9d19ab7882",
       "dest": "tmp/ores-compute-validation/java/dev/oreslang/runtime/compute/PortableKernelIR.java"
     },
     {
@@ -135,10 +135,10 @@
     },
     {
       "source_repo": "ores-truffle-oreslang/oreslang-common-source",
-      "source_ref": "main",
-      "source_head": "3b36e9ee1a940c708c532742a87071c5b04b829f",
+      "source_ref": "feat/portable-compute-opencl-g2",
+      "source_head": "9f26644e15733bdb82e396f54608579564889c60",
       "source_path": "contracts/v1/portable-compute-kernel.json",
-      "source_blob_sha": "f720d47915b44e213749733dc63c2d8c8d8a7ea1",
+      "source_blob_sha": "efcd5faf9e917f499dbbb2e3ec7eb06a012f14b4",
       "dest": "tmp/ores-compute-validation/contract/portable-compute-kernel.json"
     },
     {
@@ -260,6 +260,25 @@
       "source_path": "schemas/build-profiles.schema.json",
       "source_blob_sha": "b288cfaa18e4531f046f33a385094286c6e04982",
       "dest": "tmp/ores-compute-validation/profiles/build-profiles.schema.json"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-source.java",
+      "source_ref": "feat/portable-compute-opencl-g2",
+      "source_head": "d23d433e4f8964cf917cf0a8045b4230704deaec",
+      "source_path": "src/test/java/dev/oreslang/runtime/compute/PortableOpenClConformanceMain.java",
+      "source_blob_sha": "6c8bca27ac8c2e4d0c85a2c018c4b74e55d1c828",
+      "dest": "tmp/ores-compute-validation/java/dev/oreslang/runtime/compute/PortableOpenClConformanceMain.java"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-source.llvm",
+      "source_ref": "feat/portable-compute-opencl-g2",
+      "source_head": "b8bcebb98b7e5b66f22ff31f5c1776152097886e",
+      "source_path": "tests/portable_compute_opencl_g2_test.cpp",
+      "source_blob_sha": "f6e106eb1dab0732b3b2e253b581f270a5a9cb9d",
+      "dest": "tmp/ores-compute-validation/cpp/portable_compute_opencl_g2_test.cpp"
     }
-  ]
+  ],
+  "opencl_java_head": "d23d433e4f8964cf917cf0a8045b4230704deaec",
+  "opencl_llvm_head": "b8bcebb98b7e5b66f22ff31f5c1776152097886e",
+  "opencl_common_head": "9f26644e15733bdb82e396f54608579564889c60"
 }
