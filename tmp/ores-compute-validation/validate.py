@@ -60,4 +60,8 @@ assert kernel["cpuReferenceProvider"]["testingAndConformanceOnly"] is True
 assert kernel["cpuReferenceProvider"]["floatingPointContraction"] == "forbidden-for-scale-bias-reference"
 assert kernel["gpuLowering"]["emissionIsExecutionEvidence"] is False
 assert kernel["gpuLowering"]["providerAuthenticationRequired"] is True
+assert kernel["gpuLowering"]["javaEmitterImplemented"] is True
+assert kernel["gpuLowering"]["nativeEmitterImplemented"] is True
+assert kernel["gpuLowering"]["exactArtifactParityRequired"] is True
+assert kernel["promotion"]["requiresJavaNativeOpenClArtifactParity"] is True
 print("portable-compute-kernel-g2-contract-ok")
