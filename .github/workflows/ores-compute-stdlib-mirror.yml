@@ -3,7 +3,7 @@ name: Ores compute OpenCL G2 parity validation
 on:
   push:
     branches:
-      - test/ores-compute-opencl-g2-20261021
+      - test/ores-compute-artifact-abi-20261021
   pull_request:
 
 permissions:
