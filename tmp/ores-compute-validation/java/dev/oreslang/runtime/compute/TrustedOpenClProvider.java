@@ -444,19 +444,43 @@ final class TrustedOpenClProvider {
                             "invalid provider transition from " + operation.state);
                 }
             } catch (RuntimeException postSubmitFailure) {
-                // The prior event is terminal and the next enqueue never
-                // returned an event, so hardware is quiescent for this launch.
-                ComputeAuthority.completePair(
-                        operation.inputAuthority,
-                        operation.outputAuthority,
-                        operation.fencePair,
-                        false);
-                operation.state = OperationState.FAILED;
-                try {
-                    finishCleanup(operation);
-                } catch (RuntimeException cleanupFailure) {
-                    postSubmitFailure.addSuppressed(cleanupFailure);
+                if (operation.state == OperationState.UPLOAD_SUBMITTED
+                        || operation.state == OperationState.KERNEL_SUBMITTED) {
+                    // The prior event is terminal and the next enqueue never
+                    // returned an event, so no newer device command exists.
+                    // Terminalize the exact host pair once, then clean up.
+                    try {
+                        ComputeAuthority.completePair(
+                                operation.inputAuthority,
+                                operation.outputAuthority,
+                                operation.fencePair,
+                                false);
+                    } catch (RuntimeException terminalFailure) {
+                        postSubmitFailure.addSuppressed(terminalFailure);
+                        synchronized (this) {
+                            quarantinedOperations.add(operation);
+                        }
+                        throw postSubmitFailure;
+                    }
+                    operation.state = OperationState.FAILED;
+                    try {
+                        finishCleanup(operation);
+                    } catch (RuntimeException cleanupFailure) {
+                        postSubmitFailure.addSuppressed(cleanupFailure);
+                    }
+                    throw postSubmitFailure;
                 }
+
+                if (operation.state == OperationState.DOWNLOAD_SUBMITTED) {
+                    // The only fallible host transition here is the exact
+                    // terminal fence update. If it fails, never replay it with
+                    // a different terminal result; quarantine all authority.
+                    synchronized (this) {
+                        quarantinedOperations.add(operation);
+                    }
+                }
+                // SUCCEEDED/RELEASE_FAILED means the fence pair already
+                // terminalized and only physical cleanup failed.
                 throw postSubmitFailure;
             }
             return operation.state;
