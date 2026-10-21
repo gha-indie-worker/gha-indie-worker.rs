@@ -163,7 +163,11 @@
             "cancellationQuiescence",
             "strictAotKernelVariants",
             "hardRtResourceBounds",
-            "hardRtProviderCompilation"
+            "hardRtProviderCompilation",
+            "sourceAcceleratorSyntax",
+            "cpuReferenceProvider",
+            "kernelIrReflection",
+            "gpuArtifactEmissionEvidence"
           ],
           "properties": {
             "providerDiscovery": {
@@ -189,6 +193,18 @@
             },
             "hardRtProviderCompilation": {
               "const": "forbidden-in-execution-phase"
+            },
+            "sourceAcceleratorSyntax": {
+              "const": "fail-closed-until-typed-effects"
+            },
+            "cpuReferenceProvider": {
+              "const": "explicit-test-only"
+            },
+            "kernelIrReflection": {
+              "const": "forbidden"
+            },
+            "gpuArtifactEmissionEvidence": {
+              "const": "not-execution-evidence"
             }
           }
         }
