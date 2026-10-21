@@ -54,7 +54,7 @@ jobs:
               "opencl_llvm_head": "b8bcebb98b7e5b66f22ff31f5c1776152097886e",
               "opencl_common_head": "9f26644e15733bdb82e396f54608579564889c60",
               "g3_java_head": "0054e577e2e15de7553a4c7abb9e8ec0691f4a32",
-              "g3_llvm_head": "2e8069f76c5a02d345de4af62c24658d654ffed6",
+              "g3_llvm_head": "1fa15abcb04aaf5bdce8e2ee970ddcc6d45b9940",
               "g3_common_head": "5cf8f97524ef2af9310a641e956e395e6cb1fcfe",
               "g3_profiles_head": "8bc8f0c9eb6845f0d0bc87452a477cf607dc91ce",
           }
