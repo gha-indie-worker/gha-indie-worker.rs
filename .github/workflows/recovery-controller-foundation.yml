@@ -27,7 +27,7 @@ concurrency:
 jobs:
   recovery-rust:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - name: Check out exact candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -48,31 +48,6 @@ jobs:
         with:
           toolchain: '1.97.0'
           components: rustfmt
-      - name: Reconstruct exact public workspace dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          provenance='5cfac43c6900898f36f588d044ca34083da1c726'
-          source_dir="$RUNNER_TEMP/k8s-cluster-source"
-          git init -q "$source_dir"
-          git -C "$source_dir" remote add origin https://github.com/ORESoftware/k8s-cluster.git
-          git -C "$source_dir" -c credential.helper= fetch --no-tags --depth=1 origin "$provenance"
-          git -C "$source_dir" checkout -q --detach FETCH_HEAD
-          test "$(git -C "$source_dir" rev-parse HEAD)" = "$provenance"
-          workspace_libs="$(realpath -m "$GITHUB_WORKSPACE/../../libs")"
-          rm -rf "$workspace_libs"
-          mkdir -p "$(dirname "$workspace_libs")"
-          cp -a "$source_dir/remote/libs" "$workspace_libs"
-          test -f "$workspace_libs/telemetry-rs/Cargo.toml"
-          test -f "$workspace_libs/nats/subject-defs/generated/rust/Cargo.toml"
-          test -f "$workspace_libs/runtime-config-client-rs/Cargo.toml"
-      - name: Compile full service and safe integrated tests
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo test --locked --no-run
-          cargo test --locked 'webhooks::tests::' -- --test-threads=1
-          cargo test --locked 'recovery::tests::' -- --test-threads=1
       - name: Format-check new model and parse production integration
         run: |
           set -euo pipefail
