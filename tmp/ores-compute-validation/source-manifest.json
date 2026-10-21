@@ -48,7 +48,7 @@
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.java",
       "source_ref": "feat/portable-compute-provider-g3",
-      "source_head": "0054e577e2e15de7553a4c7abb9e8ec0691f4a32",
+      "source_head": "7195a7e00a3d55d5b923c4642983bce69e6af93d",
       "source_path": "src/main/java/dev/oreslang/runtime/compute/ComputeFenceHandle.java",
       "source_blob_sha": "7bb476985bc5246cda02446fd97d0e3a9069d9f4",
       "dest": "tmp/ores-compute-validation/java/dev/oreslang/runtime/compute/ComputeFenceHandle.java"
@@ -56,7 +56,7 @@
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.java",
       "source_ref": "feat/portable-compute-provider-g3",
-      "source_head": "0054e577e2e15de7553a4c7abb9e8ec0691f4a32",
+      "source_head": "7195a7e00a3d55d5b923c4642983bce69e6af93d",
       "source_path": "src/main/java/dev/oreslang/runtime/compute/ComputeBufferHandle.java",
       "source_blob_sha": "40968faffbda5933c1d24a2a95a1b1962a678c58",
       "dest": "tmp/ores-compute-validation/java/dev/oreslang/runtime/compute/ComputeBufferHandle.java"
@@ -64,7 +64,7 @@
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.java",
       "source_ref": "feat/portable-compute-provider-g3",
-      "source_head": "0054e577e2e15de7553a4c7abb9e8ec0691f4a32",
+      "source_head": "7195a7e00a3d55d5b923c4642983bce69e6af93d",
       "source_path": "src/main/java/dev/oreslang/runtime/compute/ComputeAuthority.java",
       "source_blob_sha": "fd35288e6264a8a0def6259b2fba78cca9826f75",
       "dest": "tmp/ores-compute-validation/java/dev/oreslang/runtime/compute/ComputeAuthority.java"
@@ -280,7 +280,7 @@
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.java",
       "source_ref": "feat/portable-compute-provider-g3",
-      "source_head": "0054e577e2e15de7553a4c7abb9e8ec0691f4a32",
+      "source_head": "7195a7e00a3d55d5b923c4642983bce69e6af93d",
       "source_path": "src/main/java/dev/oreslang/runtime/compute/ComputeFencePair.java",
       "source_blob_sha": "1ab4b552406822f460abcd5cb00730619016cbfd",
       "dest": "tmp/ores-compute-validation/java/dev/oreslang/runtime/compute/ComputeFencePair.java"
@@ -288,9 +288,9 @@
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.java",
       "source_ref": "feat/portable-compute-provider-g3",
-      "source_head": "0054e577e2e15de7553a4c7abb9e8ec0691f4a32",
+      "source_head": "7195a7e00a3d55d5b923c4642983bce69e6af93d",
       "source_path": "src/main/java/dev/oreslang/runtime/compute/TrustedOpenClProvider.java",
-      "source_blob_sha": "fa9f7639b3d496806824b9edc18af02ec44694fa",
+      "source_blob_sha": "1776a29ca360f73e03c0923c0ebb63b4a4f598ca",
       "dest": "tmp/ores-compute-validation/java/dev/oreslang/runtime/compute/TrustedOpenClProvider.java"
     },
     {
@@ -304,15 +304,15 @@
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.llvm",
       "source_ref": "feat/portable-compute-provider-g3",
-      "source_head": "1fa15abcb04aaf5bdce8e2ee970ddcc6d45b9940",
+      "source_head": "a40b11e16c8a4977f09d08a0970e74929d474656",
       "source_path": "src/main/cpp/oreslang/runtime/OpenClProvider.hpp",
-      "source_blob_sha": "971a51c3de73dd1713383e8885c6aac40c6bff70",
+      "source_blob_sha": "99aaecf832c191128bce4f7e905924d3652d963b",
       "dest": "tmp/ores-compute-validation/cpp/oreslang/runtime/OpenClProvider.hpp"
     },
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.llvm",
       "source_ref": "feat/portable-compute-provider-g3",
-      "source_head": "1fa15abcb04aaf5bdce8e2ee970ddcc6d45b9940",
+      "source_head": "a40b11e16c8a4977f09d08a0970e74929d474656",
       "source_path": "src/main/cpp/oreslang/runtime/OpenClSystemApi.hpp",
       "source_blob_sha": "37f2cb8b1bc5aa2fa8f349d462f646fe85a13f7f",
       "dest": "tmp/ores-compute-validation/cpp/oreslang/runtime/OpenClSystemApi.hpp"
@@ -320,7 +320,7 @@
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.llvm",
       "source_ref": "feat/portable-compute-provider-g3",
-      "source_head": "1fa15abcb04aaf5bdce8e2ee970ddcc6d45b9940",
+      "source_head": "a40b11e16c8a4977f09d08a0970e74929d474656",
       "source_path": "tests/opencl_provider_g3_test.cpp",
       "source_blob_sha": "cf654b4ff74cb230329ea85f4422619935abe671",
       "dest": "tmp/ores-compute-validation/cpp/opencl_provider_g3_test.cpp"
@@ -328,7 +328,7 @@
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.llvm",
       "source_ref": "feat/portable-compute-provider-g3",
-      "source_head": "1fa15abcb04aaf5bdce8e2ee970ddcc6d45b9940",
+      "source_head": "a40b11e16c8a4977f09d08a0970e74929d474656",
       "source_path": "tests/opencl_system_gpu_probe.cpp",
       "source_blob_sha": "a977b1434e6bbb34f78c46bb554cc7d437daf4e4",
       "dest": "tmp/ores-compute-validation/cpp/opencl_system_gpu_probe.cpp"
@@ -337,8 +337,8 @@
   "opencl_java_head": "d23d433e4f8964cf917cf0a8045b4230704deaec",
   "opencl_llvm_head": "b8bcebb98b7e5b66f22ff31f5c1776152097886e",
   "opencl_common_head": "9f26644e15733bdb82e396f54608579564889c60",
-  "g3_java_head": "0054e577e2e15de7553a4c7abb9e8ec0691f4a32",
-  "g3_llvm_head": "1fa15abcb04aaf5bdce8e2ee970ddcc6d45b9940",
+  "g3_java_head": "7195a7e00a3d55d5b923c4642983bce69e6af93d",
+  "g3_llvm_head": "a40b11e16c8a4977f09d08a0970e74929d474656",
   "g3_common_head": "5cf8f97524ef2af9310a641e956e395e6cb1fcfe",
   "g3_profiles_head": "8bc8f0c9eb6845f0d0bc87452a477cf607dc91ce"
 }
