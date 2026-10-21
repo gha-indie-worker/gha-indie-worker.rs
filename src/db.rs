@@ -240,7 +240,9 @@ pub(crate) async fn record_recovery_observation_strict(
         jobs_observed: Set(jobs_observed),
         steps_observed: Set(steps_observed),
         runner_assigned: Set(receipt.runner_assigned),
-        evidence_ref: Set(None),
+        verified_diagnostic_kind: Set(None),
+        verified_evidence_ref: Set(None),
+        verified_at: Set(None),
         reason: Set(Some(receipt.classification.reason.to_string())),
         state: Set("observed".to_string()),
         claim_owner: Set(None),
@@ -288,8 +290,7 @@ pub(crate) async fn record_recovery_observation_strict(
         && existing.fallback_allowed == receipt.classification.fallback_allowed
         && existing.jobs_observed == jobs_observed
         && existing.steps_observed == steps_observed
-        && existing.runner_assigned == receipt.runner_assigned
-        && existing.evidence_ref.is_none();
+        && existing.runner_assigned == receipt.runner_assigned;
 
     Ok(if same_observation {
         RecoveryObservationWrite::DuplicateIdentical
