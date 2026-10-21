@@ -265,7 +265,10 @@ pub(crate) async fn inspect_authenticated(
     let first_page = get_json(
         &client,
         token,
-        &format!("{base}/attempts/{}/jobs?per_page={PAGE_SIZE}&page=1", id.attempt),
+        &format!(
+            "{base}/attempts/{}/jobs?per_page={PAGE_SIZE}&page=1",
+            id.attempt
+        ),
     )
     .await?;
     let count = usize::try_from(integer(&first_page, "total_count")?)
