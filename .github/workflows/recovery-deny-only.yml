@@ -53,3 +53,116 @@ jobs:
             echo 'Recovery observer must remain deny-only'
             exit 1
           fi
+
+  production-route-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact head without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Assert exact checked out head
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.97.0 --profile minimal
+      - name: Compile real recovery route against isolated adapter and test fail-closed ingress
+        shell: bash
+        run: |
+          set -euo pipefail
+          scratch="$RUNNER_TEMP/recovery-route-harness"
+          mkdir -p "$scratch/src/admission"
+          cp src/admission.rs "$scratch/src/admission.rs"
+          cp src/admission/github_api.rs "$scratch/src/admission/github_api.rs"
+          cp src/recovery_policy.rs "$scratch/src/recovery_policy.rs"
+          cp src/recovery.rs "$scratch/src/recovery.rs"
+          cat > "$scratch/Cargo.toml" <<'TOML'
+          [package]
+          name = "recovery-route-harness"
+          version = "0.1.0"
+          edition = "2021"
+          [features]
+          admission-api-harness = []
+          [dependencies]
+          axum = "0.7"
+          reqwest = { version = "=0.12.9", default-features = false, features = ["json", "rustls-tls"] }
+          serde = { version = "1", features = ["derive"] }
+          serde_json = "1"
+          sha2 = "0.10"
+          hex = "0.4"
+          tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+          TOML
+          cat > "$scratch/src/lib.rs" <<'RUST'
+          #[allow(dead_code)]
+          mod admission;
+          #[allow(dead_code)]
+          mod recovery_policy;
+          #[allow(dead_code)]
+          mod recovery;
+          mod config {
+              pub(crate) fn first_env(_: &[&str]) -> Option<String> { None }
+          }
+          mod state {
+              #[derive(Clone)]
+              pub(crate) struct AppState { pub(crate) db: Option<()> }
+          }
+          mod http {
+              use axum::{http::{HeaderMap, StatusCode}, response::{Response, IntoResponse}};
+              use crate::state::AppState;
+              pub(crate) fn require_auth(headers: &HeaderMap, _: &AppState) -> Result<(), Response> {
+                  if headers.get("x-server-auth").is_some_and(|h| h == "test-secret") {
+                      Ok(())
+                  } else {
+                      Err(StatusCode::UNAUTHORIZED.into_response())
+                  }
+              }
+          }
+          mod db {
+              pub(crate) async fn record_recovery_denial(
+                  _: &(), _: &str, _: &str, _: &str, _: &str
+              ) -> Result<bool, ()> { Ok(true) }
+          }
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+              use axum::{body::Bytes, extract::State, http::{HeaderMap, HeaderValue, StatusCode}};
+              fn valid_request() -> Bytes {
+                  Bytes::from(serde_json::json!({
+                      "repo":"gha-indie-worker/gha-indie-worker.rs",
+                      "run_id":42,"attempt":1,"head_sha":"a".repeat(40)
+                  }).to_string())
+              }
+              #[tokio::test]
+              async fn unauthenticated_observation_is_rejected() {
+                  let response = recovery::observe(
+                      State(state::AppState { db: None }),
+                      HeaderMap::new(), valid_request()
+                  ).await;
+                  assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+              }
+              #[tokio::test]
+              async fn authorized_without_database_fails_closed() {
+                  let mut headers = HeaderMap::new();
+                  headers.insert("x-server-auth", HeaderValue::from_static("test-secret"));
+                  let response = recovery::observe(
+                      State(state::AppState { db: None }), headers, valid_request()
+                  ).await;
+                  assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+              }
+              #[tokio::test]
+              async fn storage_without_read_token_fails_closed() {
+                  let mut headers = HeaderMap::new();
+                  headers.insert("x-server-auth", HeaderValue::from_static("test-secret"));
+                  let response = recovery::observe(
+                      State(state::AppState { db: Some(()) }), headers, valid_request()
+                  ).await;
+                  assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+              }
+          }
+          RUST
+          cargo generate-lockfile --manifest-path "$scratch/Cargo.toml"
+          cargo +1.97.0 test --manifest-path "$scratch/Cargo.toml" --features admission-api-harness --locked
+          cargo +1.97.0 check --manifest-path "$scratch/Cargo.toml" --locked
