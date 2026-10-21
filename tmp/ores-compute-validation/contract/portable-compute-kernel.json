@@ -5,9 +5,19 @@
   "sourceNeutralKernelIR": true,
   "sourceSyntaxEnabled": false,
   "sourceSyntaxGate": "fail-closed-until-typed-effects-and-lowering",
-  "elementTypes": ["f32"],
-  "operations": ["scale", "bias", "scale-bias"],
-  "layouts": ["aos", "soa", "aosoa"],
+  "elementTypes": [
+    "f32"
+  ],
+  "operations": [
+    "scale",
+    "bias",
+    "scale-bias"
+  ],
+  "layouts": [
+    "aos",
+    "soa",
+    "aosoa"
+  ],
   "layoutRules": {
     "scalarBytes": 4,
     "alignmentPowerOfTwo": true,
@@ -45,12 +55,16 @@
     "emissionIsExecutionEvidence": false,
     "providerAuthenticationRequired": true,
     "physicalBufferProvenanceRequired": true,
-    "deviceEventEvidenceRequired": true
+    "deviceEventEvidenceRequired": true,
+    "javaEmitterImplemented": true,
+    "nativeEmitterImplemented": true,
+    "exactArtifactParityRequired": true
   },
   "promotion": {
     "requiresJavaCpuReferenceExecution": true,
     "requiresNativeCpuReferenceExecution": true,
     "requiresJavaNativeResultParity": true,
-    "requiresSourceSyntaxToRemainFailClosed": true
+    "requiresSourceSyntaxToRemainFailClosed": true,
+    "requiresJavaNativeOpenClArtifactParity": true
   }
 }
