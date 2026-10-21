@@ -5,6 +5,13 @@
 //! completed, failed run. Raw repository output and free-form substring
 //! matching are deliberately outside this boundary.
 
+// The production adapter lives inside the sealed admission module so only
+// authenticated provider parsing may ever issue trusted evidence. Regular
+// rustc --test stays dependency-free; the separate API harness enables it.
+#[cfg(any(not(test), feature = "admission-api-harness"))]
+#[allow(dead_code)]
+mod github_api;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AdmissionFailureKind {
     BillingOrSpending,
