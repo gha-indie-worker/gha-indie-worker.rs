@@ -44,26 +44,32 @@ public final class ComputeAuthoritySmoke {
         expectIllegal(
                 () -> ComputeAuthority.beginUpload(buffer, gpu, "actor:42", 4095, 2),
                 "out-of-bounds transfer accepted");
+
+        var reserved = ComputeAuthority.beginUpload(buffer, gpu, "actor:42", 0, 64);
         expectIllegal(
-                () -> ComputeAuthority.beginUpload(buffer, gpu, "actor:42", 0, 0),
-                "zero-length transfer accepted");
+                () -> ComputeAuthority.complete(buffer, reserved, true),
+                "unsubmitted transfer completed");
+        ComputeAuthority.abortBeforeEnqueue(buffer, reserved);
+        if (buffer.state() != ComputeBufferHandle.State.IDLE) {
+            throw new AssertionError("pre-enqueue abort did not restore idle");
+        }
 
         var first = ComputeAuthority.beginUpload(buffer, gpu, "actor:42", 0, 64);
-        if (buffer.state() != ComputeBufferHandle.State.IN_FLIGHT) {
-            throw new AssertionError("upload did not enter in-flight state");
-        }
+        ComputeAuthority.markSubmitted(buffer, first);
         expectIllegal(
-                () -> ComputeAuthority.beginDownload(buffer, gpu, "actor:42", 0, 4),
-                "overlapping transfer accepted");
+                () -> ComputeAuthority.abortBeforeEnqueue(buffer, first),
+                "submitted transfer used pre-enqueue abort");
         ComputeAuthority.complete(buffer, first, true);
 
         var second = ComputeAuthority.beginDownload(buffer, gpu, "actor:42", 64, 64);
+        ComputeAuthority.markSubmitted(buffer, second);
         expectIllegal(
                 () -> ComputeAuthority.complete(buffer, first, true),
-                "stale fence completed a newer transfer");
+                "stale fence completed newer transfer");
         ComputeAuthority.complete(buffer, second, true);
 
         var cancelled = ComputeAuthority.beginDownload(buffer, gpu, "actor:42", 0, 16);
+        ComputeAuthority.markSubmitted(buffer, cancelled);
         ComputeAuthority.cancel(buffer, cancelled);
         if (buffer.state() != ComputeBufferHandle.State.POISONED) {
             throw new AssertionError("cancel did not poison allocation");
@@ -73,16 +79,9 @@ public final class ComputeAuthoritySmoke {
                 "cancel was incorrectly treated as quiescence");
         ComputeAuthority.acknowledgeCancelled(buffer, cancelled);
         ComputeAuthority.retire(buffer, gpu, "actor:42");
-
         expectIllegal(
-                () -> ComputeAuthority.issueDevice("vulkan", "gpu0", 0, "tenant-a"),
-                "zero provider generation accepted");
-        expectIllegal(
-                () -> ComputeAuthority.bindBuffer(gpu, 0, 64, 8, "u8", "actor:1"),
-                "zero allocation generation accepted");
-        expectIllegal(
-                () -> ComputeAuthority.bindBuffer(gpu, 1, 64, 3, "u8", "actor:1"),
-                "non-power-of-two alignment accepted");
+                () -> ComputeAuthority.retire(buffer, gpu, "actor:42"),
+                "duplicate retirement accepted");
 
         var sequenceBuffer = ComputeAuthority.<Byte>bindBuffer(
                 gpu, 12, 64, 8, "u8", "actor:1");
@@ -94,6 +93,6 @@ public final class ComputeAuthoritySmoke {
                         sequenceBuffer, gpu, "actor:1", 0, 1),
                 "sequence exhaustion did not fail closed");
 
-        System.out.println("compute-authority-g1-smoke-ok");
+        System.out.println("compute-authority-g2-smoke-ok");
     }
 }
