@@ -575,6 +575,8 @@ mod e2e {
             github_webhook_secret: Some(GH_HOOK.to_string()),
             registry_webhook_secret: Some(REG_HOOK.to_string()),
             webhook_rules: Vec::new(),
+            github_recovery_enabled: false,
+            github_recovery_token: None,
             gh_sync_enabled: false,
             gh_sync_token: None,
             gh_sync_rules: Vec::new(),
