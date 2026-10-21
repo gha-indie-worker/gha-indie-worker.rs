@@ -198,6 +198,8 @@ pub(crate) fn classify_admission_failure(
         .trim()
         .to_ascii_lowercase();
     let steps_started = evidence.steps_observed.is_some_and(|steps| steps > 0);
+    let observation_complete = evidence.jobs_observed.is_some()
+        && evidence.steps_observed == Some(0);
 
     let diagnostic = match unique_diagnostic_kind(evidence.platform_diagnostics) {
         Ok(diagnostic) => diagnostic,
@@ -258,22 +260,22 @@ pub(crate) fn classify_admission_failure(
         Some(PlatformDiagnosticKind::BillingOrSpending) => {
             return AdmissionClassification::explicit(
                 AdmissionFailureKind::BillingOrSpending,
-                terminal,
-                if terminal {
-                    "an authorized billing diagnostic accompanies a completed admission failure"
+                terminal && observation_complete,
+                if terminal && observation_complete {
+                    "an authorized billing diagnostic accompanies a completed admission failure with complete zero-step evidence"
                 } else {
-                    "billing evidence exists, but the run is not a completed admission failure"
+                    "billing evidence or complete zero-step observations are insufficient for fallback"
                 },
             );
         }
         Some(PlatformDiagnosticKind::RunnerLabelOrCapacity) => {
             return AdmissionClassification::explicit(
                 AdmissionFailureKind::RunnerLabelOrCapacity,
-                terminal,
-                if terminal {
-                    "an authorized runner diagnostic accompanies a completed admission failure"
+                terminal && observation_complete,
+                if terminal && observation_complete {
+                    "an authorized runner diagnostic accompanies a completed admission failure with complete zero-step evidence"
                 } else {
-                    "runner evidence exists, but the run is not a completed admission failure"
+                    "runner evidence or complete zero-step observations are insufficient for fallback"
                 },
             );
         }
