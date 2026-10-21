@@ -218,3 +218,65 @@ jobs:
           cp -- src/admission.rs src/admission_formal.rs "$scan_dir/src/"
           cp -- .github/workflows/admission-classifier.yml "$scan_dir/.github/workflows/"
           "$RUNNER_TEMP/gitleaks" dir --redact --no-banner "$scan_dir"
+
+  admission-api-adapter:
+    name: admission-api-adapter
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout immutable PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          show-progress: false
+          submodules: false
+      - name: Assert exact head and source boundary
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --check
+          test -f src/admission/github_api.rs
+      - name: Install pinned Rust 1.97.0
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: '1.97.0'
+          components: rustfmt
+      - name: Validate source formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustfmt --edition 2021 --check src/admission/github_api.rs
+      - name: Compile production adapter and run adversarial API contract tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          scratch="$RUNNER_TEMP/admission-github-api"
+          mkdir -p "$scratch/src/admission"
+          cp src/admission.rs "$scratch/src/admission.rs"
+          cp src/admission/github_api.rs "$scratch/src/admission/github_api.rs"
+          cat > "$scratch/src/lib.rs" <<'EOF'
+          #[allow(dead_code)]
+          mod admission;
+          EOF
+          cat > "$scratch/Cargo.toml" <<'EOF'
+          [package]
+          name = "admission-github-api-harness"
+          version = "0.1.0"
+          edition = "2021"
+
+          [features]
+          admission-api-harness = []
+
+          [dependencies]
+          reqwest = { version = "=0.12.9", default-features = false, features = ["json", "rustls-tls"] }
+          serde_json = "1"
+          EOF
+          cargo generate-lockfile --manifest-path "$scratch/Cargo.toml"
+          cargo test --manifest-path "$scratch/Cargo.toml" --features admission-api-harness --locked -- --nocapture
+          cargo check --manifest-path "$scratch/Cargo.toml" --locked
