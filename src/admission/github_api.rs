@@ -1,6 +1,6 @@
 //! Read-only GitHub Actions run observer. No fallback issuer, dispatcher, or export.
- //! The authenticated transport is fixed to api.github.com; raw user strings
- //! cannot select an alternate host or issue a trusted provider diagnostic.
+//! The authenticated transport is fixed to api.github.com; raw user strings
+//! cannot select an alternate host or issue a trusted provider diagnostic.
 use super::{classify_admission_failure, AdmissionClassification, WorkflowAdmissionEvidence};
 use serde_json::Value;
 use std::collections::HashSet;
@@ -148,13 +148,21 @@ fn read_pages(pages: &[Value], id: &RunIdentity) -> Result<(u32, u32, bool), Obs
                     return Err(ObserveError::MalformedResponse);
                 }
             }
-            if job.get("runner_id").and_then(Value::as_u64).is_some_and(|n| n > 0)
-                || job.get("runner_name").and_then(Value::as_str).is_some_and(|s| !s.is_empty())
+            if job
+                .get("runner_id")
+                .and_then(Value::as_u64)
+                .is_some_and(|n| n > 0)
+                || job
+                    .get("runner_name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| !s.is_empty())
             {
                 assigned = true;
             }
         }
-        count = count.checked_add(jobs.len()).ok_or(ObserveError::IncompletePagination)?;
+        count = count
+            .checked_add(jobs.len())
+            .ok_or(ObserveError::IncompletePagination)?;
     }
     let total = expected_total.ok_or(ObserveError::IncompletePagination)?;
     if count != total || pages.len() != total.max(1).div_ceil(PAGE_SIZE) {
@@ -203,11 +211,7 @@ fn make_receipt(
     })
 }
 
-async fn get_json(
-    client: &reqwest::Client,
-    token: &str,
-    url: &str,
-) -> Result<Value, ObserveError> {
+async fn get_json(client: &reqwest::Client, token: &str, url: &str) -> Result<Value, ObserveError> {
     let mut response = client
         .get(url)
         .header("Accept", "application/vnd.github+json")
@@ -218,12 +222,18 @@ async fn get_json(
         .await
         .map_err(|_| ObserveError::Transport)?;
     if response.status() != reqwest::StatusCode::OK
-        || response.content_length().is_some_and(|n| n > MAX_BODY_BYTES as u64)
+        || response
+            .content_length()
+            .is_some_and(|n| n > MAX_BODY_BYTES as u64)
     {
         return Err(ObserveError::Transport);
     }
     let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|_| ObserveError::Transport)? {
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| ObserveError::Transport)?
+    {
         if chunk.len() > MAX_BODY_BYTES - body.len() {
             return Err(ObserveError::MalformedResponse);
         }
@@ -299,75 +309,110 @@ mod tests {
     }
     fn job(id: &RunIdentity, job_id: u64, steps: usize) -> Value {
         let steps: Vec<Value> = (0..steps)
-            .map(|n| json!({"number":n+1, "name":"step"})).collect();
+            .map(|n| json!({"number":n+1, "name":"step"}))
+            .collect();
         json!({"id":job_id, "run_id":id.run_id, "run_attempt":id.attempt,
             "head_sha":id.head_sha, "status":"completed", "conclusion":"failure",
             "runner_id":null, "runner_name":null, "steps":steps})
     }
     #[test]
     fn zero_jobs_never_authorizes_fallback_without_typed_diagnostic() {
-        let id=id(); let r=run(&id);
-        let receipt=make_receipt(&id,&r,&[json!({"total_count":0,"jobs":[]})],&r).unwrap();
-        assert_eq!(receipt.jobs_observed,0);
-        assert_eq!(receipt.steps_observed,0);
+        let id = id();
+        let r = run(&id);
+        let receipt = make_receipt(&id, &r, &[json!({"total_count":0,"jobs":[]})], &r).unwrap();
+        assert_eq!(receipt.jobs_observed, 0);
+        assert_eq!(receipt.steps_observed, 0);
         assert!(!receipt.classification.fallback_allowed);
     }
     #[test]
     fn stepful_job_fails_closed() {
-        let id=id(); let r=run(&id);
-        let receipt=make_receipt(&id,&r,&[json!({"total_count":1,"jobs":[job(&id,5,3)]})],&r).unwrap();
-        assert_eq!(receipt.steps_observed,3);
+        let id = id();
+        let r = run(&id);
+        let receipt = make_receipt(
+            &id,
+            &r,
+            &[json!({"total_count":1,"jobs":[job(&id,5,3)]})],
+            &r,
+        )
+        .unwrap();
+        assert_eq!(receipt.steps_observed, 3);
         assert!(!receipt.classification.fallback_allowed);
     }
     #[test]
     fn duplicate_job_or_missing_pages_rejected() {
-        let id=id(); let j=job(&id,5,0);
-        assert_eq!(read_pages(&[json!({"total_count":2,"jobs":[j.clone(),j]})],&id),
-            Err(ObserveError::IncompletePagination));
-        assert_eq!(read_pages(&[json!({"total_count":101,"jobs":[]})],&id),
-            Err(ObserveError::IncompletePagination));
+        let id = id();
+        let j = job(&id, 5, 0);
+        assert_eq!(
+            read_pages(&[json!({"total_count":2,"jobs":[j.clone(),j]})], &id),
+            Err(ObserveError::IncompletePagination)
+        );
+        assert_eq!(
+            read_pages(&[json!({"total_count":101,"jobs":[]})], &id),
+            Err(ObserveError::IncompletePagination)
+        );
     }
     #[test]
     fn attempt_sha_repo_and_run_binding_rejected_on_mismatch() {
-        let id=id(); let r=run(&id);
-        for field in ["id","run_attempt","head_sha"] {
-            let mut wrong=r.clone();
-            wrong[field]=if field=="head_sha"{json!("b".repeat(40))}else{json!(999)};
-            assert_eq!(make_receipt(&id,&wrong,&[json!({"total_count":0,"jobs":[]})],&r).unwrap_err(),
-                ObserveError::MismatchedIdentity);
+        let id = id();
+        let r = run(&id);
+        for field in ["id", "run_attempt", "head_sha"] {
+            let mut wrong = r.clone();
+            wrong[field] = if field == "head_sha" {
+                json!("b".repeat(40))
+            } else {
+                json!(999)
+            };
+            assert_eq!(
+                make_receipt(&id, &wrong, &[json!({"total_count":0,"jobs":[]})], &r).unwrap_err(),
+                ObserveError::MismatchedIdentity
+            );
         }
-        let mut wrong=r.clone();wrong["repository"]["full_name"]=json!("other/repo");
-        assert_eq!(read_run(&wrong,&id),Err(ObserveError::MismatchedIdentity));
+        let mut wrong = r.clone();
+        wrong["repository"]["full_name"] = json!("other/repo");
+        assert_eq!(read_run(&wrong, &id), Err(ObserveError::MismatchedIdentity));
     }
     #[test]
     fn changed_run_state_after_pagination_rejected() {
-        let id=id(); let r=run(&id);let mut newer=r.clone();
-        newer["conclusion"]=json!("success");
-        assert_eq!(make_receipt(&id,&r,&[json!({"total_count":0,"jobs":[]})],&newer).unwrap_err(),
-            ObserveError::ChangedDuringObservation);
+        let id = id();
+        let r = run(&id);
+        let mut newer = r.clone();
+        newer["conclusion"] = json!("success");
+        assert_eq!(
+            make_receipt(&id, &r, &[json!({"total_count":0,"jobs":[]})], &newer).unwrap_err(),
+            ObserveError::ChangedDuringObservation
+        );
     }
     #[test]
     fn job_with_mismatched_attempt_or_head_rejected() {
-        let id=id();let mut j=job(&id,7,0);
-        j["run_attempt"]=json!(1);
-        assert_eq!(read_pages(&[json!({"total_count":1,"jobs":[j]})],&id),
-            Err(ObserveError::MismatchedIdentity));
+        let id = id();
+        let mut j = job(&id, 7, 0);
+        j["run_attempt"] = json!(1);
+        assert_eq!(
+            read_pages(&[json!({"total_count":1,"jobs":[j]})], &id),
+            Err(ObserveError::MismatchedIdentity)
+        );
     }
     #[test]
     fn runner_assignment_never_authorizes_fallback() {
-        let id=id();let r=run(&id);let mut j=job(&id,7,0);
-        j["runner_id"]=json!(101);
-        let receipt=make_receipt(&id,&r,&[json!({"total_count":1,"jobs":[j]})],&r).unwrap();
+        let id = id();
+        let r = run(&id);
+        let mut j = job(&id, 7, 0);
+        j["runner_id"] = json!(101);
+        let receipt = make_receipt(&id, &r, &[json!({"total_count":1,"jobs":[j]})], &r).unwrap();
         assert!(receipt.runner_assigned);
         assert!(!receipt.classification.fallback_allowed);
     }
     #[test]
     fn rejects_incomplete_steps_and_invalid_identity() {
-        let id=id();let mut j=job(&id,7,0);
+        let id = id();
+        let mut j = job(&id, 7, 0);
         j.as_object_mut().unwrap().remove("steps");
-        assert_eq!(read_pages(&[json!({"total_count":1,"jobs":[j]})],&id),
-            Err(ObserveError::MalformedResponse));
-        let mut wrong=id;wrong.repo="https://evil.example".into();
+        assert_eq!(
+            read_pages(&[json!({"total_count":1,"jobs":[j]})], &id),
+            Err(ObserveError::MalformedResponse)
+        );
+        let mut wrong = id;
+        wrong.repo = "https://evil.example".into();
         assert!(!identity_valid(&wrong));
     }
 }
