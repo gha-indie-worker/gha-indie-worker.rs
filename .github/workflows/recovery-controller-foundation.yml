@@ -1,0 +1,81 @@
+name: recovery controller foundation
+
+on:
+  pull_request:
+    paths:
+      - src/admission.rs
+      - src/admission/github_api.rs
+      - src/config.rs
+      - src/http.rs
+      - src/main.rs
+      - src/recovery.rs
+      - src/state.rs
+      - src/webhooks.rs
+      - .github/workflows/recovery-controller-foundation.yml
+  push:
+    branches: [agent/den-3440-production-observer-20261021]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: recovery-controller-foundation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  recovery-rust:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          show-progress: false
+          submodules: false
+      - name: Assert exact head
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: '1.97.0'
+          components: rustfmt
+      - name: Parse and format-check recovery slice
+        run: |
+          set -euo pipefail
+          rustfmt --edition 2021 --check             src/recovery.rs             src/config.rs             src/state.rs             src/webhooks.rs             src/http.rs             src/main.rs
+      - name: Execute recovery model twice deterministically
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --edition 2021 --test -D warnings src/recovery.rs -o "$RUNNER_TEMP/recovery-tests"
+          "$RUNNER_TEMP/recovery-tests" | tee "$RUNNER_TEMP/run-a"
+          "$RUNNER_TEMP/recovery-tests" > "$RUNNER_TEMP/run-b"
+          cmp "$RUNNER_TEMP/run-a" "$RUNNER_TEMP/run-b"
+      - name: Enforce non-activating observer boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq 'BUILD_SERVER_GITHUB_ACTIONS_OBSERVER_TOKEN' src/config.rs
+          grep -Fq 'observe_failed_workflow_run' src/webhooks.rs
+          grep -Fq 'inspect_authenticated' src/webhooks.rs
+          grep -Fq 'Observation is deliberately non-activating' src/webhooks.rs
+          if sed -n '/async fn observe_failed_workflow_run/,/^}/p' src/webhooks.rs             | grep -E 'enqueue_build|submit_from_nats|dispatch|lambda_exec|Command::|std::process'; then
+            echo 'observer path contains an execution primitive' >&2
+            exit 1
+          fi
+          grep -Fq '(RecoveryState::Observed, RecoveryState::Verified)' src/recovery.rs
+          grep -Fq '(RecoveryState::Verified, RecoveryState::Claimed)' src/recovery.rs
+          grep -Fq '(RecoveryState::Claimed, RecoveryState::DispatchPending)' src/recovery.rs
+          if grep -Fq '(RecoveryState::Observed, RecoveryState::Dispatched)' src/recovery.rs; then
+            echo 'unsafe observation-to-dispatch transition exists' >&2
+            exit 1
+          fi
+          git diff --check
