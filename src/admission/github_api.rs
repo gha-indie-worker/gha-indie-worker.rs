@@ -175,6 +175,25 @@ fn read_pages(pages: &[Value], id: &RunIdentity) -> Result<(u32, u32, bool), Obs
     ))
 }
 
+/// Two observations of the same completed attempt must agree on *every* job
+/// and step field, not merely on total_count and run status. GitHub can change
+/// pagination while jobs are being completed or rerun. A mixed snapshot must
+/// never become an admission receipt.
+fn validate_consistent_snapshots(
+    first: &[Value],
+    second: &[Value],
+    id: &RunIdentity,
+) -> Result<(), ObserveError> {
+    // Validate both independently; equality alone would accept two copies of
+    // malformed or incomplete provider data.
+    read_pages(first, id)?;
+    read_pages(second, id)?;
+    if first != second {
+        return Err(ObserveError::ChangedDuringObservation);
+    }
+    Ok(())
+}
+
 fn make_receipt(
     id: &RunIdentity,
     first_run: &Value,
@@ -285,6 +304,18 @@ pub(crate) async fn inspect_authenticated(
         );
         pages.push(get_json(&client, token, &url).await?);
     }
+    // Double-collect every attempt-scoped page. The second run fetch cannot
+    // detect job changes that leave the run's status and conclusion unchanged.
+    // This is an intentionally conservative extra read; no fallback is issued.
+    let mut verification_pages = Vec::with_capacity(total_pages);
+    for number in 1..=total_pages {
+        let url = format!(
+            "{base}/attempts/{}/jobs?per_page={PAGE_SIZE}&page={number}",
+            id.attempt
+        );
+        verification_pages.push(get_json(&client, token, &url).await?);
+    }
+    validate_consistent_snapshots(&pages, &verification_pages, id)?;
     let second = get_json(&client, token, &base).await?;
     make_receipt(id, &first, &pages, &second)
 }
@@ -421,6 +452,65 @@ mod tests {
         assert!(receipt.runner_assigned);
         assert!(!receipt.classification.fallback_allowed);
     }
+    #[test]
+    fn double_snapshot_accepts_identical_complete_pages() {
+        let id = id();
+        let first = vec![json!({"total_count":1,"jobs":[job(&id,7,0)]})];
+        assert_eq!(
+            validate_consistent_snapshots(&first, &first, &id),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn detects_job_replacement_despite_unchanged_total_and_run_status() {
+        let id = id();
+        let first = vec![json!({"total_count":1,"jobs":[job(&id,7,0)]})];
+        let second = vec![json!({"total_count":1,"jobs":[job(&id,8,0)]})];
+        assert_eq!(
+            validate_consistent_snapshots(&first, &second, &id),
+            Err(ObserveError::ChangedDuringObservation)
+        );
+    }
+
+    #[test]
+    fn detects_step_mutation_and_runner_assignment_between_reads() {
+        let id = id();
+        let first = vec![json!({"total_count":1,"jobs":[job(&id,7,0)]})];
+        let mut changed = job(&id, 7, 0);
+        changed["steps"] = json!([{"number":1,"name":"checkout"}]);
+        let second = vec![json!({"total_count":1,"jobs":[changed]})];
+        assert_eq!(
+            validate_consistent_snapshots(&first, &second, &id),
+            Err(ObserveError::ChangedDuringObservation)
+        );
+        let mut assigned = job(&id, 7, 0);
+        assigned["runner_id"] = json!(123);
+        assert_eq!(
+            validate_consistent_snapshots(
+                &first,
+                &[json!({"total_count":1,"jobs":[assigned]})],
+                &id
+            ),
+            Err(ObserveError::ChangedDuringObservation)
+        );
+    }
+
+    #[test]
+    fn rejects_truncated_or_inconsistent_second_snapshot() {
+        let id = id();
+        let first = vec![json!({"total_count":1,"jobs":[job(&id,7,0)]})];
+        let second = vec![json!({"total_count":1,"jobs":[]})];
+        assert_eq!(
+            validate_consistent_snapshots(&first, &second, &id),
+            Err(ObserveError::IncompletePagination)
+        );
+        assert_eq!(
+            validate_consistent_snapshots(&first, &[], &id),
+            Err(ObserveError::IncompletePagination)
+        );
+    }
+
     #[test]
     fn rejects_incomplete_steps_and_invalid_identity() {
         let id = id();
