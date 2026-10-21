@@ -3,7 +3,7 @@ name: Ores compute OpenCL G2 parity validation
 on:
   push:
     branches:
-      - test/ores-compute-artifact-abi-20261021
+      - test/ores-compute-provider-g3-hardening-20261021
   pull_request:
 
 permissions:
@@ -53,6 +53,9 @@ jobs:
               "opencl_java_head": "6be59ea96215d7027cc931c8e1108eb3c8a7a650",
               "opencl_llvm_head": "06e573731b9b324d491ee111c8cb1e850e687780",
               "opencl_common_head": "e6de5d452d53535794eb01cd70f5cf8eb381bf59",
+              "g3_common_head": "8bec4168691f5b57792d1aeff93973544f42382e",
+              "g3_java_head": "73a81e52cf6ffa5d442147c5005423055c4676d6",
+              "g3_llvm_head": "f95a512d82c7c693934dd0d477249cec25358975",
           }
           for key, value in expected.items():
               assert manifest[key] == value, (key, manifest[key], value)
@@ -64,7 +67,7 @@ jobs:
               assert actual == item["source_blob_sha"], (
                   item["dest"], actual, item["source_blob_sha"]
               )
-              assert item["source_ref"] in ("main", "feat/portable-compute-opencl-g2", "feat/portable-compute-artifact-abi-hardening")
+              assert item["source_ref"] in ("main", "feat/portable-compute-opencl-g2", "feat/portable-compute-artifact-abi-hardening", "feat/portable-compute-provider-g3")
           print("exact-opencl-g2-mirror-provenance-ok")
           PY
 
@@ -87,6 +90,8 @@ jobs:
             dev.oreslang.runtime.compute.ComputeRegistrySmoke
           java -cp tmp/ores-compute-validation/out \
             dev.oreslang.runtime.compute.ComputeAuthoritySmoke
+          java -cp tmp/ores-compute-validation/out \
+            dev.oreslang.runtime.compute.TrustedOpenClProviderSmoke
 
       - name: Run Java G2 CPU reference gate
         shell: bash
@@ -187,6 +192,22 @@ jobs:
           cat "${RUNNER_TEMP}/native-opencl.txt"
           diff -u "${RUNNER_TEMP}/java-opencl.txt" "${RUNNER_TEMP}/native-opencl.txt"
           echo "java-native-opencl-artifact-parity-ok"
+
+      - name: Run native G3 provider state machine and conditional real GPU probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          CXXFLAGS="-std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror"
+          INC="-Itmp/ores-compute-validation/cpp"
+          c++ $CXXFLAGS -pthread $INC \
+            tmp/ores-compute-validation/cpp/opencl_provider_g3_test.cpp \
+            -o "${RUNNER_TEMP}/opencl-provider-g3"
+          "${RUNNER_TEMP}/opencl-provider-g3"
+
+          c++ $CXXFLAGS -pthread $INC \
+            tmp/ores-compute-validation/cpp/opencl_system_gpu_probe.cpp \
+            -ldl -o "${RUNNER_TEMP}/opencl-system-probe"
+          "${RUNNER_TEMP}/opencl-system-probe"
 
       - name: Validate accelerator build-profile constraints
         shell: bash
