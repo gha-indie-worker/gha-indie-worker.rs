@@ -2,8 +2,8 @@
 
 #include "oreslang/runtime/GpuBufferFence.hpp"
 
-#include <atomic>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -64,12 +64,12 @@ public:
     }
     std::uint64_t sequence() const noexcept { return ticket_.sequence(); }
     TransferDirection direction() const noexcept { return direction_; }
-    std::uint64_t offset() const noexcept { return offset_; }
-    std::uint64_t length() const noexcept { return length_; }
+    std::int64_t offset() const noexcept { return offset_; }
+    std::int64_t length() const noexcept { return length_; }
 
 private:
     Fence(Device device, gpu::Ticket ticket, TransferDirection direction,
-          std::uint64_t offset, std::uint64_t length) noexcept
+          std::int64_t offset, std::int64_t length) noexcept
         : device_(std::move(device)),
           ticket_(std::move(ticket)),
           direction_(direction),
@@ -79,8 +79,8 @@ private:
     Device device_;
     gpu::Ticket ticket_;
     TransferDirection direction_;
-    std::uint64_t offset_;
-    std::uint64_t length_;
+    std::int64_t offset_;
+    std::int64_t length_;
 
     friend class Authority;
 };
@@ -101,10 +101,7 @@ public:
     std::uint64_t alignment() const noexcept { return alignment_; }
     const std::string& type_tag() const noexcept { return type_tag_; }
     const std::string& owner_domain() const noexcept { return owner_domain_; }
-    gpu::Status status() const {
-        if (retired_.load(std::memory_order_acquire)) return gpu::Status::Closed;
-        return fence_.status();
-    }
+    gpu::Status status() const { return fence_.status(); }
 
 private:
     Buffer(Device device, std::uint64_t allocation_generation,
@@ -124,7 +121,9 @@ private:
               allocation_generation_},
           fence_(identity_, byte_length_) {
         if (allocation_generation_ == 0 || byte_length_ == 0
+                || byte_length_ > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())
                 || alignment_ == 0 || (alignment_ & (alignment_ - 1)) != 0
+                || alignment_ > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())
                 || type_tag_.empty() || owner_domain_.empty()) {
             throw std::invalid_argument("invalid portable compute buffer authority");
         }
@@ -138,7 +137,6 @@ private:
     std::string owner_domain_;
     gpu::Identity identity_;
     gpu::BufferFence fence_;
-    std::atomic<bool> retired_{false};
 
     friend class Authority;
 };
@@ -179,8 +177,8 @@ public:
             Buffer<T>& buffer,
             const Device& expected_device,
             const std::string& expected_owner_domain,
-            std::uint64_t offset,
-            std::uint64_t length) {
+            std::int64_t offset,
+            std::int64_t length) {
         return begin_transfer(
                 buffer, expected_device, expected_owner_domain,
                 offset, length, TransferDirection::Upload);
@@ -191,11 +189,23 @@ public:
             Buffer<T>& buffer,
             const Device& expected_device,
             const std::string& expected_owner_domain,
-            std::uint64_t offset,
-            std::uint64_t length) {
+            std::int64_t offset,
+            std::int64_t length) {
         return begin_transfer(
                 buffer, expected_device, expected_owner_domain,
                 offset, length, TransferDirection::Download);
+    }
+
+    template <typename T>
+    static void mark_submitted(Buffer<T>& buffer, const Fence& fence) {
+        validate_fence_device(buffer, fence);
+        buffer.fence_.mark_submitted(fence.ticket_);
+    }
+
+    template <typename T>
+    static void abort_before_enqueue(Buffer<T>& buffer, const Fence& fence) {
+        validate_fence_device(buffer, fence);
+        buffer.fence_.abort_unsubmitted(fence.ticket_);
     }
 
     template <typename T>
@@ -224,7 +234,6 @@ public:
             const std::string& expected_owner_domain) {
         validate_owner(buffer, expected_device, expected_owner_domain);
         buffer.fence_.retire_after_backend_release(buffer.identity_);
-        buffer.retired_.store(true, std::memory_order_release);
     }
 
 private:
@@ -233,12 +242,17 @@ private:
             Buffer<T>& buffer,
             const Device& expected_device,
             const std::string& expected_owner_domain,
-            std::uint64_t offset,
-            std::uint64_t length,
+            std::int64_t offset,
+            std::int64_t length,
             TransferDirection direction) {
         validate_owner(buffer, expected_device, expected_owner_domain);
-        if (length == 0 || offset > buffer.byte_length_
-                || length > buffer.byte_length_ - offset) {
+        if (offset < 0 || length <= 0) {
+            throw std::invalid_argument("portable compute transfer outside allocation");
+        }
+        const auto unsigned_offset = static_cast<std::uint64_t>(offset);
+        const auto unsigned_length = static_cast<std::uint64_t>(length);
+        if (unsigned_offset > buffer.byte_length_
+                || unsigned_length > buffer.byte_length_ - unsigned_offset) {
             throw std::invalid_argument("portable compute transfer outside allocation");
         }
         auto ticket = buffer.fence_.begin_command(buffer.identity_);
