@@ -1,0 +1,29 @@
+name: Ores compute stdlib mirror validation
+
+on:
+  push:
+    branches:
+      - test/ores-compute-stdlib-pr1780-112
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Compile mirrored Java compute SPI
+        run: |
+          mkdir -p tmp/ores-compute-validation/out
+          javac -d tmp/ores-compute-validation/out             tmp/ores-compute-validation/java/dev/oreslang/runtime/compute/*.java
+      - name: Run provider-registry smoke
+        run: |
+          java -cp tmp/ores-compute-validation/out             dev.oreslang.runtime.compute.ComputeRegistrySmoke
+      - name: Validate portable stdlib contract
+        run: python3 tmp/ores-compute-validation/validate.py
