@@ -1,6 +1,7 @@
 package dev.oreslang.runtime.compute;
 
 import java.util.Arrays;
+import java.util.Locale;
 import java.util.Objects;
 
 /**
@@ -94,6 +95,91 @@ public final class PortableKernelIR {
                         "only finite homogeneous f32 portable kernels are admitted");
             }
         }
+    }
+
+    public record GpuTarget(
+            int addressBits,
+            long maximumBufferBytes,
+            long maximumRows,
+            boolean float32) {}
+
+    public record OpenClArtifact(
+            String kernelName,
+            String deviceSource,
+            long requiredBytes,
+            long globalRows,
+            int globalFields) {}
+
+    /**
+     * Emits the portable OpenCL C 1.2 artifact for the admitted G2 subset.
+     *
+     * <p>Emission is not device execution evidence. No provider, queue,
+     * physical allocation, transfer, event or fallback is selected here.</p>
+     */
+    public static OpenClArtifact lowerOpenCl(Kernel kernel, GpuTarget target) {
+        Objects.requireNonNull(kernel, "kernel");
+        Objects.requireNonNull(target, "target");
+        Plan plan = kernel.layout();
+        long bytes = plan.byteLength();
+        if (target.addressBits() != 64
+                || !target.float32()
+                || target.maximumBufferBytes() <= 0
+                || target.maximumRows() <= 0
+                || plan.rows() == 0
+                || bytes == 0
+                || bytes > target.maximumBufferBytes()
+                || plan.rows() > target.maximumRows()) {
+            throw new IllegalArgumentException(
+                    "GPU target cannot admit kernel effects or buffer");
+        }
+
+        String offset = switch (plan.layout()) {
+            case AOS -> "(row * "
+                    + alignUp(checkedMul(plan.fields(), Float.BYTES), plan.alignment())
+                    + "UL + field * 4UL)";
+            case SOA -> "(field * "
+                    + alignUp(checkedMul(plan.rows(), Float.BYTES), plan.alignment())
+                    + "UL + row * 4UL)";
+            case AOSOA -> "((row / " + plan.lanes() + "UL) * "
+                    + alignUp(
+                            checkedMul(
+                                    checkedMul(plan.fields(), plan.lanes()),
+                                    Float.BYTES),
+                            plan.alignment())
+                    + "UL + field * "
+                    + checkedMul(plan.lanes(), Float.BYTES)
+                    + "UL + (row % " + plan.lanes() + "UL) * 4UL)";
+        };
+
+        String rhs = switch (kernel.operation()) {
+            case SCALE -> "(v * " + clFloat(kernel.scale()) + ")";
+            case BIAS -> "(v + " + clFloat(kernel.bias()) + ")";
+            case SCALE_BIAS -> "((v * " + clFloat(kernel.scale())
+                    + ") + " + clFloat(kernel.bias()) + ")";
+        };
+
+        String name = "oreslang_dop_f32";
+        String source = "#pragma OPENCL FP_CONTRACT OFF\n"
+                + "__kernel void " + name
+                + "(__global const float* src, __global float* dst) {\n"
+                + "  const ulong row = (ulong)get_global_id(0);\n"
+                + "  const ulong field = (ulong)get_global_id(1);\n"
+                + "  if (row >= " + plan.rows() + "UL || field >= "
+                + plan.fields() + "UL) return;\n"
+                + "  const ulong byteOffset = " + offset + ";\n"
+                + "  const ulong slot = byteOffset / 4UL;\n"
+                + "  const float v = src[slot];\n"
+                + "  dst[slot] = " + rhs + ";\n"
+                + "}\n";
+
+        return new OpenClArtifact(name, source, bytes, plan.rows(), plan.fields());
+    }
+
+    private static String clFloat(float value) {
+        if (!Float.isFinite(value)) {
+            throw new IllegalArgumentException("OpenCL constants must be finite f32 values");
+        }
+        return String.format(Locale.ROOT, "%.8e", (double) value) + "f";
     }
 
     /**
