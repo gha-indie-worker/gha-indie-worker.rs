@@ -42,7 +42,7 @@ jobs:
           from pathlib import Path
           manifest = json.loads(Path("tmp/ores-compute-g2/source-manifest.json").read_text())
           expected = {
-              "java_head": "f39152d64025a1cd73ae939590e6779ee2114a72",
+              "java_head": "370d2dc731ae8814c6510d8b4d968fb94bf699f9",
               "llvm_head": "e769573854697b4eeba7898fa9435896e0e5cdaf",
               "common_head": "a3f6b345a03247d513d2fb48143090ba7478e8c8",
               "profiles_head": "12583ddad6d5b4463f9ad7d8d207d0eb96b6b77a",
