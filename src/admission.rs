@@ -218,8 +218,14 @@ pub(crate) fn classify_admission_failure(
         .trim()
         .to_ascii_lowercase();
     let steps_started = evidence.steps_observed.is_some_and(|steps| steps > 0);
-    let observation_complete =
-        evidence.jobs_observed.is_some() && evidence.steps_observed == Some(0);
+    // A zero-job observation cannot simultaneously identify a job's runner.
+    // Treat this contradictory provider shape as incomplete evidence rather
+    // than assuming that no user code was ever admitted.
+    let runner_observation_consistent = evidence.jobs_observed != Some(0)
+        || (evidence.runner_name.is_none() && evidence.runner_labels.is_empty());
+    let observation_complete = evidence.jobs_observed.is_some()
+        && evidence.steps_observed == Some(0)
+        && runner_observation_consistent;
     // Application-authored check annotations are not independent platform
     // admission evidence, even if they describe billing or runner capacity.
     let trusted_fallback_source = evidence
