@@ -262,28 +262,25 @@ pub(crate) async fn inspect_authenticated(
         id.repo, id.run_id
     );
     let first = get_json(&client, token, &base).await?;
-    let total_pages;
-    let mut pages = Vec::new();
-    let mut number = 1_usize;
-    loop {
+    let first_page = get_json(
+        &client,
+        token,
+        &format!("{base}/attempts/{}/jobs?per_page={PAGE_SIZE}&page=1", id.attempt),
+    )
+    .await?;
+    let count = usize::try_from(integer(&first_page, "total_count")?)
+        .map_err(|_| ObserveError::MalformedResponse)?;
+    if count > MAX_JOBS {
+        return Err(ObserveError::IncompletePagination);
+    }
+    let total_pages = count.max(1).div_ceil(PAGE_SIZE);
+    let mut pages = vec![first_page];
+    for number in 2..=total_pages {
         let url = format!(
             "{base}/attempts/{}/jobs?per_page={PAGE_SIZE}&page={number}",
             id.attempt
         );
-        let page = get_json(&client, token, &url).await?;
-        if number == 1 {
-            let count = usize::try_from(integer(&page, "total_count")?)
-                .map_err(|_| ObserveError::MalformedResponse)?;
-            if count > MAX_JOBS {
-                return Err(ObserveError::IncompletePagination);
-            }
-            total_pages = count.max(1).div_ceil(PAGE_SIZE);
-        }
-        pages.push(page);
-        if number == total_pages {
-            break;
-        }
-        number += 1;
+        pages.push(get_json(&client, token, &url).await?);
     }
     let second = get_json(&client, token, &base).await?;
     make_receipt(id, &first, &pages, &second)
