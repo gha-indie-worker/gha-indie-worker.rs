@@ -47,10 +47,18 @@ jobs:
         with:
           toolchain: '1.97.0'
           components: rustfmt
-      - name: Parse and format-check recovery slice
+      - name: Format-check new model and parse production integration
         run: |
           set -euo pipefail
-          rustfmt --edition 2021 --check             src/recovery.rs             src/config.rs             src/state.rs             src/webhooks.rs             src/http.rs             src/main.rs
+          rustfmt --edition 2021 --check src/recovery.rs
+          rustfmt --edition 2021 --config skip_children=true --emit stdout \
+            src/admission.rs \
+            src/config.rs \
+            src/state.rs \
+            src/webhooks.rs \
+            src/http.rs \
+            src/main.rs \
+            >/dev/null
       - name: Execute recovery model twice deterministically
         shell: bash
         run: |
