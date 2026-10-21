@@ -305,9 +305,7 @@ mod tests {
     #[test]
     fn denied_and_terminal_records_are_absorbing() {
         let mut denied = RecoveryRecord::observed(key());
-        denied
-            .apply(0, RecoveryState::Denied, None, None)
-            .unwrap();
+        denied.apply(0, RecoveryState::Denied, None, None).unwrap();
         assert!(denied.state.terminal());
         assert_eq!(
             denied.apply(1, RecoveryState::Verified, None, None),
@@ -365,12 +363,7 @@ mod tests {
             .apply(1, RecoveryState::Claimed, Some("worker-a"), None)
             .unwrap();
         assert_eq!(
-            record.apply(
-                2,
-                RecoveryState::DispatchPending,
-                Some("worker-a"),
-                None
-            ),
+            record.apply(2, RecoveryState::DispatchPending, Some("worker-a"), None),
             Err(TransitionError::MissingDispatchId)
         );
     }
