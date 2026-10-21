@@ -108,7 +108,11 @@ public final class PortableKernelIR {
             String deviceSource,
             long requiredBytes,
             long globalRows,
-            int globalFields) {}
+            int globalFields,
+            int artifactAbiVersion,
+            int requiredAddressBits,
+            boolean requiredFloat32,
+            boolean requiredLittleEndian) {}
 
     /**
      * Emits the portable OpenCL C 1.2 artifact for the admitted G2 subset.
@@ -172,7 +176,16 @@ public final class PortableKernelIR {
                 + "  dst[slot] = " + rhs + ";\n"
                 + "}\n";
 
-        return new OpenClArtifact(name, source, bytes, plan.rows(), plan.fields());
+        return new OpenClArtifact(
+                name,
+                source,
+                bytes,
+                plan.rows(),
+                plan.fields(),
+                1,
+                64,
+                true,
+                true);
     }
 
     private static String clFloat(float value) {
