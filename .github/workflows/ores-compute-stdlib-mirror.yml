@@ -3,7 +3,7 @@ name: Ores compute stdlib mirror validation
 on:
   push:
     branches:
-      - test/ores-compute-main-hardening-20261021
+      - test/ores-compute-authority-g1-20261021
   pull_request:
 
 permissions:
@@ -45,6 +45,9 @@ jobs:
               "llvm_head": "a23d0b30ef8f05a786e01ee2c26cdd475071be68",
               "common_head": "c3740b580d6c38653a5943bff7dee0cb9e472949",
               "profiles_head": "d6b8a032b3a6751e4c44b822221623048bcd841f",
+              "authority_java_head": "9a31229971c2dfdf4dfc179f632dd393e4c3dad6",
+              "authority_llvm_head": "4092b531aaf9c05c960db58eed21cfc46797cbfe",
+              "authority_common_head": "28c57af6eaf0ce338fb40829ff8a345b3420cceb",
           }
           for key, value in expected_heads.items():
               assert manifest[key] == value, (key, manifest[key], value)
@@ -67,6 +70,12 @@ jobs:
         run: |
           set -euo pipefail
           java -cp tmp/ores-compute-validation/out             dev.oreslang.runtime.compute.ComputeRegistrySmoke
+      - name: Run sealed authority adversarial smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -cp tmp/ores-compute-validation/out \
+            dev.oreslang.runtime.compute.ComputeAuthoritySmoke
       - name: Validate portable stdlib contract
         shell: bash
         run: |
@@ -79,6 +88,15 @@ jobs:
           c++ --version
           c++ -std=c++17 -Wall -Wextra -Wpedantic -Werror             -Itmp/ores-compute-validation/cpp             tmp/ores-compute-validation/cpp/portable_compute_descriptor_test.cpp             -o "${RUNNER_TEMP}/ores-compute-descriptor-test"
           "${RUNNER_TEMP}/ores-compute-descriptor-test"
+      - name: Compile and run native authority lifecycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          c++ -std=c++17 -Wall -Wextra -Wpedantic -Werror -pthread \
+            -Itmp/ores-compute-validation/cpp \
+            tmp/ores-compute-validation/cpp/portable_compute_authority_test.cpp \
+            -o "${RUNNER_TEMP}/ores-compute-authority-test"
+          "${RUNNER_TEMP}/ores-compute-authority-test"
       - name: Validate accelerator build-profile constraints
         shell: bash
         run: |
