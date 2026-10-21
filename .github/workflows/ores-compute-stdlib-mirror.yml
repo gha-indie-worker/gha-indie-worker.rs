@@ -1,4 +1,4 @@
-name: Ores compute OpenCL G2 parity validation
+name: Ores compute G3 provider hardening validation
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ores-compute-g2-${{ github.event.pull_request.number || github.ref }}
+  group: ores-compute-g3-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
