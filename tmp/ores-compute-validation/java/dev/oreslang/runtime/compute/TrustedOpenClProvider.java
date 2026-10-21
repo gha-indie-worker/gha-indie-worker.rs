@@ -488,6 +488,26 @@ final class TrustedOpenClProvider {
                 return operation.state;
             }
 
+            if (status == EventStatus.DEVICE_LOST) {
+                // Device loss is not quiescence, even when cancellation was
+                // already requested. Retain the exact native event so recovery
+                // still has the strongest available provider-owned evidence.
+                if (!operation.cancelRequested) {
+                    ComputeAuthority.cancelPair(
+                            operation.inputAuthority,
+                            operation.outputAuthority,
+                            operation.fencePair);
+                    operation.cancelRequested = true;
+                }
+                operation.state = OperationState.DEVICE_LOST;
+                synchronized (this) {
+                    if (!quarantinedOperations.contains(operation)) {
+                        quarantinedOperations.add(operation);
+                    }
+                }
+                return operation.state;
+            }
+
             NativeEvent completedEvent = operation.event;
             driver.releaseEvent(completedEvent);
             operation.event = null;
@@ -499,21 +519,6 @@ final class TrustedOpenClProvider {
                         operation.fencePair);
                 operation.state = OperationState.CANCELLED;
                 finishCleanup(operation);
-                return operation.state;
-            }
-
-            if (status == EventStatus.DEVICE_LOST) {
-                ComputeAuthority.cancelPair(
-                        operation.inputAuthority,
-                        operation.outputAuthority,
-                        operation.fencePair);
-                operation.cancelRequested = true;
-                operation.state = OperationState.DEVICE_LOST;
-                synchronized (this) {
-                    if (!quarantinedOperations.contains(operation)) {
-                        quarantinedOperations.add(operation);
-                    }
-                }
                 return operation.state;
             }
 
@@ -657,6 +662,12 @@ final class TrustedOpenClProvider {
             if (!driver.proveDeviceLossQuiescence()) {
                 throw new IllegalStateException(
                         "provider could not prove device-loss quiescence");
+            }
+
+            if (operation.event != null) {
+                NativeEvent lostEvent = operation.event;
+                driver.releaseEvent(lostEvent);
+                operation.event = null;
             }
 
             ComputeAuthority.acknowledgeCancelledPair(
