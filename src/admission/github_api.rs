@@ -356,10 +356,7 @@ mod tests {
         let id = id();
         let first: Vec<Value> = (1..=100).map(|n| job(&id, n, 0)).collect();
         let second = json!({"total_count":101,"jobs":[job(&id, 101, 0)]});
-        let pages = [
-            json!({"total_count":101,"jobs":first}),
-            second.clone(),
-        ];
+        let pages = [json!({"total_count":101,"jobs":first}), second.clone()];
         assert_eq!(read_pages(&pages, &id), Ok((101, 0, false)));
         assert_eq!(
             read_pages(&pages[..1], &id),
