@@ -1,5 +1,5 @@
 {
-  "java_head": "d5fe6e39dcf435de5f3164b88c40a06af263ada8",
+  "java_head": "8780115eeebcf0b5b55ed1116695e94d4aa29b01",
   "common_head": "c2b5ec52a561e7d3a7f9c104c4a13afb1f99a763",
   "files": [
     {
@@ -27,7 +27,7 @@
       "source_repo": "ores-truffle-oreslang/oreslang-source.java",
       "source_ref": "feat/portable-compute-stdlib-v1",
       "source_path": "src/main/java/dev/oreslang/runtime/compute/ComputeProviderRegistry.java",
-      "source_blob_sha": "26d9897d6df55e1444ae6d015c8dcd51fc6f8145",
+      "source_blob_sha": "b982c44b5932e1d7b158998ebd2de405914e9d38",
       "dest": "tmp/ores-compute-validation/java/dev/oreslang/runtime/compute/ComputeProviderRegistry.java"
     },
     {
