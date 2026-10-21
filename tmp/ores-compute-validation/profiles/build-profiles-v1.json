@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "profiles": [
+    {
+      "name": "dev",
+      "implies": [],
+      "treeShaking": "optional",
+      "runtimeFeaturePruning": "optional",
+      "metadataPruning": "optional",
+      "fullAot": false,
+      "runtimeReflection": "forbidden",
+      "jit": "allowed",
+      "dynamicCode": "allowed",
+      "gc": "allowed",
+      "hardRealtime": false
+    },
+    {
+      "name": "release",
+      "implies": [
+        "dev"
+      ],
+      "treeShaking": "required",
+      "runtimeFeaturePruning": "required",
+      "metadataPruning": "required",
+      "fullAot": false,
+      "runtimeReflection": "forbidden",
+      "jit": "allowed",
+      "dynamicCode": "allowed",
+      "gc": "allowed",
+      "hardRealtime": false
+    },
+    {
+      "name": "strict-aot",
+      "implies": [
+        "release"
+      ],
+      "treeShaking": "required",
+      "runtimeFeaturePruning": "required",
+      "metadataPruning": "required",
+      "fullAot": true,
+      "runtimeReflection": "forbidden",
+      "jit": "forbidden",
+      "dynamicCode": "forbidden",
+      "gc": "allowed",
+      "hardRealtime": false
+    },
+    {
+      "name": "hard-rt",
+      "implies": [
+        "strict-aot"
+      ],
+      "treeShaking": "required",
+      "runtimeFeaturePruning": "required",
+      "metadataPruning": "required",
+      "fullAot": true,
+      "runtimeReflection": "forbidden",
+      "jit": "forbidden",
+      "dynamicCode": "forbidden",
+      "gc": "forbidden",
+      "unboundedAllocation": "forbidden",
+      "unboundedWait": "forbidden",
+      "cooperativeCode": "required",
+      "wcetEvidence": "required",
+      "hardRealtime": true
+    }
+  ],
+  "constraints": {
+    "freestanding": {
+      "hostedStdlibRoots": "forbidden",
+      "osDependencies": "forbidden",
+      "libcDependency": "forbidden",
+      "targetProviders": "explicit-only"
+    },
+    "accelerators": {
+      "providerDiscovery": "explicit-only",
+      "implicitTransfers": "forbidden",
+      "implicitCpuFallback": "forbidden",
+      "sourceForgeableAuthority": "forbidden",
+      "cancellationQuiescence": "verified-fence-only",
+      "strictAotKernelVariants": "precompiled-only",
+      "hardRtResourceBounds": "required"
+    }
+  }
+}
