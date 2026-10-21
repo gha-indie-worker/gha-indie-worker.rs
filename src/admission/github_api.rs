@@ -1,7 +1,9 @@
 //! Read-only GitHub Actions run observer. No fallback issuer, dispatcher, or export.
 //! The authenticated transport is fixed to api.github.com; raw user strings
 //! cannot select an alternate host or issue a trusted provider diagnostic.
-use super::{classify_admission_failure, AdmissionClassification, WorkflowAdmissionEvidence};
+use super::{
+    classify_admission_failure, ObserveError, RunIdentity, RunReceipt, WorkflowAdmissionEvidence,
+};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::time::Duration;
@@ -9,33 +11,6 @@ use std::time::Duration;
 const MAX_BODY_BYTES: usize = 1_048_576;
 const PAGE_SIZE: usize = 100;
 const MAX_JOBS: usize = 1_000;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RunIdentity {
-    pub(crate) repo: String,
-    pub(crate) run_id: u64,
-    pub(crate) attempt: u64,
-    pub(crate) head_sha: String,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ObserveError {
-    InvalidIdentity,
-    Transport,
-    MalformedResponse,
-    MismatchedIdentity,
-    IncompletePagination,
-    ChangedDuringObservation,
-}
-
-#[derive(Debug)]
-pub(crate) struct RunReceipt {
-    pub(crate) identity: RunIdentity,
-    pub(crate) jobs_observed: u32,
-    pub(crate) steps_observed: u32,
-    pub(crate) runner_assigned: bool,
-    pub(crate) classification: AdmissionClassification,
-}
 
 fn identity_valid(id: &RunIdentity) -> bool {
     let Some((owner, name)) = id.repo.split_once('/') else {
