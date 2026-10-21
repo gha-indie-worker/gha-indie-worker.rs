@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Oreslang Build Profiles v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "profiles",
+    "constraints"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "profiles": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "implies",
+          "treeShaking",
+          "runtimeFeaturePruning",
+          "metadataPruning",
+          "fullAot",
+          "runtimeReflection",
+          "jit",
+          "dynamicCode",
+          "gc",
+          "hardRealtime"
+        ],
+        "properties": {
+          "name": {
+            "enum": [
+              "dev",
+              "release",
+              "strict-aot",
+              "hard-rt"
+            ]
+          },
+          "implies": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "dev",
+                "release",
+                "strict-aot"
+              ]
+            }
+          },
+          "treeShaking": {
+            "enum": [
+              "optional",
+              "required"
+            ]
+          },
+          "runtimeFeaturePruning": {
+            "enum": [
+              "optional",
+              "required"
+            ]
+          },
+          "metadataPruning": {
+            "enum": [
+              "optional",
+              "required"
+            ]
+          },
+          "fullAot": {
+            "type": "boolean"
+          },
+          "runtimeReflection": {
+            "const": "forbidden"
+          },
+          "jit": {
+            "enum": [
+              "allowed",
+              "forbidden"
+            ]
+          },
+          "dynamicCode": {
+            "enum": [
+              "allowed",
+              "forbidden"
+            ]
+          },
+          "gc": {
+            "enum": [
+              "allowed",
+              "forbidden"
+            ]
+          },
+          "unboundedAllocation": {
+            "enum": [
+              "forbidden"
+            ]
+          },
+          "unboundedWait": {
+            "enum": [
+              "forbidden"
+            ]
+          },
+          "cooperativeCode": {
+            "enum": [
+              "required"
+            ]
+          },
+          "wcetEvidence": {
+            "enum": [
+              "required"
+            ]
+          },
+          "hardRealtime": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "freestanding",
+        "accelerators"
+      ],
+      "properties": {
+        "freestanding": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "hostedStdlibRoots",
+            "osDependencies",
+            "libcDependency",
+            "targetProviders"
+          ],
+          "properties": {
+            "hostedStdlibRoots": {
+              "const": "forbidden"
+            },
+            "osDependencies": {
+              "const": "forbidden"
+            },
+            "libcDependency": {
+              "const": "forbidden"
+            },
+            "targetProviders": {
+              "const": "explicit-only"
+            }
+          }
+        },
+        "accelerators": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "providerDiscovery",
+            "implicitTransfers",
+            "implicitCpuFallback",
+            "sourceForgeableAuthority",
+            "cancellationQuiescence",
+            "strictAotKernelVariants",
+            "hardRtResourceBounds"
+          ],
+          "properties": {
+            "providerDiscovery": {
+              "const": "explicit-only"
+            },
+            "implicitTransfers": {
+              "const": "forbidden"
+            },
+            "implicitCpuFallback": {
+              "const": "forbidden"
+            },
+            "sourceForgeableAuthority": {
+              "const": "forbidden"
+            },
+            "cancellationQuiescence": {
+              "const": "verified-fence-only"
+            },
+            "strictAotKernelVariants": {
+              "const": "precompiled-only"
+            },
+            "hardRtResourceBounds": {
+              "const": "required"
+            }
+          }
+        }
+      }
+    }
+  }
+}
