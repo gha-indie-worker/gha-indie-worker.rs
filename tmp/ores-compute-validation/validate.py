@@ -78,3 +78,24 @@ assert set(abi["providerMustValidate"]) == {
 }
 assert kernel["promotion"]["requiresJavaNativeOpenClArtifactParity"] is True
 print("portable-compute-kernel-g2-contract-ok")
+
+provider = json.loads((root / "contract" / "portable-compute-provider.json").read_text(encoding="utf-8"))
+assert provider["gate"] == "G3"
+assert provider["trustedRuntimeOnly"] is True
+assert provider["sourceSyntaxEnabled"] is False
+assert provider["implicitCpuFallback"] is False
+rules = provider["submissionRules"]
+assert rules["markSubmittedOnlyAfterDurableEnqueue"] is True
+assert rules["preEnqueueFailureUsesExactAbort"] is True
+assert rules["submittedWorkCannotUseAbort"] is True
+assert rules["completionRequiresExactProviderEvent"] is True
+assert rules["cancellationImpliesQuiescence"] is False
+assert rules["deviceLossDoesNotImplyQuiescence"] is True
+assert rules["deviceLossRecoveryRequiresProviderProof"] is True
+assert rules["deviceLossRetainsQuotaUntilRecovery"] is True
+assert rules["deviceLossDominatesCancellation"] is True
+assert rules["lostDeviceEventRetainedUntilRecoveryProof"] is True
+assert rules["cancelThenDeviceLossRequiresRecovery"] is True
+assert provider["testing"]["mockProviderSuccessIsNotGpuExecutionEvidence"] is True
+assert provider["testing"]["realGpuExecutionEvidenceRequiresDeviceEvent"] is True
+print("portable-compute-provider-g3-contract-ok")
