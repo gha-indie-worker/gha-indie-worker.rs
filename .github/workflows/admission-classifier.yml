@@ -169,3 +169,26 @@ jobs:
             exit 1
           fi
           git diff --check
+      - name: Install checksum-verified Gitleaks
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/gitleaks_8.30.1_linux_x64.tar.gz"
+          curl --fail --location --silent --show-error --retry 4 \
+            --proto '=https' --tlsv1.2 \
+            'https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz' \
+            --output "$archive"
+          printf '%s  %s\n' \
+            '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb' \
+            "$archive" | sha256sum --check --strict
+          tar -xzf "$archive" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" version
+      - name: Scan classifier source and workflow with real Gitleaks
+        shell: bash
+        run: |
+          set -euo pipefail
+          scan_dir="$RUNNER_TEMP/admission-source-scan"
+          mkdir -p "$scan_dir/src" "$scan_dir/.github/workflows"
+          cp -- src/admission.rs src/admission_formal.rs "$scan_dir/src/"
+          cp -- .github/workflows/admission-classifier.yml "$scan_dir/.github/workflows/"
+          "$RUNNER_TEMP/gitleaks" dir --redact --no-banner "$scan_dir"
