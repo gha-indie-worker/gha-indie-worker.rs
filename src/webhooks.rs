@@ -210,7 +210,7 @@ async fn observe_failed_workflow_run(state: &AppState, payload: &serde_json::Val
         .get("conclusion")
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
-    if conclusion.is_empty() || conclusion == "success" {
+    if !matches!(conclusion, "failure" | "action_required" | "startup_failure") {
         return;
     }
 
