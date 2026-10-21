@@ -1,0 +1,152 @@
+name: Oreslang epoll revocation source-free oracle
+on:
+  push:
+    branches: [test/oreslang-epoll-revocation-oracle-20261020]
+  workflow_dispatch:
+permissions: {}
+jobs:
+  public-reference-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Run independent epoll terminal-ordering reference
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_OS" = Linux
+          echo "SOURCE_FREE_ONLY: no checkout, no tokens, no cross-org private source"
+          python3 - <<'PY'
+          import random
+          import threading
+
+          FREE, ACTIVE, COMPLETED = range(3)
+          READY, CANCELLED, STOPPED = range(3)
+
+          class Reactor:
+              def __init__(self):
+                  self.lock = threading.Lock()
+                  self.state = FREE
+                  self.generation = 0
+                  self.kernel_authority = False
+                  self.closed = False
+                  self.completions = []
+
+              def watch(self):
+                  with self.lock:
+                      assert not self.closed and self.state == FREE
+                      self.generation += 1
+                      self.state = ACTIVE
+                      self.kernel_authority = True
+                      return self.generation
+
+              def _detach(self, fail=False):
+                  if fail:
+                      return False
+                  self.kernel_authority = False
+                  return True
+
+              def cancel(self, ticket, fail_detach=False):
+                  with self.lock:
+                      if self.closed or self.state != ACTIVE or ticket != self.generation:
+                          return False
+                      if not self._detach(fail_detach):
+                          return False
+                      assert not self.kernel_authority
+                      self.state = COMPLETED
+                      self.completions.append((ticket, CANCELLED))
+                      return True
+
+              def readiness(self, ticket, fail_detach=False):
+                  with self.lock:
+                      if self.closed or self.state != ACTIVE or ticket != self.generation:
+                          return False
+                      if not self._detach(fail_detach):
+                          # Fail closed globally. Kernel authority is retired
+                          # before STOPPED becomes externally terminal.
+                          self.closed = True
+                          self.kernel_authority = False
+                          self.state = COMPLETED
+                          self.completions.append((ticket, STOPPED))
+                          return False
+                      assert not self.kernel_authority
+                      self.state = COMPLETED
+                      self.completions.append((ticket, READY))
+                      return True
+
+              def stop(self):
+                  with self.lock:
+                      self.closed = True
+                      # close(epoll) retires all kernel watch authority first
+                      self.kernel_authority = False
+                      if self.state == ACTIVE:
+                          self.state = COMPLETED
+                          self.completions.append((self.generation, STOPPED))
+
+              def pop(self):
+                  with self.lock:
+                      if not self.completions:
+                          return None
+                      result = self.completions.pop(0)
+                      self.state = FREE
+                      return result
+
+          # Failed cancellation detach may not publish CANCELLED.
+          r = Reactor()
+          t = r.watch()
+          assert not r.cancel(t, fail_detach=True)
+          assert r.state == ACTIVE and r.kernel_authority
+          assert r.pop() is None
+          assert r.cancel(t)
+          assert not r.kernel_authority
+          assert r.pop() == (t, CANCELLED)
+
+          # Failed readiness detach poisons the reactor and publishes STOPPED
+          # only after global kernel authority has been retired.
+          r = Reactor()
+          t = r.watch()
+          assert not r.readiness(t, fail_detach=True)
+          assert r.closed and not r.kernel_authority
+          assert r.pop() == (t, STOPPED)
+
+          # Stale generations cannot affect a reused slot.
+          r = Reactor()
+          old = r.watch()
+          assert r.cancel(old)
+          assert r.pop() == (old, CANCELLED)
+          new = r.watch()
+          assert new != old
+          assert not r.cancel(old)
+          assert r.cancel(new)
+          assert r.pop() == (new, CANCELLED)
+
+          # Randomized single-winner terminal model.
+          rng = random.Random(20261020)
+          for _ in range(20000):
+              r = Reactor()
+              ticket = r.watch()
+              action = rng.randrange(4)
+              if action == 0:
+                  assert r.cancel(ticket)
+                  expected = CANCELLED
+              elif action == 1:
+                  assert r.readiness(ticket)
+                  expected = READY
+              elif action == 2:
+                  assert not r.cancel(ticket, fail_detach=True)
+                  assert r.state == ACTIVE and r.kernel_authority
+                  r.stop()
+                  expected = STOPPED
+              else:
+                  assert not r.readiness(ticket, fail_detach=True)
+                  expected = STOPPED
+              assert not r.kernel_authority
+              assert r.pop() == (ticket, expected)
+              assert r.pop() is None
+
+          print("PASS SOURCE-FREE epoll revocation oracle: 20000 terminal races")
+          print("PASS CANCELLED requires per-watch detach")
+          print("PASS readiness detach failure poisons and retires kernel authority")
+          print("PASS STOPPED follows global epoll authority retirement")
+          print("PASS stale generations cannot settle reused slots")
+          print("NOT an Oreslang source, LLVM, CMake, sanitizer, or exact-tree test")
+          PY
