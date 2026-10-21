@@ -9,36 +9,36 @@ use admission::{
     WorkflowAdmissionEvidence,
 };
 
-const BILLING: PlatformDiagnostic<'static> = PlatformDiagnostic {
-    source: PlatformDiagnosticSource::AuthorizedActionsApi,
-    kind: PlatformDiagnosticKind::BillingOrSpending,
-    evidence_ref: "check-run:42:billing",
-};
-const CAPACITY: PlatformDiagnostic<'static> = PlatformDiagnostic {
-    source: PlatformDiagnosticSource::AuthorizedActionsApi,
-    kind: PlatformDiagnosticKind::RunnerLabelOrCapacity,
-    evidence_ref: "actions-job:42:capacity",
-};
-const DISABLED: PlatformDiagnostic<'static> = PlatformDiagnostic {
-    source: PlatformDiagnosticSource::AuthorizedActionsApi,
-    kind: PlatformDiagnosticKind::ActionsDisabled,
-    evidence_ref: "actions-policy:disabled",
-};
-const POLICY: PlatformDiagnostic<'static> = PlatformDiagnostic {
-    source: PlatformDiagnosticSource::AuthorizedActionsApi,
-    kind: PlatformDiagnosticKind::PolicyOrRuleset,
-    evidence_ref: "ruleset:42",
-};
-const CREDENTIAL: PlatformDiagnostic<'static> = PlatformDiagnostic {
-    source: PlatformDiagnosticSource::CheckRunAnnotation,
-    kind: PlatformDiagnosticKind::CredentialOrCheckout,
-    evidence_ref: "check-run:42:checkout",
-};
-const CANCELED: PlatformDiagnostic<'static> = PlatformDiagnostic {
-    source: PlatformDiagnosticSource::AuthorizedActionsApi,
-    kind: PlatformDiagnosticKind::CanceledOrSuperseded,
-    evidence_ref: "actions-run:42:superseded",
-};
+const BILLING: PlatformDiagnostic<'static> = PlatformDiagnostic::synthetic_for_test(
+    PlatformDiagnosticSource::AuthorizedActionsApi,
+    PlatformDiagnosticKind::BillingOrSpending,
+    "check-run:42:billing",
+);
+const CAPACITY: PlatformDiagnostic<'static> = PlatformDiagnostic::synthetic_for_test(
+    PlatformDiagnosticSource::AuthorizedActionsApi,
+    PlatformDiagnosticKind::RunnerLabelOrCapacity,
+    "actions-job:42:capacity",
+);
+const DISABLED: PlatformDiagnostic<'static> = PlatformDiagnostic::synthetic_for_test(
+    PlatformDiagnosticSource::AuthorizedActionsApi,
+    PlatformDiagnosticKind::ActionsDisabled,
+    "actions-policy:disabled",
+);
+const POLICY: PlatformDiagnostic<'static> = PlatformDiagnostic::synthetic_for_test(
+    PlatformDiagnosticSource::AuthorizedActionsApi,
+    PlatformDiagnosticKind::PolicyOrRuleset,
+    "ruleset:42",
+);
+const CREDENTIAL: PlatformDiagnostic<'static> = PlatformDiagnostic::synthetic_for_test(
+    PlatformDiagnosticSource::CheckRunAnnotation,
+    PlatformDiagnosticKind::CredentialOrCheckout,
+    "check-run:42:checkout",
+);
+const CANCELED: PlatformDiagnostic<'static> = PlatformDiagnostic::synthetic_for_test(
+    PlatformDiagnosticSource::AuthorizedActionsApi,
+    PlatformDiagnosticKind::CanceledOrSuperseded,
+    "actions-run:42:superseded",
+);
 
 static BILLING_ONLY: [PlatformDiagnostic<'static>; 1] = [BILLING];
 static CAPACITY_ONLY: [PlatformDiagnostic<'static>; 1] = [CAPACITY];
@@ -284,11 +284,11 @@ fn application_authored_annotations_never_authorize_replay() {
     ] {
         for jobs in [Some(0), Some(1)] {
             for steps in [None, Some(0), Some(1)] {
-                let diagnostic = PlatformDiagnostic {
-                    source: PlatformDiagnosticSource::CheckRunAnnotation,
+                let diagnostic = PlatformDiagnostic::synthetic_for_test(
+                    PlatformDiagnosticSource::CheckRunAnnotation,
                     kind,
-                    evidence_ref: "check-run:42:untrusted-app",
-                };
+                    "check-run:42:untrusted-app",
+                );
                 let result = classify_admission_failure(&WorkflowAdmissionEvidence {
                     status: Some("completed"),
                     conclusion: Some("failure"),
@@ -306,10 +306,11 @@ fn application_authored_annotations_never_authorize_replay() {
 #[test]
 fn malformed_provider_references_never_authorize_fallback() {
     for reference in ["", "contains space", "contains\nnewline"] {
-        let diagnostic = PlatformDiagnostic {
-            evidence_ref: reference,
-            ..BILLING
-        };
+        let diagnostic = PlatformDiagnostic::synthetic_for_test(
+            PlatformDiagnosticSource::AuthorizedActionsApi,
+            PlatformDiagnosticKind::BillingOrSpending,
+            reference,
+        );
         let result = classify_admission_failure(&WorkflowAdmissionEvidence {
             status: Some("completed"),
             conclusion: Some("failure"),
