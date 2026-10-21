@@ -12,6 +12,12 @@ final class ComputeAuthority {
         return new ComputeDeviceHandle(backendId, deviceId, providerGeneration, tenantDomain);
     }
 
+    static ComputeQueueHandle issueQueue(
+            ComputeDeviceHandle device,
+            long generation) {
+        return new ComputeQueueHandle(device, generation);
+    }
+
     static <T> ComputeBufferHandle<T> bindBuffer(
             ComputeDeviceHandle device,
             long allocationGeneration,
