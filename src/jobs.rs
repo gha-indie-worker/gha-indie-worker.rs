@@ -766,6 +766,8 @@ mod idempotency_tests {
             github_webhook_secret: None,
             registry_webhook_secret: None,
             webhook_rules: Vec::new(),
+            github_actions_observer_enabled: false,
+            github_actions_observer_token: None,
             gh_sync_enabled: false,
             gh_sync_token: None,
             gh_sync_rules: Vec::new(),
