@@ -1,0 +1,183 @@
+name: Ores compute kernel G2 exact mirror
+
+on:
+  push:
+    branches:
+      - test/ores-compute-kernel-g2-20261021
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ores-compute-kernel-g2-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Check out exact carrier head without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          show-progress: false
+          submodules: false
+
+      - name: Assert exact carrier head
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = '${{ github.event.pull_request.head.sha || github.sha }}'
+          git diff --check
+
+      - name: Verify mirrored Git blob provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          manifest = json.loads(Path("tmp/ores-compute-g2/source-manifest.json").read_text())
+          expected = {
+              "java_head": "f39152d64025a1cd73ae939590e6779ee2114a72",
+              "llvm_head": "e769573854697b4eeba7898fa9435896e0e5cdaf",
+              "common_head": "a3f6b345a03247d513d2fb48143090ba7478e8c8",
+              "profiles_head": "12583ddad6d5b4463f9ad7d8d207d0eb96b6b77a",
+          }
+          for key, value in expected.items():
+              assert manifest[key] == value, (key, manifest[key], value)
+          for item in manifest["files"]:
+              data = Path(item["dest"]).read_bytes()
+              actual = hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
+              assert actual == item["source_blob_sha"], (
+                  item["dest"], actual, item["source_blob_sha"])
+          print("g2-mirror-provenance-ok")
+          PY
+
+      - name: Compile Java portable kernel and authority slice
+        shell: bash
+        run: |
+          set -euo pipefail
+          javac -version
+          mkdir -p "${RUNNER_TEMP}/g2-java"
+          javac -Xlint:all -Werror             -d "${RUNNER_TEMP}/g2-java"             tmp/ores-compute-g2/java/dev/oreslang/runtime/compute/*.java
+
+      - name: Run Java G2 authority adversarial smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -cp "${RUNNER_TEMP}/g2-java"             dev.oreslang.runtime.compute.ComputeG2AuthoritySmoke
+
+      - name: Emit Java kernel conformance transcript
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -cp "${RUNNER_TEMP}/g2-java"             dev.oreslang.runtime.compute.PortableKernelConformanceMain             > "${RUNNER_TEMP}/java-kernel.txt"
+          cat "${RUNNER_TEMP}/java-kernel.txt"
+
+      - name: Compile and run native kernel transcript
+        shell: bash
+        run: |
+          set -euo pipefail
+          c++ --version
+          c++ -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror             -Itmp/ores-compute-g2/cpp             tmp/ores-compute-g2/cpp/portable_compute_kernel_g2_test.cpp             -o "${RUNNER_TEMP}/native-kernel"
+          "${RUNNER_TEMP}/native-kernel" > "${RUNNER_TEMP}/native-kernel.txt"
+          cat "${RUNNER_TEMP}/native-kernel.txt"
+
+      - name: Require Java LLVM bit-level kernel parity
+        shell: bash
+        run: |
+          set -euo pipefail
+          diff -u "${RUNNER_TEMP}/java-kernel.txt" "${RUNNER_TEMP}/native-kernel.txt"
+
+      - name: Run native reserved submitted fence lifecycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          c++ -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror -pthread             -Itmp/ores-compute-g2/cpp             tmp/ores-compute-g2/cpp/gpu_buffer_fence_test.cpp             -o "${RUNNER_TEMP}/gpu-fence"
+          "${RUNNER_TEMP}/gpu-fence"
+
+      - name: Run native portable authority lifecycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          c++ -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror -pthread             -Itmp/ores-compute-g2/cpp             tmp/ores-compute-g2/cpp/portable_compute_authority_test.cpp             -o "${RUNNER_TEMP}/portable-authority"
+          "${RUNNER_TEMP}/portable-authority"
+
+      - name: Run native DOP GPU admission lifecycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          c++ -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror -pthread             -Itmp/ores-compute-g2/cpp             tmp/ores-compute-g2/cpp/dop_gpu_admission_test.cpp             -o "${RUNNER_TEMP}/dop-gpu-admission"
+          "${RUNNER_TEMP}/dop-gpu-admission"
+
+      - name: Validate G2 contracts and build profiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("tmp/ores-compute-g2")
+          kernel = json.loads((root/"contracts/portable-compute-kernel.json").read_text())
+          authority = json.loads((root/"contracts/portable-compute-authority.json").read_text())
+          profiles = json.loads((root/"profiles/build-profiles-v1.json").read_text())
+          schema = json.loads((root/"profiles/build-profiles.schema.json").read_text())
+
+          assert kernel["gate"] == "G2"
+          assert kernel["sourceNeutralKernelIR"] is True
+          assert kernel["sourceSyntaxEnabled"] is False
+          assert kernel["cpuReferenceProvider"]["explicitSelectionRequired"] is True
+          assert kernel["cpuReferenceProvider"]["implicitGpuFallback"] is False
+          assert kernel["cpuReferenceProvider"]["floatingPointContraction"] == "forbidden-for-scale-bias-reference"
+          assert kernel["gpuLowering"]["emissionIsExecutionEvidence"] is False
+          for key in ("hostIo","allocation","locks","actorState","mailboxEffects",
+                      "exceptions","panicUnwind","deviceSideLaunch","reflection"):
+              assert kernel["kernelRules"][key] == "forbidden"
+
+          t = authority["transfers"]
+          assert t["preEnqueueAbortRequiresExactFence"] is True
+          assert t["preEnqueueAbortRestoresIdle"] is True
+          assert t["preEnqueueAbortForbiddenAfterSubmission"] is True
+          assert t["cancellationImpliesQuiescence"] is False
+
+          accel = profiles["constraints"]["accelerators"]
+          expected = {
+              "sourceAcceleratorSyntax": "fail-closed-until-typed-effects",
+              "cpuReferenceProvider": "explicit-test-only",
+              "kernelIrReflection": "forbidden",
+              "gpuArtifactEmissionEvidence": "not-execution-evidence",
+          }
+          for key, value in expected.items():
+              assert accel[key] == value
+
+          props = schema["properties"]["constraints"]["properties"]["accelerators"]
+          for key, value in expected.items():
+              assert key in props["required"]
+              assert props["properties"][key]["const"] == value
+          print("g2-contract-profile-ok")
+          PY
+
+      - name: Verify source accelerator syntax remains fail closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          parser = Path("tmp/ores-compute-g2/parser-java/Parser.java").read_text()
+          lexer = Path("tmp/ores-compute-g2/parser-java/Lexer.java").read_text()
+          token = Path("tmp/ores-compute-g2/parser-java/Token.java").read_text()
+          native = Path("tmp/ores-compute-g2/parser-native/Parser.cpp").read_text()
+          assert "token.type() == GPU || token.type() == CPU || token.type() == QUANTUM" in parser
+          assert "no implicit CPU fallback" in parser
+          for word, enum in (("gpu","GPU"),("cpu","CPU"),("quantum","QUANTUM")):
+              assert f'KEYWORDS.put("{word}", {enum})' in lexer
+          assert "GPU, CPU, QUANTUM" in token
+          assert '"gpu", "cpu", "quantum"' in native
+          assert "native cpu execution block boundary unsupported" in native
+          assert "no implicit CPU fallback" in native
+          print("g2-source-syntax-fail-closed-ok")
+          PY
