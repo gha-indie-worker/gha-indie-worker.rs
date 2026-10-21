@@ -53,9 +53,9 @@ jobs:
               "opencl_java_head": "5859799c230fb3b6e6510223a77e822504f7ee36",
               "opencl_llvm_head": "7ef39d2c1b35cc1965030d79bee0ed3f822375c3",
               "opencl_common_head": "faee2e5bac6bb907a05c02de8abbf2c309d27f21",
-              "g3_java_head": "5d373d59a47938a5238f48197466c8c6e07f4b0c",
-              "g3_llvm_head": "173af3529fdabb44b0af6222796d29ebf210e57b",
-              "g3_common_head": "7d2404abc308ed2f443dad5e152c13ef96891f93",
+              "g3_java_head": "73a81e52cf6ffa5d442147c5005423055c4676d6",
+              "g3_llvm_head": "f95a512d82c7c693934dd0d477249cec25358975",
+              "g3_common_head": "8bec4168691f5b57792d1aeff93973544f42382e",
               "g3_profiles_head": "8bc8f0c9eb6845f0d0bc87452a477cf607dc91ce",
           }
           for key, value in expected.items():
