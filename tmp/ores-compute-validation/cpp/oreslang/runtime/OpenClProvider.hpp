@@ -56,7 +56,7 @@ struct ProviderIdentity {
     std::string device;
     std::uint64_t queue_id;
     std::uint64_t queue_generation;
-    std::uint64_t queue_minimum_alignment;
+    std::uint32_t queue_minimum_alignment;
 };
 
 struct Limits {
@@ -320,7 +320,7 @@ public:
         if (!program)
             throw std::runtime_error("OpenCL provider returned null program");
         auto lease = std::make_shared<ProgramLease>(api_, program);
-        return PreparedKernel(kernel, target, std::move(artifact), std::move(lease));
+        return PreparedKernel(kernel, target_, std::move(artifact), std::move(lease));
     }
 
     std::unique_ptr<Operation> begin(
