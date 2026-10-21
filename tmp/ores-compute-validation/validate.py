@@ -24,3 +24,22 @@ assert contract["checkedByteArithmeticBeforeAllocationOrTransfer"] is True
 assert set(contract["sealedRuntimeHandles"]) == {"Device", "Buffer<T>", "Fence", "KernelContext"}
 
 print("portable-compute-contract-hardening-ok")
+
+authority = json.loads((root / "contract" / "portable-compute-authority.json").read_text(encoding="utf-8"))
+assert authority["gate"] == "G1"
+assert authority["sourceConstructibleHandles"] is False
+assert authority["handles"]["Device"]["sealed"] is True
+assert authority["handles"]["Buffer<T>"]["affineInSource"] is True
+assert authority["handles"]["Fence"]["sealed"] is True
+assert authority["transfers"]["operations"] == ["upload", "download"]
+assert authority["transfers"]["explicitOnly"] is True
+assert authority["transfers"]["implicitTransfer"] is False
+assert authority["transfers"]["implicitCpuFallback"] is False
+assert authority["transfers"]["crossDeviceForbidden"] is True
+assert authority["transfers"]["crossOwnerDomainForbidden"] is True
+assert authority["transfers"]["staleGenerationForbidden"] is True
+assert authority["transfers"]["cancellationImpliesQuiescence"] is False
+assert authority["transfers"]["reclaimRequiresVerifiedQuiescence"] is True
+assert authority["authorityRules"]["numericIdsAreNotCapabilities"] is True
+assert authority["authorityRules"]["metadataDescriptorsAreNotCapabilities"] is True
+print("portable-compute-authority-g1-contract-ok")
