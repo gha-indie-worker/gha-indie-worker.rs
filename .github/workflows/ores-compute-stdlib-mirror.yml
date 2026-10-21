@@ -50,9 +50,9 @@ jobs:
               "llvm_head": "6f181e79164c5b0c45067aabd32da55e90cb64c1",
               "common_head": "3b36e9ee1a940c708c532742a87071c5b04b829f",
               "profiles_head": "a9f06703926ffedb48d031db835cb6920033f65f",
-              "opencl_java_head": "d23d433e4f8964cf917cf0a8045b4230704deaec",
-              "opencl_llvm_head": "b8bcebb98b7e5b66f22ff31f5c1776152097886e",
-              "opencl_common_head": "9f26644e15733bdb82e396f54608579564889c60",
+              "opencl_java_head": "6be59ea96215d7027cc931c8e1108eb3c8a7a650",
+              "opencl_llvm_head": "06e573731b9b324d491ee111c8cb1e850e687780",
+              "opencl_common_head": "e6de5d452d53535794eb01cd70f5cf8eb381bf59",
           }
           for key, value in expected.items():
               assert manifest[key] == value, (key, manifest[key], value)
@@ -64,7 +64,7 @@ jobs:
               assert actual == item["source_blob_sha"], (
                   item["dest"], actual, item["source_blob_sha"]
               )
-              assert item["source_ref"] in ("main", "feat/portable-compute-opencl-g2")
+              assert item["source_ref"] in ("main", "feat/portable-compute-opencl-g2", "feat/portable-compute-artifact-abi-hardening")
           print("exact-opencl-g2-mirror-provenance-ok")
           PY
 
