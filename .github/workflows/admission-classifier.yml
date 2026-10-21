@@ -137,6 +137,32 @@ jobs:
             src/admission_formal.rs \
             .github/workflows/admission-classifier.yml
 
+      - name: Reject forged provider diagnostics at compile time
+        shell: bash
+        run: |
+          set -euo pipefail
+          scratch="$(mktemp -d)"
+          cat > "$scratch/forgery.rs" <<EOF
+          #[path = "$GITHUB_WORKSPACE/src/admission.rs"]
+          mod admission;
+          fn forge() {
+              let _fake = admission::PlatformDiagnostic {
+                  source: admission::PlatformDiagnosticSource::AuthorizedActionsApi,
+                  kind: admission::PlatformDiagnosticKind::BillingOrSpending,
+                  evidence_ref: "not-a-provider-receipt",
+              };
+          }
+          EOF
+          if rustc --edition 2021 --crate-type lib -A warnings --emit=metadata \
+            -o "$scratch/forgery.rmeta" "$scratch/forgery.rs" 2>"$scratch/errors"; then
+            echo "ERROR: forged provider evidence unexpectedly compiled" >&2
+            exit 1
+          fi
+          grep -q 'E0451' "$scratch/errors" || {
+            echo "ERROR: expected private-field compiler rejection" >&2
+            exit 1
+          }
+
   admission-credential-guard:
     name: admission-credential-guard
     runs-on: ubuntu-24.04
