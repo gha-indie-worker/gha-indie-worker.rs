@@ -2,6 +2,7 @@
 
 #include "oreslang/runtime/GpuBufferFence.hpp"
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
@@ -100,7 +101,10 @@ public:
     std::uint64_t alignment() const noexcept { return alignment_; }
     const std::string& type_tag() const noexcept { return type_tag_; }
     const std::string& owner_domain() const noexcept { return owner_domain_; }
-    gpu::Status status() const { return fence_.status(); }
+    gpu::Status status() const {
+        if (retired_.load(std::memory_order_acquire)) return gpu::Status::Closed;
+        return fence_.status();
+    }
 
 private:
     Buffer(Device device, std::uint64_t allocation_generation,
@@ -134,6 +138,7 @@ private:
     std::string owner_domain_;
     gpu::Identity identity_;
     gpu::BufferFence fence_;
+    std::atomic<bool> retired_{false};
 
     friend class Authority;
 };
@@ -219,6 +224,7 @@ public:
             const std::string& expected_owner_domain) {
         validate_owner(buffer, expected_device, expected_owner_domain);
         buffer.fence_.retire_after_backend_release(buffer.identity_);
+        buffer.retired_.store(true, std::memory_order_release);
     }
 
 private:
