@@ -1,68 +1,68 @@
 {
-  "java_head": "f39152d64025a1cd73ae939590e6779ee2114a72",
+  "java_head": "370d2dc731ae8814c6510d8b4d968fb94bf699f9",
   "llvm_head": "e769573854697b4eeba7898fa9435896e0e5cdaf",
   "common_head": "a3f6b345a03247d513d2fb48143090ba7478e8c8",
   "profiles_head": "12583ddad6d5b4463f9ad7d8d207d0eb96b6b77a",
   "files": [
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.java",
-      "source_head": "f39152d64025a1cd73ae939590e6779ee2114a72",
+      "source_head": "370d2dc731ae8814c6510d8b4d968fb94bf699f9",
       "source_path": "src/main/java/dev/oreslang/runtime/compute/PortableKernelIR.java",
-      "source_blob_sha": "f3338b893ecde0b17d5af5eb75efaf0b70d99b8c",
+      "source_blob_sha": "8232513d0dc83d75f1cbd39eee1b088575401da0",
       "dest": "tmp/ores-compute-g2/java/dev/oreslang/runtime/compute/PortableKernelIR.java"
     },
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.java",
-      "source_head": "f39152d64025a1cd73ae939590e6779ee2114a72",
+      "source_head": "370d2dc731ae8814c6510d8b4d968fb94bf699f9",
       "source_path": "src/test/java/dev/oreslang/runtime/compute/PortableKernelConformanceMain.java",
       "source_blob_sha": "2b39927aa257fde92c5612e99bdbeecba4ee91a0",
       "dest": "tmp/ores-compute-g2/java/dev/oreslang/runtime/compute/PortableKernelConformanceMain.java"
     },
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.java",
-      "source_head": "f39152d64025a1cd73ae939590e6779ee2114a72",
+      "source_head": "370d2dc731ae8814c6510d8b4d968fb94bf699f9",
       "source_path": "src/main/java/dev/oreslang/runtime/compute/ComputeAuthority.java",
       "source_blob_sha": "fba108191b6c0e091d1a17c781954f562f30febd",
       "dest": "tmp/ores-compute-g2/java/dev/oreslang/runtime/compute/ComputeAuthority.java"
     },
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.java",
-      "source_head": "f39152d64025a1cd73ae939590e6779ee2114a72",
+      "source_head": "370d2dc731ae8814c6510d8b4d968fb94bf699f9",
       "source_path": "src/main/java/dev/oreslang/runtime/compute/ComputeBufferHandle.java",
       "source_blob_sha": "9efe1f2b9ebb9ce12417a90386df635916153e01",
       "dest": "tmp/ores-compute-g2/java/dev/oreslang/runtime/compute/ComputeBufferHandle.java"
     },
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.java",
-      "source_head": "f39152d64025a1cd73ae939590e6779ee2114a72",
+      "source_head": "370d2dc731ae8814c6510d8b4d968fb94bf699f9",
       "source_path": "src/main/java/dev/oreslang/runtime/compute/ComputeDeviceHandle.java",
       "source_blob_sha": "6afab62e82908f5c81fd85b34c883ee789312ff8",
       "dest": "tmp/ores-compute-g2/java/dev/oreslang/runtime/compute/ComputeDeviceHandle.java"
     },
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.java",
-      "source_head": "f39152d64025a1cd73ae939590e6779ee2114a72",
+      "source_head": "370d2dc731ae8814c6510d8b4d968fb94bf699f9",
       "source_path": "src/main/java/dev/oreslang/runtime/compute/ComputeFenceHandle.java",
       "source_blob_sha": "ed1f88f1bb4969d7ccb88bcbab03024e066bb4bf",
       "dest": "tmp/ores-compute-g2/java/dev/oreslang/runtime/compute/ComputeFenceHandle.java"
     },
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.java",
-      "source_head": "f39152d64025a1cd73ae939590e6779ee2114a72",
+      "source_head": "370d2dc731ae8814c6510d8b4d968fb94bf699f9",
       "source_path": "src/main/java/dev/oreslang/parser/Parser.java",
       "source_blob_sha": "002aeae87830ac01d356e252a91a6e81976cacd5",
       "dest": "tmp/ores-compute-g2/parser-java/Parser.java"
     },
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.java",
-      "source_head": "f39152d64025a1cd73ae939590e6779ee2114a72",
+      "source_head": "370d2dc731ae8814c6510d8b4d968fb94bf699f9",
       "source_path": "src/main/java/dev/oreslang/parser/Lexer.java",
       "source_blob_sha": "8e5b7a0affc3f322995496c73936a2adfe7f7330",
       "dest": "tmp/ores-compute-g2/parser-java/Lexer.java"
     },
     {
       "source_repo": "ores-truffle-oreslang/oreslang-source.java",
-      "source_head": "f39152d64025a1cd73ae939590e6779ee2114a72",
+      "source_head": "370d2dc731ae8814c6510d8b4d968fb94bf699f9",
       "source_path": "src/main/java/dev/oreslang/parser/Token.java",
       "source_blob_sha": "c36716c321e0071bb75c7495f749c04e95466062",
       "dest": "tmp/ores-compute-g2/parser-java/Token.java"
