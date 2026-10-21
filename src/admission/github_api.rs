@@ -352,6 +352,28 @@ mod tests {
         );
     }
     #[test]
+    fn exact_two_page_job_coverage_and_inconsistent_page_totals() {
+        let id = id();
+        let first: Vec<Value> = (1..=100).map(|n| job(&id, n, 0)).collect();
+        let second = json!({"total_count":101,"jobs":[job(&id, 101, 0)]});
+        let pages = [
+            json!({"total_count":101,"jobs":first}),
+            second.clone(),
+        ];
+        assert_eq!(read_pages(&pages, &id), Ok((101, 0, false)));
+        assert_eq!(
+            read_pages(&pages[..1], &id),
+            Err(ObserveError::IncompletePagination)
+        );
+        let mut tampered = second;
+        tampered["total_count"] = json!(102);
+        assert_eq!(
+            read_pages(&[pages[0].clone(), tampered], &id),
+            Err(ObserveError::IncompletePagination)
+        );
+    }
+
+    #[test]
     fn attempt_sha_repo_and_run_binding_rejected_on_mismatch() {
         let id = id();
         let r = run(&id);
