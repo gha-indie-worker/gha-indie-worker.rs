@@ -2,6 +2,7 @@
 
 #include "oreslang/runtime/DopGpuAdmission.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -26,6 +27,7 @@ public:
 
     virtual ~Api() = default;
 
+    virtual void validate_artifact(const dop::OpenClArtifact& artifact) const = 0;
     virtual Handle prepare(const dop::OpenClArtifact& artifact) = 0;
     virtual void release_program(Handle program) = 0;
 
@@ -49,6 +51,7 @@ public:
 
     virtual EventStatus poll_event(Handle event) = 0;
     virtual void release_event(Handle event) = 0;
+    virtual bool prove_device_loss_quiescence() = 0;
 };
 
 struct ProviderIdentity {
@@ -309,6 +312,7 @@ public:
             throw std::invalid_argument(
                     "OpenCL provider target incompatible with portable G3 ABI");
 
+        active_operations_.reserve(limits_.queue_slots);
         quarantined_operations_.reserve(limits_.queue_slots);
         pre_enqueue_recoveries_.reserve(limits_.queue_slots);
         pre_enqueue_operation_recoveries_.reserve(limits_.queue_slots);
@@ -316,6 +320,7 @@ public:
 
     PreparedKernel prepare(const dop::Kernel& kernel) {
         auto artifact = dop::lower_opencl(kernel, target_);
+        api_.validate_artifact(artifact);
         Api::Handle program = api_.prepare(artifact);
         if (!program)
             throw std::runtime_error("OpenCL provider returned null program");
@@ -323,7 +328,7 @@ public:
         return PreparedKernel(kernel, target_, std::move(artifact), std::move(lease));
     }
 
-    std::unique_ptr<Operation> begin(
+    std::shared_ptr<Operation> begin(
             PreparedKernel& prepared,
             const dop::DeviceBuffer& input,
             const dop::DeviceBuffer& output,
@@ -361,7 +366,7 @@ public:
         Api::Handle input_physical = nullptr;
         Api::Handle output_physical = nullptr;
         std::unique_ptr<dop::QueueClaimedGpuBinding> claim;
-        std::unique_ptr<Operation> operation;
+        std::shared_ptr<Operation> operation;
         bool durable_enqueued = false;
 
         try {
@@ -386,7 +391,7 @@ public:
             // Allocate the complete resumable operation before the first
             // physical enqueue. After enqueue returns, no allocation is
             // required to preserve ownership of the accepted command.
-            operation.reset(new Operation(
+            operation = std::shared_ptr<Operation>(new Operation(
                     *this,
                     prepared.lease_,
                     input,
@@ -399,6 +404,7 @@ public:
                     output_physical,
                     nullptr));
             claim.reset();
+            register_active(operation);
 
             Api::Handle upload = api_.enqueue_upload(
                     input_physical,
@@ -420,7 +426,7 @@ public:
 
             if (durable_enqueued && operation) {
                 std::lock_guard<std::mutex> quarantine_guard(quarantine_lock_);
-                quarantined_operations_.push_back(std::move(operation));
+                quarantined_operations_.push_back(operation);
                 std::rethrow_exception(failure);
             }
 
@@ -434,8 +440,8 @@ public:
                     dop::abort_gpu_before_enqueue(input, output, *claim);
                 }
             } catch (...) {
-                // Preserve the original provider failure. A rollback failure
-                // leaves the host ledger fail-closed in flight.
+                std::lock_guard<std::mutex> quarantine_guard(quarantine_lock_);
+                quarantine_latched_ = true;
             }
 
             if (operation) {
@@ -447,8 +453,7 @@ public:
                             >= limits_.queue_slots)
                         throw std::logic_error(
                                 "OpenCL pre-enqueue operation recovery capacity exhausted");
-                    pre_enqueue_operation_recoveries_.push_back(
-                            std::move(operation));
+                    pre_enqueue_operation_recoveries_.push_back(operation);
                 }
             } else {
                 if (input_physical) {
@@ -512,13 +517,13 @@ public:
         }
 
         if (status == EventStatus::DeviceLost) {
-            gpu::BufferFence::complete_pair(
+            gpu::BufferFence::cancel_pair(
                     operation.input_.fence,
                     operation.output_.fence,
-                    operation.claim_.claim().tickets,
-                    false);
+                    operation.claim_.claim().tickets);
+            operation.cancel_requested_ = true;
             operation.state_ = OperationState::DeviceLost;
-            finish_cleanup(operation);
+            retain_quarantined(operation);
             return operation.state_;
         }
 
@@ -618,19 +623,49 @@ public:
         if (operation.state_ != OperationState::ReleaseFailed)
             throw std::logic_error("OpenCL operation has no failed physical release");
         finish_cleanup(operation);
+        if (operation.cleanup_complete_
+                && operation.state_ == OperationState::DeviceLost)
+            remove_quarantined(operation);
+    }
+
+    void recover_device_loss(Operation& operation) {
+        std::lock_guard<std::mutex> guard(operation.lock_);
+        require_owner(operation);
+        if (operation.state_ != OperationState::DeviceLost)
+            throw std::logic_error(
+                    "OpenCL operation is not awaiting device-loss recovery");
+        if (!api_.prove_device_loss_quiescence())
+            throw std::logic_error(
+                    "OpenCL provider could not prove device-loss quiescence");
+
+        gpu::BufferFence::acknowledge_cancelled_pair(
+                operation.input_.fence,
+                operation.output_.fence,
+                operation.claim_.claim().tickets);
+        finish_cleanup(operation);
+        remove_quarantined(operation);
     }
 
     void retry_pre_enqueue_cleanup() {
-        std::lock_guard<std::mutex> recovery_guard(quarantine_lock_);
-
-        if (!pre_enqueue_operation_recoveries_.empty()) {
-            auto& operation = pre_enqueue_operation_recoveries_.front();
-            finish_cleanup(*operation);
+        std::shared_ptr<Operation> operation_recovery;
+        {
+            std::lock_guard<std::mutex> recovery_guard(quarantine_lock_);
+            if (!pre_enqueue_operation_recoveries_.empty())
+                operation_recovery = pre_enqueue_operation_recoveries_.front();
+        }
+        if (operation_recovery) {
+            finish_cleanup(*operation_recovery);
+            std::lock_guard<std::mutex> recovery_guard(quarantine_lock_);
             pre_enqueue_operation_recoveries_.erase(
-                    pre_enqueue_operation_recoveries_.begin());
+                    std::remove(
+                            pre_enqueue_operation_recoveries_.begin(),
+                            pre_enqueue_operation_recoveries_.end(),
+                            operation_recovery),
+                    pre_enqueue_operation_recoveries_.end());
             return;
         }
 
+        std::lock_guard<std::mutex> recovery_guard(quarantine_lock_);
         if (pre_enqueue_recoveries_.empty())
             throw std::logic_error(
                     "OpenCL provider has no pre-enqueue recovery");
@@ -667,6 +702,11 @@ public:
                 pinned_host_bytes_,
                 outstanding_events_,
                 queue_slots_};
+    }
+
+    std::size_t active_operation_count() const {
+        std::lock_guard<std::mutex> guard(quarantine_lock_);
+        return active_operations_.size();
     }
 
 private:
@@ -737,6 +777,60 @@ private:
         queue_slots_ -= lease.queues_;
     }
 
+    void register_active(const std::shared_ptr<Operation>& operation) {
+        std::lock_guard<std::mutex> guard(quarantine_lock_);
+        if (active_operations_.size() >= limits_.queue_slots)
+            throw std::logic_error(
+                    "OpenCL active-operation registry exhausted");
+        active_operations_.push_back(operation);
+    }
+
+    void remove_active(Operation& operation) {
+        std::lock_guard<std::mutex> guard(quarantine_lock_);
+        active_operations_.erase(
+                std::remove_if(
+                        active_operations_.begin(),
+                        active_operations_.end(),
+                        [&](const std::shared_ptr<Operation>& candidate) {
+                            return candidate.get() == &operation;
+                        }),
+                active_operations_.end());
+    }
+
+    void retain_quarantined(Operation& operation) {
+        std::lock_guard<std::mutex> guard(quarantine_lock_);
+        const auto existing = std::find_if(
+                quarantined_operations_.begin(),
+                quarantined_operations_.end(),
+                [&](const std::shared_ptr<Operation>& candidate) {
+                    return candidate.get() == &operation;
+                });
+        if (existing != quarantined_operations_.end())
+            return;
+        const auto active = std::find_if(
+                active_operations_.begin(),
+                active_operations_.end(),
+                [&](const std::shared_ptr<Operation>& candidate) {
+                    return candidate.get() == &operation;
+                });
+        if (active == active_operations_.end())
+            throw std::logic_error(
+                    "cannot quarantine unregistered OpenCL operation");
+        quarantined_operations_.push_back(*active);
+    }
+
+    void remove_quarantined(Operation& operation) {
+        std::lock_guard<std::mutex> guard(quarantine_lock_);
+        quarantined_operations_.erase(
+                std::remove_if(
+                        quarantined_operations_.begin(),
+                        quarantined_operations_.end(),
+                        [&](const std::shared_ptr<Operation>& candidate) {
+                            return candidate.get() == &operation;
+                        }),
+                quarantined_operations_.end());
+    }
+
     void request_cancel(Operation& operation, bool timeout) {
         std::lock_guard<std::mutex> guard(operation.lock_);
         require_owner(operation);
@@ -788,6 +882,7 @@ private:
             operation.lease_.release();
             operation.program_.reset();
             operation.cleanup_complete_ = true;
+            remove_active(operation);
         }
 
         if (operation.state_ == OperationState::ReleaseFailed) {
@@ -835,9 +930,10 @@ private:
 
     mutable std::mutex quota_lock_;
     mutable std::mutex quarantine_lock_;
-    std::vector<std::unique_ptr<Operation>> quarantined_operations_;
+    std::vector<std::shared_ptr<Operation>> active_operations_;
+    std::vector<std::shared_ptr<Operation>> quarantined_operations_;
     std::vector<std::unique_ptr<PreEnqueueRecovery>> pre_enqueue_recoveries_;
-    std::vector<std::unique_ptr<Operation>> pre_enqueue_operation_recoveries_;
+    std::vector<std::shared_ptr<Operation>> pre_enqueue_operation_recoveries_;
     bool quarantine_latched_ = false;
     std::uint64_t resident_bytes_ = 0;
     std::uint64_t pinned_host_bytes_ = 0;
