@@ -1,0 +1,55 @@
+name: recovery-deny-only-contract
+
+on:
+  pull_request:
+    paths:
+      - 'src/recovery.rs'
+      - 'src/recovery_policy.rs'
+      - 'src/admission.rs'
+      - 'src/db.rs'
+      - 'src/http.rs'
+      - 'src/main.rs'
+      - '.github/workflows/recovery-deny-only.yml'
+  push:
+    paths:
+      - 'src/recovery.rs'
+      - 'src/recovery_policy.rs'
+      - '.github/workflows/recovery-deny-only.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  deny-only-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact candidate without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Assert exact candidate head
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Install pinned Rust
+        shell: bash
+        run: rustup toolchain install 1.97.0 --profile minimal --component rustfmt
+      - name: Parse and check formatting of new production modules
+        shell: bash
+        run: rustfmt +1.97.0 --edition 2021 --check src/recovery_policy.rs src/recovery.rs
+      - name: Compile and test actual deny-only policy with warnings denied
+        shell: bash
+        run: |
+          rustc +1.97.0 --edition 2021 --test --deny warnings \
+            src/recovery_policy.rs -o /tmp/recovery-deny-policy
+          /tmp/recovery-deny-policy
+      - name: Assert no dispatch or source-export API
+        shell: bash
+        run: |
+          if grep -nE '(\.post\(|\.put\(|\.patch\(|Command::|std::process::|tokio::process::|git clone|create_branch|create_tree|dispatch_workflow)' src/recovery.rs src/recovery_policy.rs; then
+            echo 'Recovery observer must remain deny-only'
+            exit 1
+          fi
