@@ -361,18 +361,25 @@ int main() {
         FakeApi api;
         auto provider = make_provider(api, f.plan.byte_length());
         auto prepared = provider.prepare(f.kernel, target(f));
+        std::cerr << "release:begin" << std::endl;
         auto operation = provider.begin(
                 prepared, f.input, f.output, f.queue, f.host);
+        std::cerr << "release:poll1" << std::endl;
         (void)provider.poll(*operation);
+        std::cerr << "release:poll2" << std::endl;
         (void)provider.poll(*operation);
         api.fail_release_buffer_once = true;
 
+        std::cerr << "release:poll3" << std::endl;
         expect_throw<std::runtime_error>([&] { (void)provider.poll(*operation); });
+        std::cerr << "release:after-poll3" << std::endl;
         check(operation->state() == Provider::OperationState::ReleaseFailed);
         check(provider.usage().resident_bytes > 0);
         expect_throw<std::logic_error>([&] { prepared.close(); });
 
+        std::cerr << "release:retry" << std::endl;
         provider.retry_release(*operation);
+        std::cerr << "release:after-retry" << std::endl;
         check(operation->state() == Provider::OperationState::Succeeded);
         check(provider.usage() == oreslang::opencl::Usage{0, 0, 0, 0});
         (void)operation->output_bytes();
