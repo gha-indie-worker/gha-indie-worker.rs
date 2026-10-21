@@ -39,6 +39,7 @@ struct FakeApi final : oreslang::opencl::Api {
     bool fail_download = false;
     bool fail_release_buffer_once = false;
     bool fail_release_event_once = false;
+    bool fail_release_program_once = false;
 
     int released_programs = 0;
     int released_buffers = 0;
@@ -53,6 +54,10 @@ struct FakeApi final : oreslang::opencl::Api {
     }
 
     void release_program(Handle program) override {
+        if (fail_release_program_once) {
+            fail_release_program_once = false;
+            throw std::runtime_error("program release failed");
+        }
         delete static_cast<Program*>(program);
         ++released_programs;
     }
@@ -165,20 +170,18 @@ struct Fixture {
 oreslang::opencl::Provider make_provider(
         FakeApi& api,
         std::uint64_t bytes,
-        std::uint64_t resident_multiplier = 4) {
+        std::uint64_t resident_multiplier = 4,
+        std::string device = "gpu0") {
     return oreslang::opencl::Provider(
             api,
-            {"tenant-a", "gpu0", 9, 21},
+            {"tenant-a", std::move(device), 9, 21, 4},
             {
                 bytes * resident_multiplier,
                 bytes * 4,
                 4,
                 4
-            });
-}
-
-oreslang::dop::GpuTarget target(const Fixture& fixture) {
-    return {64, fixture.plan.byte_length() * 2, 100, true};
+            },
+            {64, bytes * 2, 100, true});
 }
 
 } // namespace
@@ -193,9 +196,9 @@ int main() {
         Fixture f;
         FakeApi api;
         auto provider = make_provider(api, f.plan.byte_length());
-        auto prepared = provider.prepare(f.kernel, target(f));
+        auto prepared = provider.prepare(f.kernel);
         auto operation = provider.begin(
-                prepared, f.input, f.output, f.queue, f.host);
+                prepared, f.input, f.output, f.host);
 
         check(f.input_fence.status() == Status::InFlight);
         check(f.output_fence.status() == Status::InFlight);
@@ -225,9 +228,9 @@ int main() {
         Fixture f;
         FakeApi api;
         auto provider = make_provider(api, f.plan.byte_length(), 1);
-        auto prepared = provider.prepare(f.kernel, target(f));
+        auto prepared = provider.prepare(f.kernel);
         expect_throw<std::runtime_error>([&] {
-            (void)provider.begin(prepared, f.input, f.output, f.queue, f.host);
+            (void)provider.begin(prepared, f.input, f.output, f.host);
         });
         check(f.input_fence.status() == Status::Idle);
         check(f.output_fence.status() == Status::Idle);
@@ -236,16 +239,16 @@ int main() {
         prepared.close();
     }
 
-    // Queue metadata cannot retarget the authenticated provider instance.
+    // The provider object itself is the trusted queue capability. Binding
+    // that capability to another device cannot retarget existing buffer owners.
     {
         Fixture f;
         FakeApi api;
-        auto provider = make_provider(api, f.plan.byte_length());
-        auto prepared = provider.prepare(f.kernel, target(f));
-        auto foreign = f.queue;
-        foreign.queue_id = 10;
-        expect_throw<std::invalid_argument>([&] {
-            (void)provider.begin(prepared, f.input, f.output, foreign, f.host);
+        auto provider = make_provider(
+                api, f.plan.byte_length(), 4, "gpu1");
+        auto prepared = provider.prepare(f.kernel);
+        expect_throw<std::logic_error>([&] {
+            (void)provider.begin(prepared, f.input, f.output, f.host);
         });
         check(f.input_fence.status() == Status::Idle);
         check(f.output_fence.status() == Status::Idle);
@@ -258,9 +261,9 @@ int main() {
         FakeApi api;
         api.fail_allocate_at = 2;
         auto provider = make_provider(api, f.plan.byte_length());
-        auto prepared = provider.prepare(f.kernel, target(f));
+        auto prepared = provider.prepare(f.kernel);
         expect_throw<std::runtime_error>([&] {
-            (void)provider.begin(prepared, f.input, f.output, f.queue, f.host);
+            (void)provider.begin(prepared, f.input, f.output, f.host);
         });
         check(f.input_fence.status() == Status::Idle);
         check(f.output_fence.status() == Status::Idle);
@@ -272,9 +275,9 @@ int main() {
         FakeApi api;
         api.fail_upload = true;
         auto provider = make_provider(api, f.plan.byte_length());
-        auto prepared = provider.prepare(f.kernel, target(f));
+        auto prepared = provider.prepare(f.kernel);
         expect_throw<std::runtime_error>([&] {
-            (void)provider.begin(prepared, f.input, f.output, f.queue, f.host);
+            (void)provider.begin(prepared, f.input, f.output, f.host);
         });
         check(f.input_fence.status() == Status::Idle);
         check(f.output_fence.status() == Status::Idle);
@@ -288,9 +291,9 @@ int main() {
         FakeApi api;
         api.fail_kernel = true;
         auto provider = make_provider(api, f.plan.byte_length());
-        auto prepared = provider.prepare(f.kernel, target(f));
+        auto prepared = provider.prepare(f.kernel);
         auto operation = provider.begin(
-                prepared, f.input, f.output, f.queue, f.host);
+                prepared, f.input, f.output, f.host);
 
         expect_throw<std::runtime_error>([&] { (void)provider.poll(*operation); });
         check(f.input_fence.status() == Status::Poisoned);
@@ -308,9 +311,9 @@ int main() {
         FakeApi api;
         api.statuses.push_back(EventStatus::Pending);
         auto provider = make_provider(api, f.plan.byte_length());
-        auto prepared = provider.prepare(f.kernel, target(f));
+        auto prepared = provider.prepare(f.kernel);
         auto operation = provider.begin(
-                prepared, f.input, f.output, f.queue, f.host);
+                prepared, f.input, f.output, f.host);
 
         provider.request_timeout_cancellation(*operation);
         const auto before = provider.usage();
@@ -336,9 +339,9 @@ int main() {
         FakeApi api;
         api.statuses.push_back(EventStatus::DeviceLost);
         auto provider = make_provider(api, f.plan.byte_length());
-        auto prepared = provider.prepare(f.kernel, target(f));
+        auto prepared = provider.prepare(f.kernel);
         auto operation = provider.begin(
-                prepared, f.input, f.output, f.queue, f.host);
+                prepared, f.input, f.output, f.host);
 
         check(provider.poll(*operation) == Provider::OperationState::DeviceLost);
         check(f.input_fence.status() == Status::Poisoned);
@@ -352,9 +355,9 @@ int main() {
         Fixture f;
         FakeApi api;
         auto provider = make_provider(api, f.plan.byte_length());
-        auto prepared = provider.prepare(f.kernel, target(f));
+        auto prepared = provider.prepare(f.kernel);
         auto operation = provider.begin(
-                prepared, f.input, f.output, f.queue, f.host);
+                prepared, f.input, f.output, f.host);
         (void)provider.poll(*operation);
         (void)provider.poll(*operation);
         api.fail_release_buffer_once = true;
@@ -371,15 +374,74 @@ int main() {
         prepared.close();
     }
 
+    // Failed pre-enqueue physical cleanup retains the exact resource
+    // authority and quota until an explicit retry succeeds.
+    {
+        Fixture f;
+        FakeApi api;
+        api.fail_upload = true;
+        api.fail_release_buffer_once = true;
+        auto provider = make_provider(api, f.plan.byte_length());
+        auto prepared = provider.prepare(f.kernel);
+
+        expect_throw<std::runtime_error>([&] {
+            (void)provider.begin(prepared, f.input, f.output, f.host);
+        });
+        check(f.input_fence.status() == Status::Idle);
+        check(f.output_fence.status() == Status::Idle);
+        check(provider.usage().resident_bytes > 0);
+        expect_throw<std::logic_error>([&] { prepared.close(); });
+        expect_throw<std::logic_error>([&] {
+            (void)provider.begin(prepared, f.input, f.output, f.host);
+        });
+
+        provider.retry_pre_enqueue_cleanup();
+        check(provider.usage() == oreslang::opencl::Usage{0, 0, 0, 0});
+        prepared.close();
+    }
+
+    // Failed prepared-program release keeps the same program handle retryable.
+    {
+        Fixture f;
+        FakeApi api;
+        api.fail_release_program_once = true;
+        auto provider = make_provider(api, f.plan.byte_length());
+        auto prepared = provider.prepare(f.kernel);
+        expect_throw<std::runtime_error>([&] { prepared.close(); });
+        check(api.released_programs == 0);
+        prepared.close();
+        check(api.released_programs == 1);
+    }
+
+    // Provider queue/target profiles are closed before any physical launch.
+    {
+        Fixture f;
+        FakeApi api;
+        expect_throw<std::invalid_argument>([&] {
+            oreslang::opencl::Provider invalid(
+                    api,
+                    {"tenant-a", "gpu0", 9, 21, 3},
+                    {1024, 1024, 1, 1},
+                    {64, 1024, 100, true});
+        });
+        expect_throw<std::invalid_argument>([&] {
+            oreslang::opencl::Provider invalid(
+                    api,
+                    {"tenant-a", "gpu0", 9, 21, 4},
+                    {1024, 1024, 1, 1},
+                    {32, 1024, 100, true});
+        });
+    }
+
     // Terminal event release failure keeps the exact event resumable.
     {
         Fixture f;
         FakeApi api;
         api.fail_release_event_once = true;
         auto provider = make_provider(api, f.plan.byte_length());
-        auto prepared = provider.prepare(f.kernel, target(f));
+        auto prepared = provider.prepare(f.kernel);
         auto operation = provider.begin(
-                prepared, f.input, f.output, f.queue, f.host);
+                prepared, f.input, f.output, f.host);
 
         expect_throw<std::runtime_error>([&] { (void)provider.poll(*operation); });
         check(provider.poll(*operation) == Provider::OperationState::KernelSubmitted);
