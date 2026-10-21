@@ -56,3 +56,32 @@ jobs:
           c++ --version
           c++ -std=c++17 -Wall -Wextra -Wpedantic -Werror             -Itmp/ores-compute-validation/cpp             tmp/ores-compute-validation/cpp/portable_compute_descriptor_test.cpp             -o "${RUNNER_TEMP}/ores-compute-descriptor-test"
           "${RUNNER_TEMP}/ores-compute-descriptor-test"
+      - name: Validate accelerator build-profile constraints
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("tmp/ores-compute-validation/profiles")
+          contract = json.loads((root / "build-profiles-v1.json").read_text())
+          schema = json.loads((root / "build-profiles.schema.json").read_text())
+          accel = contract["constraints"]["accelerators"]
+          expected = {
+              "providerDiscovery": "explicit-only",
+              "implicitTransfers": "forbidden",
+              "implicitCpuFallback": "forbidden",
+              "sourceForgeableAuthority": "forbidden",
+              "cancellationQuiescence": "verified-fence-only",
+              "strictAotKernelVariants": "precompiled-only",
+              "hardRtResourceBounds": "required",
+          }
+          assert accel == expected
+          assert "accelerators" in schema["properties"]["constraints"]["required"]
+          props = schema["properties"]["constraints"]["properties"]["accelerators"]
+          assert props["additionalProperties"] is False
+          assert set(props["required"]) == set(expected)
+          for key, value in expected.items():
+              assert props["properties"][key]["const"] == value
+          print("accelerator-build-profile-contract-ok")
+          PY
