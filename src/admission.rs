@@ -450,6 +450,43 @@ mod tests {
     }
 
     #[test]
+    fn zero_jobs_with_runner_identity_is_contradictory_and_fails_closed() {
+        for diagnostic in [BILLING, CAPACITY] {
+            for (runner_name, runner_labels) in [
+                (Some("runner-42"), &[][..]),
+                (None, &["self-hosted"][..]),
+                (Some("runner-42"), &["linux"][..]),
+                (Some(""), &[][..]),
+            ] {
+                let result = classify_admission_failure(&WorkflowAdmissionEvidence {
+                    conclusion: Some("failure"),
+                    status: Some("completed"),
+                    jobs_observed: Some(0),
+                    steps_observed: Some(0),
+                    runner_name,
+                    runner_labels,
+                    platform_diagnostics: &[diagnostic],
+                });
+                assert!(
+                    !result.fallback_allowed,
+                    "contradictory zero jobs with runner={runner_name:?}, labels={runner_labels:?}"
+                );
+            }
+            assert!(
+                classify_admission_failure(&WorkflowAdmissionEvidence {
+                    conclusion: Some("failure"),
+                    status: Some("completed"),
+                    jobs_observed: Some(0),
+                    steps_observed: Some(0),
+                    platform_diagnostics: &[diagnostic],
+                    ..WorkflowAdmissionEvidence::default()
+                })
+                .fallback_allowed
+            );
+        }
+    }
+
+    #[test]
     fn observed_steps_suppress_billing_and_capacity_fallback() {
         for diagnostic in [BILLING, CAPACITY] {
             let result = classify_admission_failure(&WorkflowAdmissionEvidence {
