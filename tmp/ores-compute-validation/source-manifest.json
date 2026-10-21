@@ -1,0 +1,48 @@
+{
+  "java_head": "d5fe6e39dcf435de5f3164b88c40a06af263ada8",
+  "common_head": "c2b5ec52a561e7d3a7f9c104c4a13afb1f99a763",
+  "files": [
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-source.java",
+      "source_ref": "feat/portable-compute-stdlib-v1",
+      "source_path": "src/main/java/dev/oreslang/runtime/compute/ComputeCapabilities.java",
+      "source_blob_sha": "9d3758de3393020894b7a80979e4bc4536b95c6d",
+      "dest": "tmp/ores-compute-validation/java/dev/oreslang/runtime/compute/ComputeCapabilities.java"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-source.java",
+      "source_ref": "feat/portable-compute-stdlib-v1",
+      "source_path": "src/main/java/dev/oreslang/runtime/compute/ComputeDevice.java",
+      "source_blob_sha": "3afaf40fce54e0568b343446457d5d9213a5ffb9",
+      "dest": "tmp/ores-compute-validation/java/dev/oreslang/runtime/compute/ComputeDevice.java"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-source.java",
+      "source_ref": "feat/portable-compute-stdlib-v1",
+      "source_path": "src/main/java/dev/oreslang/runtime/compute/ComputeProvider.java",
+      "source_blob_sha": "53a1c9cf32676da615fb6f7c2e587aec8c900a0f",
+      "dest": "tmp/ores-compute-validation/java/dev/oreslang/runtime/compute/ComputeProvider.java"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-source.java",
+      "source_ref": "feat/portable-compute-stdlib-v1",
+      "source_path": "src/main/java/dev/oreslang/runtime/compute/ComputeProviderRegistry.java",
+      "source_blob_sha": "26d9897d6df55e1444ae6d015c8dcd51fc6f8145",
+      "dest": "tmp/ores-compute-validation/java/dev/oreslang/runtime/compute/ComputeProviderRegistry.java"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-source.java",
+      "source_ref": "feat/portable-compute-stdlib-v1",
+      "source_path": "stdlib/compute.ores",
+      "source_blob_sha": "e014decdcbc2bef18f5d03001a8b6e663bd21d8c",
+      "dest": "tmp/ores-compute-validation/stdlib/compute.ores"
+    },
+    {
+      "source_repo": "ores-truffle-oreslang/oreslang-common-source",
+      "source_ref": "feat/portable-compute-stdlib-v1",
+      "source_path": "contracts/v1/portable-compute-stdlib.json",
+      "source_blob_sha": "c744bb24b26eb654befbf45dcd00867eb0d23e6e",
+      "dest": "tmp/ores-compute-validation/contract/portable-compute-stdlib.json"
+    }
+  ]
+}
