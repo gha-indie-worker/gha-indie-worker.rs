@@ -71,7 +71,12 @@ struct Usage {
     std::uint32_t outstanding_events;
     std::uint32_t queue_slots;
 
-    friend bool operator==(const Usage&, const Usage&) = default;
+    friend bool operator==(const Usage& left, const Usage& right) noexcept {
+        return left.resident_bytes == right.resident_bytes
+            && left.pinned_host_bytes == right.pinned_host_bytes
+            && left.outstanding_events == right.outstanding_events
+            && left.queue_slots == right.queue_slots;
+    }
 };
 
 class Provider final {
