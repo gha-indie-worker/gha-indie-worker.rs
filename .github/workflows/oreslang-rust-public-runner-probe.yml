@@ -1,0 +1,18 @@
+name: Rust public runner availability probe
+on:
+  push:
+    branches:
+      - ci/oreslang-rust-public-runner-probe-20261021
+permissions:
+  contents: read
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Test public runner toolchain (no private source)
+        run: |
+          set -euo pipefail
+          echo "ORESLANG_PUBLIC_RUNNER_PROBE"
+          rustc --version
+          cargo --version
