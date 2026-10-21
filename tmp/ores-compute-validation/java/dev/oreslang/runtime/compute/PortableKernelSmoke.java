@@ -37,6 +37,41 @@ public final class PortableKernelSmoke {
             throw new AssertionError("scale-bias reference rounding drift");
         }
 
-        System.out.println("portable-kernel-g2-smoke-ok");
+        var one = new Plan(Layout.AOS, 1, 1, 4, 4, 1);
+        var scale = new Kernel(one, Element.F32, Operation.SCALE, 2.0f, 0.0f);
+        for (int iteration = 0; iteration < 100; iteration++) {
+            var a = new HostBuffer(one);
+            var b = new HostBuffer(one);
+            a.write(0, 0, 1.0f);
+            b.write(0, 0, 3.0f);
+            final Throwable[] failure = new Throwable[1];
+            Thread left = new Thread(() -> {
+                try { CpuReferenceProvider.execute(scale, a, b); }
+                catch (Throwable t) { failure[0] = t; }
+            });
+            Thread right = new Thread(() -> {
+                try { CpuReferenceProvider.execute(scale, b, a); }
+                catch (Throwable t) { failure[0] = t; }
+            });
+            left.start();
+            right.start();
+            try {
+                left.join(5000);
+                right.join(5000);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(interrupted);
+            }
+            if (left.isAlive() || right.isAlive())
+                throw new AssertionError("CPU reference reversed-pair deadlock");
+            if (failure[0] != null)
+                throw new AssertionError("CPU reference concurrency failed", failure[0]);
+            float av = a.read(0, 0);
+            float bv = b.read(0, 0);
+            if (!((av == 4.0f && bv == 2.0f) || (av == 6.0f && bv == 12.0f)))
+                throw new AssertionError("CPU reference execution was not serializable");
+        }
+
+        System.out.println("portable-kernel-g3-cpu-concurrency-smoke-ok");
     }
 }
