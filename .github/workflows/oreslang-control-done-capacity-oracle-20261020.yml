@@ -1,0 +1,119 @@
+name: Oreslang CONTROL DONE capacity source-free oracle
+on:
+  push:
+    branches: [test/oreslang-control-done-capacity-oracle-20261020]
+  workflow_dispatch:
+permissions: {}
+jobs:
+  public-reference-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Run independent CONTROL/DONE capacity reference
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_OS" = Linux
+          echo "SOURCE_FREE_ONLY: no checkout, no tokens, no cross-org private source"
+          python3 - <<'PY'
+          import random
+          import threading
+          import time
+
+          class Lifecycle:
+              def __init__(self):
+                  self.lock = threading.Lock()
+                  self.control_pending = True
+                  self.observers_retired = False
+                  self.slot_release_pending = True
+                  self.capacity_reserved = True
+                  self.exit_hook_returned = False
+                  self.done = False
+
+              def _try_release(self):
+                  if (
+                      self.observers_retired
+                      and not self.control_pending
+                      and self.slot_release_pending
+                  ):
+                      self.slot_release_pending = False
+                      self.capacity_reserved = False
+
+              def ack_control(self):
+                  with self.lock:
+                      assert self.control_pending
+                      self.control_pending = False
+                      self._try_release()
+
+              def finish_observer_bundle(self):
+                  with self.lock:
+                      self.exit_hook_returned = True
+                      # Public DONE settles after the exit hook but before the
+                      # observer bundle's finally block retires capacity.
+                      self.done = True
+                      self.observers_retired = True
+                      self._try_release()
+
+          # Deterministic early-ack case.
+          x = Lifecycle()
+          x.ack_control()
+          assert x.capacity_reserved
+          assert not x.done
+          x.finish_observer_bundle()
+          assert x.done
+          assert not x.capacity_reserved
+
+          # Reversed order: DONE may settle first, but failed-actor capacity
+          # remains charged until correctness-critical CONTROL is acknowledged.
+          x = Lifecycle()
+          x.finish_observer_bundle()
+          assert x.done
+          assert x.capacity_reserved
+          x.ack_control()
+          assert not x.capacity_reserved
+
+          rng = random.Random(20261020)
+          for _ in range(50000):
+              x = Lifecycle()
+              start = threading.Event()
+              errors = []
+
+              def ack():
+                  start.wait()
+                  if rng.randrange(3) == 0:
+                      time.sleep(0)
+                  try:
+                      x.ack_control()
+                  except BaseException as exc:
+                      errors.append(exc)
+
+              def retire():
+                  start.wait()
+                  if rng.randrange(3) == 0:
+                      time.sleep(0)
+                  try:
+                      x.finish_observer_bundle()
+                  except BaseException as exc:
+                      errors.append(exc)
+
+              a = threading.Thread(target=ack, daemon=True)
+              b = threading.Thread(target=retire, daemon=True)
+              a.start(); b.start(); start.set()
+              a.join(2); b.join(2)
+              assert not a.is_alive() and not b.is_alive()
+              assert not errors
+              with x.lock:
+                  assert x.done
+                  assert x.exit_hook_returned
+                  assert x.observers_retired
+                  assert not x.control_pending
+                  assert not x.slot_release_pending
+                  assert not x.capacity_reserved
+
+          print("PASS SOURCE-FREE CONTROL/DONE capacity oracle: 50000 races")
+          print("PASS early CONTROL ack cannot recycle actor capacity")
+          print("PASS DONE remains behind exit-hook completion")
+          print("PASS observer retirement alone cannot bypass pending failure CONTROL")
+          print("PASS capacity releases only after both barriers")
+          print("NOT an Oreslang source, Java, JDK25, GraalVM, or exact-tree test")
+          PY
