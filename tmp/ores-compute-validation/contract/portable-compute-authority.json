@@ -6,18 +6,42 @@
   "handles": {
     "Device": {
       "sealed": true,
-      "identity": ["backendId", "deviceId", "providerGeneration", "tenantDomain"]
+      "identity": [
+        "backendId",
+        "deviceId",
+        "providerGeneration",
+        "tenantDomain"
+      ]
     },
     "Buffer<T>": {
       "sealed": true,
       "affineInSource": true,
-      "identity": ["deviceAuthority", "allocationGeneration", "ownerDomain"],
-      "metadata": ["byteLength", "alignment", "typeTag"],
-      "states": ["idle", "in-flight", "poisoned", "retired"]
+      "identity": [
+        "deviceAuthority",
+        "allocationGeneration",
+        "ownerDomain"
+      ],
+      "metadata": [
+        "byteLength",
+        "alignment",
+        "typeTag"
+      ],
+      "states": [
+        "idle",
+        "in-flight",
+        "poisoned",
+        "retired"
+      ]
     },
     "Fence": {
       "sealed": true,
-      "identity": ["deviceAuthority", "allocationGeneration", "sequence", "direction", "opaqueProof"]
+      "identity": [
+        "deviceAuthority",
+        "allocationGeneration",
+        "sequence",
+        "direction",
+        "opaqueProof"
+      ]
     },
     "KernelContext": {
       "sealed": true,
@@ -25,7 +49,10 @@
     }
   },
   "transfers": {
-    "operations": ["upload", "download"],
+    "operations": [
+      "upload",
+      "download"
+    ],
     "explicitOnly": true,
     "implicitTransfer": false,
     "implicitCpuFallback": false,
@@ -36,7 +63,10 @@
     "staleGenerationForbidden": true,
     "completionFenceRequired": true,
     "cancellationImpliesQuiescence": false,
-    "reclaimRequiresVerifiedQuiescence": true
+    "reclaimRequiresVerifiedQuiescence": true,
+    "preEnqueueAbortRequiresExactFence": true,
+    "preEnqueueAbortRestoresIdle": true,
+    "preEnqueueAbortForbiddenAfterSubmission": true
   },
   "generationRules": {
     "providerGenerationNonzero": true,
