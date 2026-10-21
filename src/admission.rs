@@ -202,9 +202,10 @@ pub(crate) fn classify_admission_failure(
         evidence.jobs_observed.is_some() && evidence.steps_observed == Some(0);
     // Application-authored check annotations are not independent platform
     // admission evidence, even if they describe billing or runner capacity.
-    let trusted_fallback_source = evidence.platform_diagnostics.iter().all(|item| {
-        item.source == PlatformDiagnosticSource::AuthorizedActionsApi
-    });
+    let trusted_fallback_source = evidence
+        .platform_diagnostics
+        .iter()
+        .all(|item| item.source == PlatformDiagnosticSource::AuthorizedActionsApi);
 
     let diagnostic = match unique_diagnostic_kind(evidence.platform_diagnostics) {
         Ok(diagnostic) => diagnostic,
