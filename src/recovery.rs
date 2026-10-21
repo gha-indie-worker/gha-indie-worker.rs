@@ -43,6 +43,10 @@ pub(crate) enum RecoveryOutcome {
         key: String,
         receipt: RunReceipt,
     },
+    Contradictory {
+        key: String,
+        receipt: RunReceipt,
+    },
 }
 
 fn valid_repo(repo: &str) -> bool {
@@ -104,7 +108,13 @@ pub(crate) fn workflow_run_candidate(
         .get("head_sha")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    if !valid_repo(repo) || run_id == 0 || attempt == 0 || !valid_head_sha(head_sha) {
+    if !valid_repo(repo)
+        || run_id == 0
+        || run_id > i64::MAX as u64
+        || attempt == 0
+        || attempt > i64::MAX as u64
+        || !valid_head_sha(head_sha)
+    {
         return Err(CandidateError::InvalidIdentity);
     }
     Ok(Some(RecoveryCandidate {
@@ -126,27 +136,6 @@ pub(crate) fn recovery_key(identity: &RunIdentity) -> String {
     digest.update(identity.attempt.to_be_bytes());
     digest.update(identity.head_sha.to_ascii_lowercase().as_bytes());
     format!("v1:{}", hex::encode(digest.finalize()))
-}
-
-fn confidence_label(confidence: AdmissionEvidenceConfidence) -> &'static str {
-    match confidence {
-        AdmissionEvidenceConfidence::Explicit => "explicit",
-        AdmissionEvidenceConfidence::Ambiguous => "ambiguous",
-    }
-}
-
-fn durable_action(receipt: &RunReceipt) -> String {
-    format!(
-        "observed:{}:{}:allow={}:run={}:attempt={}:jobs={}:steps={}:runner={}",
-        receipt.classification.kind.as_str(),
-        confidence_label(receipt.classification.confidence),
-        receipt.classification.fallback_allowed,
-        receipt.identity.run_id,
-        receipt.identity.attempt,
-        receipt.jobs_observed,
-        receipt.steps_observed,
-        receipt.runner_assigned
-    )
 }
 
 /// Authenticates the exact run identity against GitHub and durably records the
@@ -196,29 +185,27 @@ pub(crate) async fn observe_candidate(
     }
 
     let key = recovery_key(&candidate.identity);
-    let action = durable_action(&receipt);
-    match db::record_recovery_receipt_strict(
-        db,
-        &key,
-        &candidate.identity.repo,
-        &candidate.identity.head_sha,
-        &action,
-    )
-    .await
-    {
-        Ok(true) => {
+    match db::record_recovery_observation_strict(db, &receipt).await {
+        Ok(db::RecoveryObservationWrite::Inserted) => {
             state
                 .counters
                 .github_recovery_observed
                 .fetch_add(1, Ordering::Relaxed);
             RecoveryOutcome::Recorded { key, receipt }
         }
-        Ok(false) => {
+        Ok(db::RecoveryObservationWrite::DuplicateIdentical) => {
             state
                 .counters
                 .github_recovery_duplicates
                 .fetch_add(1, Ordering::Relaxed);
             RecoveryOutcome::Duplicate { key, receipt }
+        }
+        Ok(db::RecoveryObservationWrite::Contradictory) => {
+            state
+                .counters
+                .github_recovery_fail_closed
+                .fetch_add(1, Ordering::Relaxed);
+            RecoveryOutcome::Contradictory { key, receipt }
         }
         Err(_) => {
             state
@@ -286,6 +273,13 @@ mod tests {
         bad_sha["workflow_run"]["head_sha"] = json!("not-a-sha");
         assert_eq!(
             workflow_run_candidate(&bad_sha),
+            Err(CandidateError::InvalidIdentity)
+        );
+
+        let mut overflow = payload("failure");
+        overflow["workflow_run"]["id"] = json!(u64::MAX);
+        assert_eq!(
+            workflow_run_candidate(&overflow),
             Err(CandidateError::InvalidIdentity)
         );
     }
