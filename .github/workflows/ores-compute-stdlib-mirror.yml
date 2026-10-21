@@ -46,16 +46,16 @@ jobs:
               Path("tmp/ores-compute-validation/source-manifest.json").read_text()
           )
           expected = {
-              "java_head": "66971839c52c241e0c5203ad43efc3c65c4a975d",
-              "llvm_head": "6f181e79164c5b0c45067aabd32da55e90cb64c1",
-              "common_head": "3b36e9ee1a940c708c532742a87071c5b04b829f",
+              "java_head": "5859799c230fb3b6e6510223a77e822504f7ee36",
+              "llvm_head": "7ef39d2c1b35cc1965030d79bee0ed3f822375c3",
+              "common_head": "faee2e5bac6bb907a05c02de8abbf2c309d27f21",
               "profiles_head": "a9f06703926ffedb48d031db835cb6920033f65f",
-              "opencl_java_head": "d23d433e4f8964cf917cf0a8045b4230704deaec",
-              "opencl_llvm_head": "b8bcebb98b7e5b66f22ff31f5c1776152097886e",
-              "opencl_common_head": "9f26644e15733bdb82e396f54608579564889c60",
-              "g3_java_head": "b85f150d69e2e9fe046c6139e0c71172002cad79",
-              "g3_llvm_head": "192c02325bf49ec74994683dcbb451446341190b",
-              "g3_common_head": "bace655d0205324267df6a298b185d3c643c3e49",
+              "opencl_java_head": "5859799c230fb3b6e6510223a77e822504f7ee36",
+              "opencl_llvm_head": "7ef39d2c1b35cc1965030d79bee0ed3f822375c3",
+              "opencl_common_head": "faee2e5bac6bb907a05c02de8abbf2c309d27f21",
+              "g3_java_head": "5d373d59a47938a5238f48197466c8c6e07f4b0c",
+              "g3_llvm_head": "173af3529fdabb44b0af6222796d29ebf210e57b",
+              "g3_common_head": "7d2404abc308ed2f443dad5e152c13ef96891f93",
               "g3_profiles_head": "8bc8f0c9eb6845f0d0bc87452a477cf607dc91ce",
           }
           for key, value in expected.items():
@@ -187,6 +187,19 @@ jobs:
             tmp/ores-compute-validation/cpp/opencl_provider_g3_test.cpp \
             -o "${RUNNER_TEMP}/opencl-provider-g3"
           "${RUNNER_TEMP}/opencl-provider-g3"
+
+      - name: Run native G3 provider under ASan and UBSan
+        shell: bash
+        run: |
+          set -euo pipefail
+          INC="-Itmp/ores-compute-validation/cpp"
+          c++ -std=c++17 -O1 -g -Wall -Wextra -Wpedantic -Werror \
+            -fsanitize=address,undefined -fno-omit-frame-pointer -pthread $INC \
+            tmp/ores-compute-validation/cpp/opencl_provider_g3_test.cpp \
+            -o "${RUNNER_TEMP}/opencl-provider-g3-sanitized"
+          ASAN_OPTIONS=detect_leaks=1:abort_on_error=1 \
+          UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+            "${RUNNER_TEMP}/opencl-provider-g3-sanitized"
 
       - name: Probe real OpenCL GPU conditionally
         shell: bash
