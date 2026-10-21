@@ -13,6 +13,24 @@
 #[path = "admission/github_api.rs"]
 mod github_api;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RunIdentity {
+    pub(crate) repo: String,
+    pub(crate) run_id: u64,
+    pub(crate) attempt: u64,
+    pub(crate) head_sha: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ObserveError {
+    InvalidIdentity,
+    Transport,
+    MalformedResponse,
+    MismatchedIdentity,
+    IncompletePagination,
+    ChangedDuringObservation,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AdmissionFailureKind {
     BillingOrSpending,
@@ -164,6 +182,35 @@ impl AdmissionClassification {
             reason,
         }
     }
+}
+
+#[derive(Debug)]
+pub(crate) struct RunReceipt {
+    pub(crate) identity: RunIdentity,
+    pub(crate) jobs_observed: u32,
+    pub(crate) steps_observed: u32,
+    pub(crate) runner_assigned: bool,
+    pub(crate) classification: AdmissionClassification,
+}
+
+/// Production entry point for the authenticated, read-only GitHub observer.
+/// This does not create trusted platform diagnostics and cannot dispatch work.
+#[cfg(any(not(test), feature = "admission-api-harness"))]
+pub(crate) async fn inspect_authenticated(
+    token: &str,
+    id: &RunIdentity,
+) -> Result<RunReceipt, ObserveError> {
+    github_api::inspect_authenticated(token, id).await
+}
+
+/// Normal unit tests deliberately avoid network access. The API adapter has a
+/// separate hermetic harness under the admission-api-harness feature.
+#[cfg(all(test, not(feature = "admission-api-harness")))]
+pub(crate) async fn inspect_authenticated(
+    _token: &str,
+    _id: &RunIdentity,
+) -> Result<RunReceipt, ObserveError> {
+    Err(ObserveError::Transport)
 }
 
 fn valid_evidence_ref(reference: &str) -> bool {
