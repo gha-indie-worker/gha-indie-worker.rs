@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - src/admission.rs
+      - src/admission/github_api.rs
       - src/admission_formal.rs
       - src/main.rs
       - .github/workflows/admission-classifier.yml
@@ -11,6 +12,7 @@ on:
     branches: [main]
     paths:
       - src/admission.rs
+      - src/admission/github_api.rs
       - src/admission_formal.rs
       - src/main.rs
       - .github/workflows/admission-classifier.yml
@@ -99,6 +101,7 @@ jobs:
 
           classifier = Path("src/admission.rs").read_text(encoding="utf-8")
           model = Path("src/admission_formal.rs").read_text(encoding="utf-8")
+          observer = Path("src/admission/github_api.rs").read_text(encoding="utf-8")
           workflow = Path(
               ".github/workflows/admission-classifier.yml"
           ).read_text(encoding="utf-8")
@@ -110,6 +113,17 @@ jobs:
               "if steps_started",
           ):
               assert token in classifier, token
+
+          for token in (
+              "validate_consistent_snapshots(",
+              "validate_consistent_snapshots(&pages, &verification_pages, id)?",
+              "ChangedDuringObservation",
+              "double_snapshot_accepts_identical_complete_pages",
+              "detects_job_replacement_despite_unchanged_total_and_run_status",
+              "detects_step_mutation_and_runner_assignment_between_reads",
+              "rejects_truncated_or_inconsistent_second_snapshot",
+          ):
+              assert token in observer, token
 
           for forbidden in (
               "std::fs",
@@ -134,6 +148,7 @@ jobs:
           PY
           sha256sum \
             src/admission.rs \
+            src/admission/github_api.rs \
             src/admission_formal.rs \
             .github/workflows/admission-classifier.yml
 
@@ -189,6 +204,7 @@ jobs:
           if grep -RqE \
             '(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|lin_api_[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)' \
             src/admission.rs \
+            src/admission/github_api.rs \
             src/admission_formal.rs \
             .github/workflows/admission-classifier.yml; then
             echo "credential-shaped material is forbidden" >&2
@@ -216,6 +232,8 @@ jobs:
           scan_dir="$RUNNER_TEMP/admission-source-scan"
           mkdir -p "$scan_dir/src" "$scan_dir/.github/workflows"
           cp -- src/admission.rs src/admission_formal.rs "$scan_dir/src/"
+          mkdir -p "$scan_dir/src/admission"
+          cp -- src/admission/github_api.rs "$scan_dir/src/admission/"
           cp -- .github/workflows/admission-classifier.yml "$scan_dir/.github/workflows/"
           "$RUNNER_TEMP/gitleaks" dir --redact --no-banner "$scan_dir"
 
