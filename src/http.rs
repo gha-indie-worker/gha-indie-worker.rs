@@ -111,6 +111,13 @@ pub(crate) async fn descriptor(State(state): State<AppState>) -> impl IntoRespon
             "registry": config.registry_webhook_secret.is_some(),
             "rules": config.webhook_rules.len()
         },
+        "recovery": {
+            "githubActions": {
+                "enabled": config.github_recovery_enabled,
+                "tokenConfigured": config.github_recovery_token.is_some(),
+                "mode": "observe-only"
+            }
+        },
         "secretSync": { "enabled": config.gh_sync_enabled, "rules": config.gh_sync_rules.len() }
     }))
 }
@@ -254,6 +261,29 @@ pub(crate) async fn metrics(State(state): State<AppState>) -> impl IntoResponse 
         state.counters.nats_publish_failures.load(Ordering::Relaxed),
         state.counters.gh_secrets_synced.load(Ordering::Relaxed),
         state.counters.gh_secret_sync_failures.load(Ordering::Relaxed),
+    ));
+    body.push_str(&format!(
+        "# HELP dd_build_server_github_recovery_observed_total Durable GitHub recovery receipts recorded.\n\
+         # TYPE dd_build_server_github_recovery_observed_total counter\n\
+         dd_build_server_github_recovery_observed_total {}\n\
+         # HELP dd_build_server_github_recovery_duplicates_total Duplicate GitHub recovery identities observed after durable recording.\n\
+         # TYPE dd_build_server_github_recovery_duplicates_total counter\n\
+         dd_build_server_github_recovery_duplicates_total {}\n\
+         # HELP dd_build_server_github_recovery_fail_closed_total GitHub recovery attempts denied because evidence, auth, or durability was insufficient.\n\
+         # TYPE dd_build_server_github_recovery_fail_closed_total counter\n\
+         dd_build_server_github_recovery_fail_closed_total {}\n",
+        state
+            .counters
+            .github_recovery_observed
+            .load(Ordering::Relaxed),
+        state
+            .counters
+            .github_recovery_duplicates
+            .load(Ordering::Relaxed),
+        state
+            .counters
+            .github_recovery_fail_closed
+            .load(Ordering::Relaxed),
     ));
     body.push_str(&format!(
         "# HELP dd_build_server_dependencies_ready Whether auth, work storage, and required build tools are available.\n\
@@ -575,6 +605,8 @@ mod e2e {
             github_webhook_secret: Some(GH_HOOK.to_string()),
             registry_webhook_secret: Some(REG_HOOK.to_string()),
             webhook_rules: Vec::new(),
+            github_recovery_enabled: false,
+            github_recovery_token: None,
             gh_sync_enabled: false,
             gh_sync_token: None,
             gh_sync_rules: Vec::new(),
@@ -854,6 +886,74 @@ mod e2e {
         let (status, body) = send(app(test_config()), request).await;
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("ignored"));
+    }
+
+    #[tokio::test]
+    async fn failed_workflow_run_recovery_is_disabled_by_default() {
+        let body = json!({
+            "action": "completed",
+            "repository": { "full_name": "ORESoftware/x" },
+            "workflow_run": {
+                "id": 42,
+                "run_attempt": 1,
+                "status": "completed",
+                "conclusion": "failure",
+                "head_sha": "0123456789abcdef0123456789abcdef01234567",
+                "head_branch": "main"
+            }
+        })
+        .to_string();
+        let sig = github_sig(GH_HOOK, &body);
+        let request = Request::builder()
+            .method("POST")
+            .uri("/webhooks/github")
+            .header("content-type", "application/json")
+            .header("x-github-event", "workflow_run")
+            .header("x-github-delivery", "d-recovery-disabled")
+            .header("x-hub-signature-256", sig)
+            .body(Body::from(body))
+            .unwrap();
+
+        let (status, body) = send(app(test_config()), request).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("ignored"));
+        assert!(!body.contains("recovery-observed"));
+    }
+
+    #[tokio::test]
+    async fn recovery_enabled_without_durable_db_fails_closed_before_observation() {
+        let mut config = test_config();
+        config.github_recovery_enabled = true;
+        config.github_recovery_token = Some("read-only-test-token".to_string());
+
+        let body = json!({
+            "action": "completed",
+            "repository": { "full_name": "ORESoftware/x" },
+            "workflow_run": {
+                "id": 43,
+                "run_attempt": 2,
+                "status": "completed",
+                "conclusion": "failure",
+                "head_sha": "89abcdef0123456789abcdef0123456789abcdef",
+                "head_branch": "main"
+            }
+        })
+        .to_string();
+        let sig = github_sig(GH_HOOK, &body);
+        let request = Request::builder()
+            .method("POST")
+            .uri("/webhooks/github")
+            .header("content-type", "application/json")
+            .header("x-github-event", "workflow_run")
+            .header("x-github-delivery", "d-recovery-no-db")
+            .header("x-hub-signature-256", sig)
+            .body(Body::from(body))
+            .unwrap();
+
+        let (status, body) = send(app(config), request).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(body.contains("durable database persistence"));
+        assert!(body.contains("\"dispatch\":false"));
     }
 
     #[tokio::test]
