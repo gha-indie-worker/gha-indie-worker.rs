@@ -209,7 +209,9 @@ async fn live_pg_concurrent_cas_stale_identity_and_transaction_rollback() {
     // attempting a second claim or dispatch.
     let restarted = Database::connect(url.clone()).await.unwrap();
     assert_eq!(
-        reconcile_disabled_intent(&restarted, &key(94)).await.unwrap(),
+        reconcile_disabled_intent(&restarted, &key(94))
+            .await
+            .unwrap(),
         ReconcileOutcome::ConfirmedDisabledIntent {
             version: 3,
             fencing_token: 2,
@@ -217,18 +219,24 @@ async fn live_pg_concurrent_cas_stale_identity_and_transaction_rollback() {
         }
     );
     assert_eq!(
-        reconcile_disabled_intent(&restarted, &key(999)).await.unwrap(),
+        reconcile_disabled_intent(&restarted, &key(999))
+            .await
+            .unwrap(),
         ReconcileOutcome::Missing,
     );
     let wrong_sha = RecoveryKey::new("ci/repo", 94, 1, "b".repeat(40)).unwrap();
     assert_eq!(
-        reconcile_disabled_intent(&restarted, &wrong_sha).await.unwrap(),
+        reconcile_disabled_intent(&restarted, &wrong_sha)
+            .await
+            .unwrap(),
         ReconcileOutcome::Missing,
     );
     // A stale or malformed canonical identity is a hard error, not "Missing".
     let mut invalid = key(94);
     invalid.attempt = u64::MAX;
-    assert!(reconcile_disabled_intent(&restarted, &invalid).await.is_err());
+    assert!(reconcile_disabled_intent(&restarted, &invalid)
+        .await
+        .is_err());
 
     // Two racing full transactions must still produce just one staged intent.
     load(&db, 95, "verified", 1, false).await;
@@ -258,14 +266,22 @@ async fn live_pg_concurrent_cas_stale_identity_and_transaction_rollback() {
     // refuse to affirm the intent even though its idempotency key is correct.
     load(&db, 97, "verified", 1, false).await;
     assert!(matches!(
-        stage_verified_recovery(&db, &key(97), 1, "worker97").await.unwrap(),
+        stage_verified_recovery(&db, &key(97), 1, "worker97")
+            .await
+            .unwrap(),
         StageOutcome::Staged { .. }
     ));
-    exec(&db, "UPDATE gha_recovery_outbox SET payload =
+    exec(
+        &db,
+        "UPDATE gha_recovery_outbox SET payload =
       '{\"schema\":\"gha.recovery.intent.v1\",\"dispatch_enabled\":true}'::jsonb
-      WHERE recovery_id = (SELECT id FROM gha_recovery_runs WHERE run_id = 97)").await;
+      WHERE recovery_id = (SELECT id FROM gha_recovery_runs WHERE run_id = 97)",
+    )
+    .await;
     assert_eq!(
-        reconcile_disabled_intent(&restarted, &key(97)).await.unwrap(),
+        reconcile_disabled_intent(&restarted, &key(97))
+            .await
+            .unwrap(),
         ReconcileOutcome::RequiresOperatorReview
     );
 
@@ -273,12 +289,20 @@ async fn live_pg_concurrent_cas_stale_identity_and_transaction_rollback() {
     // or transition version cannot be mistaken for a valid committed intent.
     load(&db, 98, "verified", 1, false).await;
     assert!(matches!(
-        stage_verified_recovery(&db, &key(98), 1, "worker98").await.unwrap(),
+        stage_verified_recovery(&db, &key(98), 1, "worker98")
+            .await
+            .unwrap(),
         StageOutcome::Staged { .. }
     ));
-    exec(&db, "UPDATE gha_recovery_runs SET version=version+1 WHERE run_id=98").await;
+    exec(
+        &db,
+        "UPDATE gha_recovery_runs SET version=version+1 WHERE run_id=98",
+    )
+    .await;
     assert_eq!(
-        reconcile_disabled_intent(&restarted, &key(98)).await.unwrap(),
+        reconcile_disabled_intent(&restarted, &key(98))
+            .await
+            .unwrap(),
         ReconcileOutcome::RequiresOperatorReview
     );
 
@@ -301,7 +325,9 @@ async fn live_pg_concurrent_cas_stale_identity_and_transaction_rollback() {
         "outbox insert errors must roll back the claim"
     );
     assert_eq!(
-        reconcile_disabled_intent(&restarted, &key(96)).await.unwrap(),
+        reconcile_disabled_intent(&restarted, &key(96))
+            .await
+            .unwrap(),
         ReconcileOutcome::RequiresOperatorReview,
         "a rolled-back claim with a stray outbox must require operator review"
     );

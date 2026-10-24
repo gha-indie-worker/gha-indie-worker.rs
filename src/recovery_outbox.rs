@@ -241,7 +241,10 @@ pub(crate) async fn reconcile_disabled_intent(
         || owner.as_deref().is_none_or(str::is_empty)
         || !eligible
         || confidence != "explicit"
-        || !matches!(classification.as_str(), "billing_or_spending" | "runner_label_or_capacity")
+        || !matches!(
+            classification.as_str(),
+            "billing_or_spending" | "runner_label_or_capacity"
+        )
         || kind.as_deref() != Some(classification.as_str())
         || reference.as_deref().is_none_or(str::is_empty)
         || !has_verified_at
