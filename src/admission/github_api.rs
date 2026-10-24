@@ -1,7 +1,9 @@
 //! Read-only GitHub Actions run observer. No fallback issuer, dispatcher, or export.
 //! The authenticated transport is fixed to api.github.com; raw user strings
 //! cannot select an alternate host or issue a trusted provider diagnostic.
-use super::{classify_admission_failure, ObserveError, RunIdentity, RunReceipt, WorkflowAdmissionEvidence};
+use super::{
+    classify_admission_failure, ObserveError, RunIdentity, RunReceipt, WorkflowAdmissionEvidence,
+};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::time::Duration;

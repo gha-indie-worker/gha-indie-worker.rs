@@ -10,11 +10,8 @@ use sha2::{Digest, Sha256};
 use std::sync::atomic::Ordering;
 
 use crate::{
-    recovery_policy,
-    admission::{
-        inspect_authenticated, ObserveError, RunIdentity, RunReceipt,
-    },
-    db,
+    admission::{inspect_authenticated, ObserveError, RunIdentity, RunReceipt},
+    db, recovery_policy,
     state::AppState,
 };
 
@@ -36,18 +33,9 @@ pub(crate) enum RecoveryOutcome {
     BlockedMissingToken,
     ObservationFailed(ObserveError),
     PersistenceFailed,
-    Recorded {
-        key: String,
-        receipt: RunReceipt,
-    },
-    Duplicate {
-        key: String,
-        receipt: RunReceipt,
-    },
-    Contradictory {
-        key: String,
-        receipt: RunReceipt,
-    },
+    Recorded { key: String, receipt: RunReceipt },
+    Duplicate { key: String, receipt: RunReceipt },
+    Contradictory { key: String, receipt: RunReceipt },
 }
 
 fn valid_repo(repo: &str) -> bool {
@@ -70,15 +58,19 @@ fn valid_head_sha(sha: &str) -> bool {
     sha.len() == 40 && sha.bytes().all(|c| c.is_ascii_hexdigit())
 }
 
-
 pub(crate) fn workflow_run_candidate(
     payload: &Value,
 ) -> Result<Option<RecoveryCandidate>, CandidateError> {
     if payload.get("action").and_then(Value::as_str) != Some("completed") {
         return Ok(None);
     }
-    let run = payload.get("workflow_run").ok_or(CandidateError::MissingRun)?;
-    let status = run.get("status").and_then(Value::as_str).unwrap_or_default();
+    let run = payload
+        .get("workflow_run")
+        .ok_or(CandidateError::MissingRun)?;
+    let status = run
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let conclusion = run
         .get("conclusion")
         .and_then(Value::as_str)
@@ -101,10 +93,7 @@ pub(crate) fn workflow_run_candidate(
         .and_then(Value::as_str)
         .unwrap_or_default();
     let run_id = run.get("id").and_then(Value::as_u64).unwrap_or(0);
-    let attempt = run
-        .get("run_attempt")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
+    let attempt = run.get("run_attempt").and_then(Value::as_u64).unwrap_or(0);
     let head_sha = run
         .get("head_sha")
         .and_then(Value::as_str)
@@ -261,8 +250,12 @@ mod tests {
 
     #[test]
     fn success_cancel_and_noncompleted_delivery_are_not_candidates() {
-        assert!(workflow_run_candidate(&payload("success")).unwrap().is_none());
-        assert!(workflow_run_candidate(&payload("cancelled")).unwrap().is_none());
+        assert!(workflow_run_candidate(&payload("success"))
+            .unwrap()
+            .is_none());
+        assert!(workflow_run_candidate(&payload("cancelled"))
+            .unwrap()
+            .is_none());
         let mut pending = payload("failure");
         pending["action"] = json!("requested");
         assert!(workflow_run_candidate(&pending).unwrap().is_none());

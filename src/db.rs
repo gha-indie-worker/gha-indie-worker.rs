@@ -281,7 +281,8 @@ pub(crate) async fn record_recovery_observation_strict(
         .await?
         .ok_or_else(|| {
             sea_orm::DbErr::Custom(
-                "recovery identity conflict reported but canonical row was not readable".to_string(),
+                "recovery identity conflict reported but canonical row was not readable"
+                    .to_string(),
             )
         })?;
 

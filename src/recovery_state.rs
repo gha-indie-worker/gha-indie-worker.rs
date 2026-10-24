@@ -164,7 +164,11 @@ impl RecoveryRecord {
             let Some(requested) = requested else {
                 return Err(TransitionError::MissingOwner);
             };
-            if self.owner.as_deref().is_some_and(|prior| prior != requested) {
+            if self
+                .owner
+                .as_deref()
+                .is_some_and(|prior| prior != requested)
+            {
                 return Err(TransitionError::IdentityConflict);
             }
             Some(requested.to_string())
@@ -184,7 +188,11 @@ impl RecoveryRecord {
             let Some(requested) = requested else {
                 return Err(TransitionError::MissingDispatchId);
             };
-            if self.dispatch_id.as_deref().is_some_and(|prior| prior != requested) {
+            if self
+                .dispatch_id
+                .as_deref()
+                .is_some_and(|prior| prior != requested)
+            {
                 return Err(TransitionError::IdentityConflict);
             }
             Some(requested.to_string())
@@ -370,8 +378,12 @@ mod tests {
     #[test]
     fn failed_dispatch_transition_has_no_partial_mutations() {
         let mut record = RecoveryRecord::observed(key());
-        record.apply(0, RecoveryState::Verified, None, None).unwrap();
-        record.apply(1, RecoveryState::Claimed, Some("worker-a"), None).unwrap();
+        record
+            .apply(0, RecoveryState::Verified, None, None)
+            .unwrap();
+        record
+            .apply(1, RecoveryState::Claimed, Some("worker-a"), None)
+            .unwrap();
         let before = record.clone();
         assert_eq!(
             record.apply(2, RecoveryState::DispatchPending, Some("worker-a"), None),

@@ -13,6 +13,8 @@ on:
       - src/jobs.rs
       - src/main.rs
       - src/recovery.rs
+      - src/recovery_policy.rs
+      - src/recovery_state.rs
       - src/state.rs
       - src/webhooks.rs
       - .github/workflows/recovery-controller.yml
@@ -29,6 +31,8 @@ on:
       - src/jobs.rs
       - src/main.rs
       - src/recovery.rs
+      - src/recovery_policy.rs
+      - src/recovery_state.rs
       - src/state.rs
       - src/webhooks.rs
       - .github/workflows/recovery-controller.yml
@@ -72,7 +76,19 @@ jobs:
 
       - name: Format recovery slice
         run: |
-          rustfmt --edition 2021 --check             src/admission.rs             src/admission/github_api.rs             src/config.rs             src/db.rs             src/entity/gha_recovery_runs.rs             src/http.rs             src/jobs.rs             src/main.rs             src/recovery.rs             src/state.rs             src/webhooks.rs
+          rustfmt --edition 2021 --check \
+            src/admission.rs \
+            src/admission/github_api.rs \
+            src/config.rs \
+            src/db.rs \
+            src/entity/gha_recovery_runs.rs \
+            src/http.rs \
+            src/jobs.rs \
+            src/recovery.rs \
+            src/recovery_policy.rs \
+            src/recovery_state.rs \
+            src/state.rs \
+            src/webhooks.rs
 
       - name: Compile and test recovery controller in hermetic harness
         shell: bash
@@ -159,6 +175,15 @@ jobs:
           cargo generate-lockfile --manifest-path "$scratch/Cargo.toml"
           RUSTFLAGS="-D warnings" cargo test             --manifest-path "$scratch/Cargo.toml"             --locked             --lib             -- --nocapture
 
+      - name: Verify pure crash/claim state model and deny-only policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --edition 2021 --test -D warnings src/recovery_state.rs -o "${RUNNER_TEMP}/recovery-state-tests"
+          "${RUNNER_TEMP}/recovery-state-tests"
+          rustc --edition 2021 --test -D warnings src/recovery_policy.rs -o "${RUNNER_TEMP}/recovery-policy-tests"
+          "${RUNNER_TEMP}/recovery-policy-tests"
+
       - name: Verify production fail-closed wiring
         shell: bash
         run: |
@@ -172,6 +197,8 @@ jobs:
 
           grep -Fq 'BUILD_SERVER_GH_RECOVERY_TOKEN' src/config.rs
           grep -Fq 'record_recovery_observation_strict' src/recovery.rs
+          grep -Fq 'recovery_policy::decide(' src/recovery.rs
+          grep -Fq 'failed_dispatch_transition_has_no_partial_mutations' src/recovery_state.rs
           grep -Fq 'RecoveryObservationWrite::Contradictory' src/recovery.rs
           grep -Fq 'table_name = "gha_recovery_runs"' src/entity/gha_recovery_runs.rs
           grep -Fq '"dispatch": false' src/webhooks.rs
