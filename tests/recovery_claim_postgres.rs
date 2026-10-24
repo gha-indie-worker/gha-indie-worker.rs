@@ -337,7 +337,7 @@ async fn live_pg_concurrent_cas_stale_identity_and_transaction_rollback() {
     exec(
         &db,
         "INSERT INTO gha_recovery_outbox(recovery_id,idempotency_key,payload)
-      SELECT id,'ci.preexisting.96','{}'::jsonb
+      SELECT id,'ci.preexisting.96','{\"dispatch_enabled\":false}'::jsonb
       FROM gha_recovery_runs WHERE run_id=96",
     )
     .await;
