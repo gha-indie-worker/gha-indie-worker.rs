@@ -18,7 +18,7 @@ fn valid_owner(owner: &str) -> bool {
     (1..=256).contains(&owner.len()) && owner.bytes().all(|byte| byte.is_ascii_graphic())
 }
 
-fn valid_key(key: &RecoveryKey) -> bool {
+pub(crate) fn valid_key(key: &RecoveryKey) -> bool {
     let Some((owner, name)) = key.repo.split_once('/') else {
         return false;
     };
