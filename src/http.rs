@@ -111,6 +111,13 @@ pub(crate) async fn descriptor(State(state): State<AppState>) -> impl IntoRespon
             "registry": config.registry_webhook_secret.is_some(),
             "rules": config.webhook_rules.len()
         },
+        "recovery": {
+            "githubActions": {
+                "enabled": config.github_recovery_enabled,
+                "tokenConfigured": config.github_recovery_token.is_some(),
+                "mode": "observe-only"
+            }
+        },
         "secretSync": { "enabled": config.gh_sync_enabled, "rules": config.gh_sync_rules.len() }
     }))
 }
@@ -256,6 +263,29 @@ pub(crate) async fn metrics(State(state): State<AppState>) -> impl IntoResponse 
         state.counters.gh_secret_sync_failures.load(Ordering::Relaxed),
     ));
     body.push_str(&format!(
+        "# HELP dd_build_server_github_recovery_observed_total Durable GitHub recovery receipts recorded.\n\
+         # TYPE dd_build_server_github_recovery_observed_total counter\n\
+         dd_build_server_github_recovery_observed_total {}\n\
+         # HELP dd_build_server_github_recovery_duplicates_total Duplicate GitHub recovery identities observed after durable recording.\n\
+         # TYPE dd_build_server_github_recovery_duplicates_total counter\n\
+         dd_build_server_github_recovery_duplicates_total {}\n\
+         # HELP dd_build_server_github_recovery_fail_closed_total GitHub recovery attempts denied because evidence, auth, or durability was insufficient.\n\
+         # TYPE dd_build_server_github_recovery_fail_closed_total counter\n\
+         dd_build_server_github_recovery_fail_closed_total {}\n",
+        state
+            .counters
+            .github_recovery_observed
+            .load(Ordering::Relaxed),
+        state
+            .counters
+            .github_recovery_duplicates
+            .load(Ordering::Relaxed),
+        state
+            .counters
+            .github_recovery_fail_closed
+            .load(Ordering::Relaxed),
+    ));
+    body.push_str(&format!(
         "# HELP dd_build_server_dependencies_ready Whether auth, work storage, and required build tools are available.\n\
          # TYPE dd_build_server_dependencies_ready gauge\n\
          dd_build_server_dependencies_ready {}\n",
@@ -299,7 +329,10 @@ pub(crate) async fn sync_secrets(State(state): State<AppState>, headers: HeaderM
     (StatusCode::OK, Json(json!({ "outcomes": outcomes }))).into_response()
 }
 
-pub(crate) async fn sync_secrets_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
+pub(crate) async fn sync_secrets_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = require_auth(&headers, &state) {
         return response;
     }
@@ -535,7 +568,7 @@ mod e2e {
             containerd_namespace: "dd-build-test".to_string(),
             allowed_repo_prefixes: vec!["https://github.com/ORESoftware/".to_string()],
             allowed_image_prefixes: vec![
-                "710156900967.dkr.ecr.us-east-1.amazonaws.com/".to_string(),
+                "710156900967.dkr.ecr.us-east-1.amazonaws.com/".to_string()
             ],
             allowed_namespaces: HashSet::from(["default".to_string()]),
             allowed_profiles: HashSet::from(["playwright".to_string()]),
@@ -575,6 +608,8 @@ mod e2e {
             github_webhook_secret: Some(GH_HOOK.to_string()),
             registry_webhook_secret: Some(REG_HOOK.to_string()),
             webhook_rules: Vec::new(),
+            github_recovery_enabled: false,
+            github_recovery_token: None,
             gh_sync_enabled: false,
             gh_sync_token: None,
             gh_sync_rules: Vec::new(),
@@ -606,7 +641,10 @@ mod e2e {
     }
 
     async fn send(router: Router, request: Request<Body>) -> (StatusCode, String) {
-        let response = router.oneshot(request).await.expect("router handled request");
+        let response = router
+            .oneshot(request)
+            .await
+            .expect("router handled request");
         let status = response.status();
         let bytes = to_bytes(response.into_body(), 4 * 1024 * 1024)
             .await
@@ -615,10 +653,7 @@ mod e2e {
     }
 
     fn get(uri: &str) -> Request<Body> {
-        Request::builder()
-            .uri(uri)
-            .body(Body::empty())
-            .unwrap()
+        Request::builder().uri(uri).body(Body::empty()).unwrap()
     }
 
     fn post_json(uri: &str, auth: Option<&str>, body: &serde_json::Value) -> Request<Body> {
@@ -669,7 +704,11 @@ mod e2e {
     #[tokio::test]
     async fn submit_with_wrong_secret_is_unauthorized() {
         let body = json!({ "repoUrl": "https://github.com/ORESoftware/x.git" });
-        let (status, _) = send(app(test_config()), post_json("/builds", Some("wrong"), &body)).await;
+        let (status, _) = send(
+            app(test_config()),
+            post_json("/builds", Some("wrong"), &body),
+        )
+        .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
@@ -705,10 +744,17 @@ mod e2e {
 
     #[tokio::test]
     async fn secrets_sync_requires_auth_then_reports_disabled() {
-        let (status, _) = send(app(test_config()), post_json("/secrets/sync", None, &json!({}))).await;
+        let (status, _) = send(
+            app(test_config()),
+            post_json("/secrets/sync", None, &json!({})),
+        )
+        .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
-        let (status, body) =
-            send(app(test_config()), post_json("/secrets/sync", Some(AUTH), &json!({}))).await;
+        let (status, body) = send(
+            app(test_config()),
+            post_json("/secrets/sync", Some(AUTH), &json!({})),
+        )
+        .await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert!(body.contains("disabled"));
     }
@@ -857,6 +903,74 @@ mod e2e {
     }
 
     #[tokio::test]
+    async fn failed_workflow_run_recovery_is_disabled_by_default() {
+        let body = json!({
+            "action": "completed",
+            "repository": { "full_name": "ORESoftware/x" },
+            "workflow_run": {
+                "id": 42,
+                "run_attempt": 1,
+                "status": "completed",
+                "conclusion": "failure",
+                "head_sha": "0123456789abcdef0123456789abcdef01234567",
+                "head_branch": "main"
+            }
+        })
+        .to_string();
+        let sig = github_sig(GH_HOOK, &body);
+        let request = Request::builder()
+            .method("POST")
+            .uri("/webhooks/github")
+            .header("content-type", "application/json")
+            .header("x-github-event", "workflow_run")
+            .header("x-github-delivery", "d-recovery-disabled")
+            .header("x-hub-signature-256", sig)
+            .body(Body::from(body))
+            .unwrap();
+
+        let (status, body) = send(app(test_config()), request).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("ignored"));
+        assert!(!body.contains("recovery-observed"));
+    }
+
+    #[tokio::test]
+    async fn recovery_enabled_without_durable_db_fails_closed_before_observation() {
+        let mut config = test_config();
+        config.github_recovery_enabled = true;
+        config.github_recovery_token = Some("read-only-test-token".to_string());
+
+        let body = json!({
+            "action": "completed",
+            "repository": { "full_name": "ORESoftware/x" },
+            "workflow_run": {
+                "id": 43,
+                "run_attempt": 2,
+                "status": "completed",
+                "conclusion": "failure",
+                "head_sha": "89abcdef0123456789abcdef0123456789abcdef",
+                "head_branch": "main"
+            }
+        })
+        .to_string();
+        let sig = github_sig(GH_HOOK, &body);
+        let request = Request::builder()
+            .method("POST")
+            .uri("/webhooks/github")
+            .header("content-type", "application/json")
+            .header("x-github-event", "workflow_run")
+            .header("x-github-delivery", "d-recovery-no-db")
+            .header("x-hub-signature-256", sig)
+            .body(Body::from(body))
+            .unwrap();
+
+        let (status, body) = send(app(config), request).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(body.contains("durable database persistence"));
+        assert!(body.contains("\"dispatch\":false"));
+    }
+
+    #[tokio::test]
     async fn github_webhook_malformed_sha_does_not_panic_and_is_ignored() {
         // A non-ASCII/short `after` used to panic via a byte-slice; now it is
         // gated by valid_commit_sha and ignored. A real matching rule exists so
@@ -867,7 +981,9 @@ mod e2e {
             branch: Some("dev".to_string()),
             tags: false,
             events: Some(vec!["push".to_string()]),
-            image: Some("710156900967.dkr.ecr.us-east-1.amazonaws.com/x:dev-{shortSha}".to_string()),
+            image: Some(
+                "710156900967.dkr.ecr.us-east-1.amazonaws.com/x:dev-{shortSha}".to_string(),
+            ),
             profile: None,
             context_dir: None,
             dockerfile: None,
@@ -972,7 +1088,10 @@ mod e2e {
         ] {
             let (status, body) = send(app(test_config()), authed_get(uri)).await;
             assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
-            assert!(!body.contains("root:"), "{uri} appears to have read /etc/passwd");
+            assert!(
+                !body.contains("root:"),
+                "{uri} appears to have read /etc/passwd"
+            );
         }
     }
 
