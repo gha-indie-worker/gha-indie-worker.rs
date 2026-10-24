@@ -8,7 +8,10 @@ mod recovery_state;
 use recovery_claim::{claim_verified, ClaimOutcome};
 #[path = "../src/recovery_outbox.rs"]
 mod recovery_outbox;
-use recovery_outbox::{durable_intent_key, stage_verified_recovery, StageOutcome};
+use recovery_outbox::{
+    durable_intent_key, reconcile_disabled_intent, stage_verified_recovery, ReconcileOutcome,
+    StageOutcome,
+};
 use recovery_state::RecoveryKey;
 use sea_orm::{
     ConnectionTrait, Database, DatabaseConnection, DbBackend, Statement, TransactionTrait,
@@ -54,7 +57,7 @@ async fn version_and_owner(db: &DatabaseConnection, run_id: u64) -> (String, i64
 async fn live_pg_concurrent_cas_stale_identity_and_transaction_rollback() {
     let url = std::env::var("RECOVERY_TEST_DATABASE_URL")
         .expect("the test requires an isolated ephemeral PostgreSQL service");
-    let db = Database::connect(url).await.unwrap();
+    let db = Database::connect(url.clone()).await.unwrap();
     // Fixture is deliberately minimal. Schema PR #133 validates the complete
     // declarative contract independently using the unabridged schema.sql.
     exec(
@@ -194,6 +197,32 @@ async fn live_pg_concurrent_cas_stale_identity_and_transaction_rollback() {
         ("dispatch_pending", 3, Some("stage-worker"))
     );
 
+    // Simulate a process losing its response immediately after commit. A new
+    // independent database connection reads the canonical intent, never
+    // attempting a second claim or dispatch.
+    let restarted = Database::connect(url.clone()).await.unwrap();
+    assert_eq!(
+        reconcile_disabled_intent(&restarted, &key(94)).await.unwrap(),
+        ReconcileOutcome::ConfirmedDisabledIntent {
+            version: 3,
+            fencing_token: 2,
+            idempotency_key: intent94.clone(),
+        }
+    );
+    assert_eq!(
+        reconcile_disabled_intent(&restarted, &key(999)).await.unwrap(),
+        ReconcileOutcome::Missing,
+    );
+    let wrong_sha = RecoveryKey::new("ci/repo", 94, 1, "b".repeat(40)).unwrap();
+    assert_eq!(
+        reconcile_disabled_intent(&restarted, &wrong_sha).await.unwrap(),
+        ReconcileOutcome::Missing,
+    );
+    // A stale or malformed canonical identity is a hard error, not "Missing".
+    let mut invalid = key(94);
+    invalid.attempt = u64::MAX;
+    assert!(reconcile_disabled_intent(&restarted, &invalid).await.is_err());
+
     // Two racing full transactions must still produce just one staged intent.
     load(&db, 95, "verified", 1, false).await;
     let run95 = key(95);
@@ -218,6 +247,34 @@ async fn live_pg_concurrent_cas_stale_identity_and_transaction_rollback() {
         .unwrap();
     assert_eq!(row.try_get::<i64>("", "n").unwrap(), 1);
 
+    // Corrupt a previously committed outbox payload. Reconciliation must
+    // refuse to affirm the intent even though its idempotency key is correct.
+    load(&db, 97, "verified", 1, false).await;
+    assert!(matches!(
+        stage_verified_recovery(&db, &key(97), 1, "worker97").await.unwrap(),
+        StageOutcome::Staged { .. }
+    ));
+    exec(&db, "UPDATE gha_recovery_outbox SET payload =
+      '{\"schema\":\"gha.recovery.intent.v1\",\"dispatch_enabled\":true}'::jsonb
+      WHERE recovery_id = (SELECT id FROM gha_recovery_runs WHERE run_id = 97)").await;
+    assert_eq!(
+        reconcile_disabled_intent(&restarted, &key(97)).await.unwrap(),
+        ReconcileOutcome::RequiresOperatorReview
+    );
+
+    // Even when a complete canonical record exists, tampering with the fence
+    // or transition version cannot be mistaken for a valid committed intent.
+    load(&db, 98, "verified", 1, false).await;
+    assert!(matches!(
+        stage_verified_recovery(&db, &key(98), 1, "worker98").await.unwrap(),
+        StageOutcome::Staged { .. }
+    ));
+    exec(&db, "UPDATE gha_recovery_runs SET version=version+1 WHERE run_id=98").await;
+    assert_eq!(
+        reconcile_disabled_intent(&restarted, &key(98)).await.unwrap(),
+        ReconcileOutcome::RequiresOperatorReview
+    );
+
     // Force outbox UNIQUE(recovery_id) rejection *after* a successful claim
     // and verify the whole transaction rolls back the claimed transition.
     load(&db, 96, "verified", 1, false).await;
@@ -235,5 +292,10 @@ async fn live_pg_concurrent_cas_stale_identity_and_transaction_rollback() {
         version_and_owner(&db, 96).await,
         ("verified".to_string(), 1, None),
         "outbox insert errors must roll back the claim"
+    );
+    assert_eq!(
+        reconcile_disabled_intent(&restarted, &key(96)).await.unwrap(),
+        ReconcileOutcome::RequiresOperatorReview,
+        "a rolled-back claim with a stray outbox must require operator review"
     );
 }
