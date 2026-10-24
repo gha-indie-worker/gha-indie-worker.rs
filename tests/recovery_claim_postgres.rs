@@ -100,7 +100,8 @@ async fn live_pg_concurrent_cas_stale_identity_and_transaction_rollback() {
       state text not null default 'pending',
       UNIQUE(recovery_id),
       CHECK(char_length(idempotency_key) between 1 and 160),
-      CHECK(state IN ('pending', 'delivering', 'delivered', 'failed','canceled'))
+      CHECK(state IN ('pending', 'delivering', 'delivered', 'failed','canceled')),
+      CHECK(payload @> '{\"dispatch_enabled\":false}'::jsonb)
     )",
         )
         .await;
@@ -278,13 +279,27 @@ async fn live_pg_concurrent_cas_stale_identity_and_transaction_rollback() {
             .unwrap(),
         StageOutcome::Staged { .. }
     ));
+    // Even raw SQL must not insert a dispatch-enabled outbox envelope.
+    let forbidden_sql = Statement::from_string(
+        DbBackend::Postgres,
+        "UPDATE gha_recovery_outbox SET payload =
+      '{\"schema\":\"gha.recovery.intent.v1\",\"dispatch_enabled\":true}'::jsonb
+      WHERE recovery_id = (SELECT id FROM gha_recovery_runs WHERE run_id=97)"
+            .to_string(),
+    );
+    assert!(db.execute(forbidden_sql).await.is_err());
+    assert!(matches!(
+        reconcile_disabled_intent(&restarted, &key(97)).await.unwrap(),
+        ReconcileOutcome::ConfirmedDisabledIntent { .. }
+    ));
+    // The DB permits only disabled envelopes; the reconciler additionally
+    // rejects noncanonical schemas and malformed metadata.
     exec(
         &db,
         "UPDATE gha_recovery_outbox SET payload =
-      '{\"schema\":\"gha.recovery.intent.v1\",\"dispatch_enabled\":true}'::jsonb
-      WHERE recovery_id = (SELECT id FROM gha_recovery_runs WHERE run_id = 97)",
-    )
-    .await;
+      '{\"schema\":\"unknown.intent\",\"dispatch_enabled\":false}'::jsonb
+      WHERE recovery_id = (SELECT id FROM gha_recovery_runs WHERE run_id=97)",
+    ).await;
     assert_eq!(
         reconcile_disabled_intent(&restarted, &key(97))
             .await
