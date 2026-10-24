@@ -22,6 +22,7 @@ pub struct Model {
     pub verified_at: Option<DateTimeWithTimeZone>,
     pub reason: Option<String>,
     pub state: String,
+    pub version: i64,
     pub claim_owner: Option<String>,
     pub fencing_token: Option<i64>,
     pub claimed_at: Option<DateTimeWithTimeZone>,

@@ -245,6 +245,7 @@ pub(crate) async fn record_recovery_observation_strict(
         verified_at: Set(None),
         reason: Set(Some(receipt.classification.reason.to_string())),
         state: Set("observed".to_string()),
+        version: Set(0),
         claim_owner: Set(None),
         fencing_token: Set(None),
         claimed_at: Set(None),
