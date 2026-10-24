@@ -260,7 +260,8 @@ async fn maybe_handle_github_recovery(
                     "action": "recovery-observed",
                     "recoveryKey": key,
                     "classification": receipt.classification.kind.as_str(),
-                    "fallbackEligible": receipt.classification.fallback_allowed,
+                    "fallbackEligible": false,
+                    "classifierSuggested": receipt.classification.fallback_allowed,
                     "dispatch": false
                 })),
             )
@@ -274,7 +275,8 @@ async fn maybe_handle_github_recovery(
                     "action": "recovery-duplicate",
                     "recoveryKey": key,
                     "classification": receipt.classification.kind.as_str(),
-                    "fallbackEligible": receipt.classification.fallback_allowed,
+                    "fallbackEligible": false,
+                    "classifierSuggested": receipt.classification.fallback_allowed,
                     "dispatch": false
                 })),
             )

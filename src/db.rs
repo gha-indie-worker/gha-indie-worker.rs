@@ -228,6 +228,8 @@ pub(crate) async fn record_recovery_observation_strict(
     let classification = receipt.classification.kind.as_str().to_string();
     let confidence = recovery_confidence_label(receipt.classification.confidence).to_string();
 
+    // Never persist classifier eligibility as authorization: the schema
+    // requires independently verified provider evidence to authorize fallback.
     let model = gha_recovery_runs::ActiveModel {
         provider: Set("github".to_string()),
         repo: Set(receipt.identity.repo.clone()),
@@ -236,7 +238,9 @@ pub(crate) async fn record_recovery_observation_strict(
         head_sha: Set(receipt.identity.head_sha.clone()),
         classification: Set(classification.clone()),
         confidence: Set(confidence.clone()),
-        fallback_allowed: Set(receipt.classification.fallback_allowed),
+        // The classifier's suggestion is NOT provider-owned authorization.
+        // Verification may later promote this separately, never at observation.
+        fallback_allowed: Set(false),
         jobs_observed: Set(jobs_observed),
         steps_observed: Set(steps_observed),
         runner_assigned: Set(receipt.runner_assigned),
@@ -289,7 +293,8 @@ pub(crate) async fn record_recovery_observation_strict(
 
     let same_observation = existing.classification == classification
         && existing.confidence == confidence
-        && existing.fallback_allowed == receipt.classification.fallback_allowed
+        // Authorization and verified evidence are mutable after observation;
+        // do not treat a subsequently verified row as a contradictory retry.
         && existing.jobs_observed == jobs_observed
         && existing.steps_observed == steps_observed
         && existing.runner_assigned == receipt.runner_assigned;
