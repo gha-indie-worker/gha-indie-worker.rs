@@ -6,6 +6,9 @@ mod recovery_claim;
 mod recovery_state;
 
 use recovery_claim::{claim_verified, ClaimOutcome};
+#[path = "../src/recovery_outbox.rs"]
+mod recovery_outbox;
+use recovery_outbox::{stage_verified_recovery, durable_intent_key, StageOutcome};
 use recovery_state::RecoveryKey;
 use sea_orm::{
     ConnectionTrait, Database, DatabaseConnection, DbBackend, Statement, TransactionTrait,
@@ -70,7 +73,17 @@ async fn live_pg_concurrent_cas_stale_identity_and_transaction_rollback() {
       unique(provider,repo,run_id,run_attempt,head_sha),
       constraint nonnegative_version check(version >= 0))",
     )
-    .await;
+.await;
+    exec(&db, "CREATE TABLE gha_recovery_outbox (
+      id bigint generated always as identity primary key,
+      recovery_id bigint not null REFERENCES gha_recovery_runs(id),
+      idempotency_key text not null UNIQUE,
+      payload jsonb not null,
+      state text not null default 'pending',
+      UNIQUE(recovery_id),
+      CHECK(char_length(idempotency_key) between 1 and 160),
+      CHECK(state IN ('pending', 'delivering', 'delivered', 'failed','canceled'))
+    )").await;
 
     let key = |id| RecoveryKey::new("ci/repo", id, 1, "a".repeat(40)).unwrap();
     load(&db, 90, "verified", 1, false).await;
@@ -137,5 +150,56 @@ async fn live_pg_concurrent_cas_stale_identity_and_transaction_rollback() {
         version_and_owner(&db, 93).await,
         ("verified".to_string(), 1, None),
         "an interrupted transaction must not leak a claim"
+    );
+
+    // Exactly one pending intent is committed along with the claimed state.
+    load(&db, 94, "verified", 1, false).await;
+    let intent94 = durable_intent_key(&key(94));
+    let first = stage_verified_recovery(&db, &key(94), 1, "stage-worker").await.unwrap();
+    assert_eq!(first, StageOutcome::Staged {
+        version: 3, fencing_token: 2, idempotency_key: intent94.clone()
+    });
+    assert_eq!(
+        stage_verified_recovery(&db, &key(94), 1, "late-worker").await.unwrap(),
+        StageOutcome::NotAcquired
+    );
+    let row = db.query_one(Statement::from_string(
+        DbBackend::Postgres,
+        "SELECT count(*) as n FROM gha_recovery_outbox WHERE idempotency_key = '".to_string()
+          + &intent94 + "'"
+    )).await.unwrap().unwrap();
+    let n: i64 = row.try_get("", "n").unwrap();
+    assert_eq!(n, 1);
+    let (state, version, owner) = version_and_owner(&db, 94).await;
+    assert_eq!((state.as_str(), version, owner.as_deref()),
+               ("dispatch_pending", 3, Some("stage-worker")));
+
+    // Two racing full transactions must still produce just one staged intent.
+    load(&db, 95, "verified", 1, false).await;
+    let run95 = key(95);
+    let (a, b) = tokio::join!(
+        stage_verified_recovery(&db, &run95, 1, "stage-a"),
+        stage_verified_recovery(&db, &run95, 1, "stage-b")
+    );
+    let wins = [a.unwrap(), b.unwrap()].into_iter()
+        .filter(|r| matches!(r, StageOutcome::Staged { .. })).count();
+    assert_eq!(wins, 1);
+    let row = db.query_one(Statement::from_string(DbBackend::Postgres,
+        "SELECT count(*) AS n FROM gha_recovery_outbox WHERE recovery_id =
+          (SELECT id FROM gha_recovery_runs WHERE run_id = 95)".to_string()
+    )).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 1);
+
+    // Force outbox UNIQUE(recovery_id) rejection *after* a successful claim
+    // and verify the whole transaction rolls back the claimed transition.
+    load(&db, 96, "verified", 1, false).await;
+    exec(&db, "INSERT INTO gha_recovery_outbox(recovery_id,idempotency_key,payload)
+      SELECT id,'ci.preexisting.96','{}'::jsonb
+      FROM gha_recovery_runs WHERE run_id=96").await;
+    assert!(stage_verified_recovery(&db, &key(96), 1, "cannot-commit").await.is_err());
+    assert_eq!(
+        version_and_owner(&db, 96).await,
+        ("verified".to_string(), 1, None),
+        "outbox insert errors must roll back the claim"
     );
 }
