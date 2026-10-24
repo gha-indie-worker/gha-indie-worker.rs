@@ -202,6 +202,17 @@ jobs:
 
           grep -Fq 'BUILD_SERVER_GH_RECOVERY_TOKEN' src/config.rs
           grep -Fq 'record_recovery_observation_strict' src/recovery.rs
+          # The classifier is evidence, not provider-owned authorization.
+          grep -Fq 'fallback_allowed: Set(false)' src/db.rs
+          if grep -Fq 'fallback_allowed: Set(receipt.classification.fallback_allowed)' src/db.rs; then
+            echo 'classifier suggestion was persisted as execution authority' >&2
+            exit 1
+          fi
+          if grep -Fq 'existing.fallback_allowed == receipt.classification.fallback_allowed' src/db.rs; then
+            echo 'mutable authorization incorrectly defines immutable observation identity' >&2
+            exit 1
+          fi
+          grep -Fq '"fallbackEligible": false' src/webhooks.rs
           grep -Fq 'recovery_policy::decide(' src/recovery.rs
           grep -Fq 'failed_dispatch_transition_has_no_partial_mutations' src/recovery_state.rs
           grep -Fq 'RecoveryObservationWrite::Contradictory' src/recovery.rs
