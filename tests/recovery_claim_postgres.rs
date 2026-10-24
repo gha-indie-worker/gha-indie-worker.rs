@@ -24,13 +24,17 @@ async fn exec(db: &impl ConnectionTrait, sql: &str) {
 }
 
 async fn load(db: &DatabaseConnection, run_id: u64, state: &str, version: u64, runner: bool) {
+    let allowed = state == "verified";
+    let kind = if allowed { "'billing_or_spending'" } else { "NULL" };
+    let evidence = if allowed { "'ci.synthetic.receipt'" } else { "NULL" };
+    let verified_at = if allowed { "now()" } else { "NULL" };
     let sql = format!(
         "INSERT INTO gha_recovery_runs (provider,repo,run_id,run_attempt,head_sha,
-          classification,confidence,fallback_allowed,steps_observed,runner_assigned,
+          classification,confidence,fallback_allowed,jobs_observed,steps_observed,runner_assigned,
           verified_diagnostic_kind,verified_evidence_ref,verified_at,state,version)
          VALUES ('github','ci/repo',{run_id},1,repeat('a',40),
-          'billing_or_spending','explicit',true,0,{runner},
-          'billing_or_spending','ci.synthetic.receipt',now(),'{state}',{version})"
+          'billing_or_spending','explicit',{allowed},0,0,{runner},
+          {kind},{evidence},{verified_at},'{state}',{version})"
     );
     exec(db, &sql).await;
 }
@@ -60,6 +64,7 @@ async fn live_pg_concurrent_cas_stale_identity_and_transaction_rollback() {
     let db = Database::connect(url.clone()).await.unwrap();
     // Fixture is deliberately minimal. Schema PR #133 validates the complete
     // declarative contract independently using the unabridged schema.sql.
+    if std::env::var_os("RECOVERY_USE_FULL_SCHEMA").is_none() {
     exec(
         &db,
         "CREATE TABLE gha_recovery_runs (
@@ -91,6 +96,8 @@ async fn live_pg_concurrent_cas_stale_identity_and_transaction_rollback() {
     )",
     )
     .await;
+
+    }
 
     let key = |id| RecoveryKey::new("ci/repo", id, 1, "a".repeat(40)).unwrap();
     load(&db, 90, "verified", 1, false).await;
