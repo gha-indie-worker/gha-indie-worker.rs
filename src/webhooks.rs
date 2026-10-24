@@ -140,6 +140,12 @@ fn rule_matches(rule: &WebhookRule, event: &str, repo: &str, git_ref: &str) -> b
     }
 }
 
+fn recovery_observation_allowed(rules: &[WebhookRule], repo: &str, git_ref: &str) -> bool {
+    rules
+        .iter()
+        .any(|rule| rule_matches(rule, "workflow_run", repo, git_ref))
+}
+
 fn build_request_from_rule(
     rule: &WebhookRule,
     repo: &str,
@@ -171,6 +177,122 @@ fn build_request_from_rule(
         deploy: rule.deploy.clone(),
         executor: rule.executor.clone(),
         request_id: None,
+    }
+}
+
+#[cfg(not(test))]
+async fn observe_failed_workflow_run(state: &AppState, payload: &serde_json::Value, repo: &str) {
+    if !state.config.github_actions_observer_enabled {
+        return;
+    }
+    if payload.get("action").and_then(serde_json::Value::as_str) != Some("completed") {
+        return;
+    }
+    let run = payload.get("workflow_run").cloned().unwrap_or_default();
+    if let Some(run_repo) = run
+        .pointer("/repository/full_name")
+        .and_then(serde_json::Value::as_str)
+    {
+        if !run_repo.eq_ignore_ascii_case(repo) {
+            state
+                .counters
+                .recovery_observation_failures
+                .fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(
+                outer_repo = repo,
+                workflow_run_repo = run_repo,
+                "recovery observation denied: webhook repository identity mismatch"
+            );
+            return;
+        }
+    }
+    let conclusion = run
+        .get("conclusion")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if !matches!(conclusion, "failure" | "action_required" | "startup_failure") {
+        return;
+    }
+
+    state
+        .counters
+        .recovery_observations
+        .fetch_add(1, Ordering::Relaxed);
+
+    let run_id = run
+        .get("id")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let attempt = run
+        .get("run_attempt")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let head_sha = run
+        .get("head_sha")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+
+    let Some(key) = crate::recovery::RecoveryKey::new(repo, run_id, attempt, head_sha) else {
+        state
+            .counters
+            .recovery_observation_failures
+            .fetch_add(1, Ordering::Relaxed);
+        tracing::warn!("recovery observation denied: invalid workflow-run identity");
+        return;
+    };
+
+    let Some(token) = state.config.github_actions_observer_token.as_deref() else {
+        state
+            .counters
+            .recovery_observation_failures
+            .fetch_add(1, Ordering::Relaxed);
+        tracing::warn!(
+            recovery_id = %key.stable_id(),
+            "recovery observation denied: dedicated Actions observer credential is unavailable"
+        );
+        return;
+    };
+
+    let identity = crate::admission::RunIdentity {
+        repo: key.repo.clone(),
+        run_id: key.run_id,
+        attempt: key.attempt,
+        head_sha: key.head_sha.clone(),
+    };
+    match crate::admission::inspect_authenticated(token, &identity).await {
+        Ok(receipt) => {
+            let classification = receipt.classification;
+            if classification.fallback_allowed {
+                // Observation is deliberately non-activating. A future durable
+                // controller must independently persist, verify, claim and
+                // outbox this candidate before dispatch becomes possible.
+                state
+                    .counters
+                    .recovery_candidates
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            tracing::info!(
+                recovery_id = %key.stable_id(),
+                jobs_observed = receipt.jobs_observed,
+                steps_observed = receipt.steps_observed,
+                runner_assigned = receipt.runner_assigned,
+                kind = classification.kind.as_str(),
+                fallback_allowed = classification.fallback_allowed,
+                reason = classification.reason,
+                "GitHub Actions recovery observation completed"
+            );
+        }
+        Err(error) => {
+            state
+                .counters
+                .recovery_observation_failures
+                .fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(
+                recovery_id = %key.stable_id(),
+                error = ?error,
+                "recovery observation denied"
+            );
+        }
     }
 }
 
@@ -314,6 +436,13 @@ pub async fn github_webhook(
             // Fail open: Postgres dedupe above remains the local guard.
             tracing::warn!("webhook idempotency claim failed (continuing): {error}");
         }
+    }
+
+    #[cfg(not(test))]
+    if event == "workflow_run"
+        && recovery_observation_allowed(&state.config.webhook_rules, &repo, &git_ref)
+    {
+        observe_failed_workflow_run(&state, &payload, &repo).await;
     }
 
     // `valid_commit_sha` subsumes the empty check and rejects a malformed or
@@ -618,6 +747,43 @@ mod tests {
             Some("flutter-android-debug")
         );
         assert!(profile_request.image.is_empty());
+    }
+
+    #[test]
+    fn recovery_observation_requires_explicit_workflow_run_rule() {
+        let push_only: WebhookRule = serde_json::from_value(json!({
+            "repo": "ORESoftware/example",
+            "branch": "main",
+            "image": "example:{shortSha}"
+        }))
+        .unwrap();
+        let workflow: WebhookRule = serde_json::from_value(json!({
+            "repo": "ORESoftware/example",
+            "branch": "main",
+            "events": ["workflow_run"],
+            "image": "example:{shortSha}"
+        }))
+        .unwrap();
+        assert!(!recovery_observation_allowed(
+            &[push_only],
+            "oresoftware/example",
+            "main"
+        ));
+        assert!(recovery_observation_allowed(
+            &[workflow.clone()],
+            "oresoftware/example",
+            "main"
+        ));
+        assert!(!recovery_observation_allowed(
+            &[workflow.clone()],
+            "other/repo",
+            "main"
+        ));
+        assert!(!recovery_observation_allowed(
+            &[workflow],
+            "oresoftware/example",
+            "dev"
+        ));
     }
 
     #[test]

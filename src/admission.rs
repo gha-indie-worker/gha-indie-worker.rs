@@ -13,6 +13,9 @@
 #[path = "admission/github_api.rs"]
 mod github_api;
 
+#[cfg(not(test))]
+pub(crate) use github_api::{inspect_authenticated, RunIdentity};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AdmissionFailureKind {
     BillingOrSpending,
