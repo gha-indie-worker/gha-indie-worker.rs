@@ -70,6 +70,10 @@ pub(crate) struct Config {
     pub(crate) registry_webhook_secret: Option<String>,
     pub(crate) webhook_rules: Vec<webhooks::WebhookRule>,
 
+    // --- GitHub Actions recovery observer (read-only; see src/recovery.rs) ---
+    pub(crate) github_recovery_enabled: bool,
+    pub(crate) github_recovery_token: Option<String>,
+
     // --- GitHub Actions secret sync (see src/gh_secrets.rs) ---
     pub(crate) gh_sync_enabled: bool,
     pub(crate) gh_sync_token: Option<String>,
@@ -298,6 +302,11 @@ pub(crate) fn config_from_env() -> Config {
         github_webhook_secret: first_env(&["BUILD_SERVER_GITHUB_WEBHOOK_SECRET"]),
         registry_webhook_secret: first_env(&["BUILD_SERVER_REGISTRY_WEBHOOK_SECRET"]),
         webhook_rules,
+
+        github_recovery_enabled: env_bool("BUILD_SERVER_GH_RECOVERY_ENABLED", false),
+        // Keep recovery authentication separate from clone/secret-sync credentials.
+        // Operators should supply a read-scoped token only.
+        github_recovery_token: first_env(&["BUILD_SERVER_GH_RECOVERY_TOKEN"]),
 
         gh_sync_enabled: env_bool("BUILD_SERVER_GH_SYNC_ENABLED", false),
         gh_sync_token: first_env(&["GH_SECRETS_SYNC_TOKEN", "GH_PAT", "GITHUB_TOKEN"]),

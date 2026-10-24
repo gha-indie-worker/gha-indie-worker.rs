@@ -27,6 +27,14 @@ mod jobs;
 mod lambda_exec;
 mod nats_submit;
 mod profiles;
+mod recovery;
+// Durable CAS foundation is intentionally not wired to an external dispatcher.
+#[allow(dead_code)]
+mod recovery_claim;
+#[allow(dead_code)]
+mod recovery_outbox;
+mod recovery_policy;
+mod recovery_state;
 mod state;
 mod types;
 mod util;
