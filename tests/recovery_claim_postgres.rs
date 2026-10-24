@@ -289,7 +289,9 @@ async fn live_pg_concurrent_cas_stale_identity_and_transaction_rollback() {
     );
     assert!(db.execute(forbidden_sql).await.is_err());
     assert!(matches!(
-        reconcile_disabled_intent(&restarted, &key(97)).await.unwrap(),
+        reconcile_disabled_intent(&restarted, &key(97))
+            .await
+            .unwrap(),
         ReconcileOutcome::ConfirmedDisabledIntent { .. }
     ));
     // The DB permits only disabled envelopes; the reconciler additionally
@@ -299,7 +301,8 @@ async fn live_pg_concurrent_cas_stale_identity_and_transaction_rollback() {
         "UPDATE gha_recovery_outbox SET payload =
       '{\"schema\":\"unknown.intent\",\"dispatch_enabled\":false}'::jsonb
       WHERE recovery_id = (SELECT id FROM gha_recovery_runs WHERE run_id=97)",
-    ).await;
+    )
+    .await;
     assert_eq!(
         reconcile_disabled_intent(&restarted, &key(97))
             .await
@@ -451,5 +454,4 @@ async fn live_pg_concurrent_cas_stale_identity_and_transaction_rollback() {
             .unwrap(),
         StageOutcome::NotAcquired
     );
-
 }
