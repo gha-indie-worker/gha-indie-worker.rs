@@ -25,8 +25,16 @@ async fn exec(db: &impl ConnectionTrait, sql: &str) {
 
 async fn load(db: &DatabaseConnection, run_id: u64, state: &str, version: u64, runner: bool) {
     let allowed = state == "verified";
-    let kind = if allowed { "'billing_or_spending'" } else { "NULL" };
-    let evidence = if allowed { "'ci.synthetic.receipt'" } else { "NULL" };
+    let kind = if allowed {
+        "'billing_or_spending'"
+    } else {
+        "NULL"
+    };
+    let evidence = if allowed {
+        "'ci.synthetic.receipt'"
+    } else {
+        "NULL"
+    };
     let verified_at = if allowed { "now()" } else { "NULL" };
     let sql = format!(
         "INSERT INTO gha_recovery_runs (provider,repo,run_id,run_attempt,head_sha,
@@ -65,9 +73,9 @@ async fn live_pg_concurrent_cas_stale_identity_and_transaction_rollback() {
     // Fixture is deliberately minimal. Schema PR #133 validates the complete
     // declarative contract independently using the unabridged schema.sql.
     if std::env::var_os("RECOVERY_USE_FULL_SCHEMA").is_none() {
-    exec(
-        &db,
-        "CREATE TABLE gha_recovery_runs (
+        exec(
+            &db,
+            "CREATE TABLE gha_recovery_runs (
       id bigint generated always as identity primary key,
       provider text not null, repo text not null,
       run_id bigint not null, run_attempt bigint not null, head_sha text not null,
@@ -80,11 +88,11 @@ async fn live_pg_concurrent_cas_stale_identity_and_transaction_rollback() {
       updated_at timestamptz default now(),
       unique(provider,repo,run_id,run_attempt,head_sha),
       constraint nonnegative_version check(version >= 0))",
-    )
-    .await;
-    exec(
-        &db,
-        "CREATE TABLE gha_recovery_outbox (
+        )
+        .await;
+        exec(
+            &db,
+            "CREATE TABLE gha_recovery_outbox (
       id bigint generated always as identity primary key,
       recovery_id bigint not null REFERENCES gha_recovery_runs(id),
       idempotency_key text not null UNIQUE,
@@ -94,9 +102,8 @@ async fn live_pg_concurrent_cas_stale_identity_and_transaction_rollback() {
       CHECK(char_length(idempotency_key) between 1 and 160),
       CHECK(state IN ('pending', 'delivering', 'delivered', 'failed','canceled'))
     )",
-    )
-    .await;
-
+        )
+        .await;
     }
 
     let key = |id| RecoveryKey::new("ci/repo", id, 1, "a".repeat(40)).unwrap();
