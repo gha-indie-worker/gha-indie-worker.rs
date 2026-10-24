@@ -7,4 +7,5 @@
 
 pub mod build_jobs;
 pub mod gh_secret_sync_runs;
+pub mod gha_recovery_runs;
 pub mod webhook_deliveries;

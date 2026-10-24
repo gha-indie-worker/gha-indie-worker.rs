@@ -25,7 +25,7 @@ use sha2::{Digest, Sha256};
 use std::sync::atomic::Ordering;
 use subtle::ConstantTimeEq;
 
-use crate::{db, events, fiducia, AppState, BuildRequest, DeployRequest};
+use crate::{db, events, fiducia, recovery, AppState, BuildRequest, DeployRequest};
 
 /// One mapping from a GitHub repo/branch to a build job. Loaded from
 /// BUILD_SERVER_WEBHOOK_RULES (inline JSON array) or
@@ -174,6 +174,129 @@ fn build_request_from_rule(
     }
 }
 
+async fn maybe_handle_github_recovery(
+    state: &AppState,
+    event: &str,
+    payload: &serde_json::Value,
+) -> Option<Response> {
+    if event != "workflow_run" {
+        return None;
+    }
+
+    let candidate = match recovery::workflow_run_candidate(payload) {
+        Ok(Some(candidate)) => candidate,
+        Ok(None) => return None,
+        Err(error) => {
+            tracing::warn!(?error, "rejecting malformed GitHub recovery candidate");
+            state
+                .counters
+                .github_recovery_fail_closed
+                .fetch_add(1, Ordering::Relaxed);
+            return Some(
+                (
+                    StatusCode::ACCEPTED,
+                    Json(json!({
+                        "ok": true,
+                        "action": "recovery-denied",
+                        "reason": "malformed workflow_run recovery identity",
+                        "dispatch": false
+                    })),
+                )
+                    .into_response(),
+            );
+        }
+    };
+
+    match recovery::observe_candidate(state, candidate).await {
+        recovery::RecoveryOutcome::Disabled => None,
+        recovery::RecoveryOutcome::BlockedMissingDatabase => Some(
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": "GitHub recovery requires durable database persistence",
+                    "dispatch": false
+                })),
+            )
+                .into_response(),
+        ),
+        recovery::RecoveryOutcome::BlockedMissingToken => Some(
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": "GitHub recovery observer token is not configured",
+                    "dispatch": false
+                })),
+            )
+                .into_response(),
+        ),
+        recovery::RecoveryOutcome::ObservationFailed(error) => {
+            tracing::warn!(?error, "GitHub recovery observation failed closed");
+            Some(
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "error": "GitHub recovery observation failed",
+                        "dispatch": false
+                    })),
+                )
+                    .into_response(),
+            )
+        }
+        recovery::RecoveryOutcome::PersistenceFailed => Some(
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": "GitHub recovery receipt persistence failed",
+                    "dispatch": false
+                })),
+            )
+                .into_response(),
+        ),
+        recovery::RecoveryOutcome::Recorded { key, receipt } => Some(
+            (
+                StatusCode::ACCEPTED,
+                Json(json!({
+                    "ok": true,
+                    "action": "recovery-observed",
+                    "recoveryKey": key,
+                    "classification": receipt.classification.kind.as_str(),
+                    "fallbackEligible": receipt.classification.fallback_allowed,
+                    "dispatch": false
+                })),
+            )
+                .into_response(),
+        ),
+        recovery::RecoveryOutcome::Duplicate { key, receipt } => Some(
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "ok": true,
+                    "action": "recovery-duplicate",
+                    "recoveryKey": key,
+                    "classification": receipt.classification.kind.as_str(),
+                    "fallbackEligible": receipt.classification.fallback_allowed,
+                    "dispatch": false
+                })),
+            )
+                .into_response(),
+        ),
+        recovery::RecoveryOutcome::Contradictory { key, receipt } => Some(
+            (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "contradictory GitHub recovery observation for canonical run identity",
+                    "action": "recovery-conflict",
+                    "recoveryKey": key,
+                    "classification": receipt.classification.kind.as_str(),
+                    "fallbackEligible": false,
+                    "dispatch": false
+                })),
+            )
+                .into_response(),
+        ),
+    }
+}
+
 pub async fn github_webhook(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -240,6 +363,18 @@ pub async fn github_webhook(
         .unwrap_or_default()
         .to_string();
 
+    state
+        .counters
+        .webhooks_received
+        .fetch_add(1, Ordering::Relaxed);
+
+    // Failed workflow runs take a separate, fail-closed observe-only path before
+    // ordinary delivery-id dedupe. This preserves retryability after transient
+    // GitHub API or database failures and never dispatches fallback work.
+    if let Some(response) = maybe_handle_github_recovery(&state, &event, &payload).await {
+        return response;
+    }
+
     let (git_ref, sha, actionable) = match event.as_str() {
         "push" => {
             let git_ref = payload
@@ -274,11 +409,6 @@ pub async fn github_webhook(
         }
         _ => (String::new(), String::new(), false),
     };
-
-    state
-        .counters
-        .webhooks_received
-        .fetch_add(1, Ordering::Relaxed);
 
     // Local dedupe (Postgres unique) + multi-replica dedupe (fiducia lease).
     if let Some(db) = state.db.as_ref() {
