@@ -59,20 +59,25 @@ jobs:
           components: rustfmt
       - name: Format proof source
         run: |
-          rustfmt --edition 2021 --check src/recovery_claim.rs tests/recovery_claim_postgres.rs
+          rustfmt --edition 2021 --check src/recovery_claim.rs tests/recovery_claim_postgres.rs src/entity/gha_recovery_runs.rs
       - name: Compile production claim primitive and run live PG tests
         shell: bash
         run: |
           set -euo pipefail
           scratch="$RUNNER_TEMP/recovery-claim"
-          mkdir -p "$scratch/src" "$scratch/tests"
+          mkdir -p "$scratch/src/entity" "$scratch/tests"
           cp src/recovery_claim.rs src/recovery_state.rs "$scratch/src/"
+          cp src/entity/gha_recovery_runs.rs "$scratch/src/entity/"
           cp tests/recovery_claim_postgres.rs "$scratch/tests/"
           cat > "$scratch/src/lib.rs" <<'RS'
           #[allow(dead_code)]
           mod recovery_state;
           #[allow(dead_code)]
           mod recovery_claim;
+          mod entity {
+              #[allow(dead_code)]
+              pub(crate) mod gha_recovery_runs;
+          }
           RS
           cat > "$scratch/Cargo.toml" <<'TOML'
           [package]
@@ -83,6 +88,7 @@ jobs:
           [dependencies]
           sea-orm = { version = "1", default-features = false, features = ["macros", "runtime-tokio-rustls", "sqlx-postgres", "with-chrono", "with-json"] }
           tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+          serde = { version = "1", features = ["derive"] }
           time = "=0.3.44"
           TOML
           cargo generate-lockfile --manifest-path "$scratch/Cargo.toml"
