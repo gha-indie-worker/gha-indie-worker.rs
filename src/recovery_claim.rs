@@ -5,8 +5,8 @@
 //! provider evidence. This module never issues such evidence, inserts outbox
 //! rows, transfers code or dispatches work.
 
-use sea_orm::{ConnectionTrait, DbBackend, DbErr, Statement};
 use crate::recovery_state::RecoveryKey;
+use sea_orm::{ConnectionTrait, DbBackend, DbErr, Statement};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ClaimOutcome {
@@ -15,23 +15,30 @@ pub(crate) enum ClaimOutcome {
 }
 
 fn valid_owner(owner: &str) -> bool {
-    (1..=256).contains(&owner.len())
-        && owner.bytes().all(|byte| byte.is_ascii_graphic())
+    (1..=256).contains(&owner.len()) && owner.bytes().all(|byte| byte.is_ascii_graphic())
 }
 
 fn valid_key(key: &RecoveryKey) -> bool {
     let Some((owner, name)) = key.repo.split_once('/') else {
         return false;
     };
-    let part = |s: &str| !s.is_empty() && s.len() <= 100
-        && s != "." && s != ".."
-        && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'));
+    let part = |s: &str| {
+        !s.is_empty()
+            && s.len() <= 100
+            && s != "."
+            && s != ".."
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    };
     part(owner)
         && part(name)
         && !name.contains("..")
         && key.repo == key.repo.to_ascii_lowercase()
         && key.head_sha.len() == 40
-        && key.head_sha.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        && key
+            .head_sha
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
         && key.run_id > 0
         && i64::try_from(key.run_id).is_ok()
         && key.attempt > 0
@@ -68,10 +75,10 @@ pub(crate) async fn claim_verified<C: ConnectionTrait>(
     expected_version: i64,
     owner: &str,
 ) -> Result<ClaimOutcome, DbErr> {
-    if !valid_owner(owner) || !valid_key(key)
-        || !(0..i64::MAX).contains(&expected_version)
-    {
-        return Err(DbErr::Custom("invalid recovery claim identity or owner".into()));
+    if !valid_owner(owner) || !valid_key(key) || !(0..i64::MAX).contains(&expected_version) {
+        return Err(DbErr::Custom(
+            "invalid recovery claim identity or owner".into(),
+        ));
     }
     let statement = Statement::from_sql_and_values(
         DbBackend::Postgres,
@@ -117,11 +124,16 @@ mod tests {
     #[test]
     fn claim_requires_version_and_provider_evidence_predicates() {
         for required in [
-            "version = $6", "claim_owner IS NULL", "state = 'verified'",
-            "fallback_allowed = true", "confidence = 'explicit'",
+            "version = $6",
+            "claim_owner IS NULL",
+            "state = 'verified'",
+            "fallback_allowed = true",
+            "confidence = 'explicit'",
             "classification = verified_diagnostic_kind",
-            "verified_evidence_ref IS NOT NULL", "verified_at IS NOT NULL",
-            "steps_observed = 0", "runner_assigned = false",
+            "verified_evidence_ref IS NOT NULL",
+            "verified_at IS NOT NULL",
+            "steps_observed = 0",
+            "runner_assigned = false",
             "RETURNING version, fencing_token",
         ] {
             assert!(CLAIM_SQL.contains(required), "{required}");
