@@ -12,10 +12,7 @@ use crate::{
     recovery_claim::{claim_verified, ClaimOutcome},
     recovery_state::RecoveryKey,
 };
-use sea_orm::{
-    ConnectionTrait, DatabaseConnection, DbBackend, DbErr, Statement,
-    TransactionTrait,
-};
+use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, DbErr, Statement, TransactionTrait};
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,7 +79,10 @@ pub(crate) async fn stage_verified_recovery(
             tx.rollback().await?;
             return Ok(StageOutcome::NotAcquired);
         }
-        ClaimOutcome::Claimed { version, fencing_token } => (version, fencing_token),
+        ClaimOutcome::Claimed {
+            version,
+            fencing_token,
+        } => (version, fencing_token),
     };
     // The envelope is intentionally not executable. Enabling an external
     // dispatcher requires a separate authorization and protocol change.
@@ -94,45 +94,54 @@ pub(crate) async fn stage_verified_recovery(
         "attempt": key.attempt,
         "head_sha": key.head_sha,
         "fencing_token": fencing_token
-    }).to_string();
+    })
+    .to_string();
     let idempotency_key = durable_intent_key(key);
-    let inserted = tx.query_one(Statement::from_sql_and_values(
-        DbBackend::Postgres,
-        INSERT_INTENT,
-        vec![
-            idempotency_key.clone().into(),
-            envelope.into(),
-            key.repo.clone().into(),
-            (key.run_id as i64).into(),
-            (key.attempt as i64).into(),
-            key.head_sha.clone().into(),
-            owner.to_string().into(),
-            claim_version.into(),
-            fencing_token.into(),
-        ],
-    )).await?;
+    let inserted = tx
+        .query_one(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            INSERT_INTENT,
+            vec![
+                idempotency_key.clone().into(),
+                envelope.into(),
+                key.repo.clone().into(),
+                (key.run_id as i64).into(),
+                (key.attempt as i64).into(),
+                key.head_sha.clone().into(),
+                owner.to_string().into(),
+                claim_version.into(),
+                fencing_token.into(),
+            ],
+        ))
+        .await?;
     if inserted.is_none() {
         tx.rollback().await?;
-        return Err(DbErr::Custom("claim lost before durable outbox insertion".into()));
+        return Err(DbErr::Custom(
+            "claim lost before durable outbox insertion".into(),
+        ));
     }
 
-    let pending = tx.query_one(Statement::from_sql_and_values(
-        DbBackend::Postgres,
-        ADVANCE_TO_PENDING,
-        vec![
-            key.repo.clone().into(),
-            (key.run_id as i64).into(),
-            (key.attempt as i64).into(),
-            key.head_sha.clone().into(),
-            owner.to_string().into(),
-            claim_version.into(),
-            fencing_token.into(),
-            idempotency_key.clone().into(),
-        ],
-    )).await?;
+    let pending = tx
+        .query_one(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            ADVANCE_TO_PENDING,
+            vec![
+                key.repo.clone().into(),
+                (key.run_id as i64).into(),
+                (key.attempt as i64).into(),
+                key.head_sha.clone().into(),
+                owner.to_string().into(),
+                claim_version.into(),
+                fencing_token.into(),
+                idempotency_key.clone().into(),
+            ],
+        ))
+        .await?;
     let Some(row) = pending else {
         tx.rollback().await?;
-        return Err(DbErr::Custom("claim-to-outbox state transition was not applied".into()));
+        return Err(DbErr::Custom(
+            "claim-to-outbox state transition was not applied".into(),
+        ));
     };
     let version: i64 = row.try_get("", "version")?;
     tx.commit().await?;
@@ -161,8 +170,10 @@ mod tests {
     #[test]
     fn outbox_is_never_admitted_without_a_matching_claim() {
         for clause in [
-            "state = 'claimed'", "claim_owner = $7",
-            "version = $8", "fencing_token = $9",
+            "state = 'claimed'",
+            "claim_owner = $7",
+            "version = $8",
+            "fencing_token = $9",
             "RETURNING id",
         ] {
             assert!(INSERT_INTENT.contains(clause));
