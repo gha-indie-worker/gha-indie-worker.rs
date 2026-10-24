@@ -98,6 +98,7 @@ jobs:
           mkdir -p "$scratch/src/admission"
           cp src/admission.rs "$scratch/src/admission.rs"
           cp src/recovery.rs "$scratch/src/recovery.rs"
+          cp src/recovery_policy.rs "$scratch/src/recovery_policy.rs"
 
           cat > "$scratch/Cargo.toml" <<'TOML'
           [package]
@@ -167,6 +168,9 @@ jobs:
                   Ok(RecoveryObservationWrite::Inserted)
               }
           }
+
+          #[allow(dead_code)]
+          mod recovery_policy;
 
           #[allow(dead_code)]
           mod recovery;
