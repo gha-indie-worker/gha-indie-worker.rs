@@ -80,7 +80,7 @@ async fn live_pg_concurrent_cas_stale_identity_and_transaction_rollback() {
       provider text not null, repo text not null,
       run_id bigint not null, run_attempt bigint not null, head_sha text not null,
       classification text not null, confidence text not null,
-      fallback_allowed boolean not null, steps_observed integer not null,
+      fallback_allowed boolean not null, jobs_observed integer not null, steps_observed integer not null,
       runner_assigned boolean not null, verified_diagnostic_kind text,
       verified_evidence_ref text, verified_at timestamptz, state text not null,
       version bigint not null default 0, claim_owner text,
