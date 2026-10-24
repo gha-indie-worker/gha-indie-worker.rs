@@ -74,9 +74,10 @@ async fn live_pg_concurrent_cas_stale_identity_and_transaction_rollback() {
 
     let key = |id| RecoveryKey::new("ci/repo", id, 1, "a".repeat(40)).unwrap();
     load(&db, 90, "verified", 1, false).await;
+    let run90 = key(90);
     let (a, b) = tokio::join!(
-        claim_verified(&db, &key(90), 1, "worker-a"),
-        claim_verified(&db, &key(90), 1, "worker-b")
+        claim_verified(&db, &run90, 1, "worker-a"),
+        claim_verified(&db, &run90, 1, "worker-b")
     );
     let wins = [a.unwrap(), b.unwrap()]
         .into_iter()
