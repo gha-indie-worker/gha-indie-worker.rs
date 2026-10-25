@@ -24,24 +24,45 @@ if ! command -v git >/dev/null || ! command -v cargo >/dev/null; then
   echo "PRODUCTION_BUILD_BLOCKED: git and cargo are both required" >&2
   exit 42
 fi
-if [ -z "${EXPECTED_SERVICE_TREE_SHA:-}" ]; then
-  echo "PRODUCTION_BUILD_BLOCKED: EXPECTED_SERVICE_TREE_SHA is required" >&2
-  exit 42
-fi
-if [ -n "$EXPECTED_SERVICE_TREE_SHA" ]; then
-  gitroot="$(git -C "$service" rev-parse --show-toplevel)"
-  if [ "$service" = "$gitroot" ]; then
-    actual_tree="$(git -C "$service" rev-parse 'HEAD^{tree}')"
-  else
-    subpath="$(git -C "$service" rev-parse --show-prefix)"
-    subpath="$(printf "%s" "$subpath" | sed 's:/$::')"
-    actual_tree="$(git -C "$gitroot" rev-parse "HEAD:$subpath")"
-  fi
-  if [ "$actual_tree" != "$EXPECTED_SERVICE_TREE_SHA" ]; then
-    echo "PRODUCTION_BUILD_BLOCKED: worker source Git tree mismatch: $actual_tree" >&2
+# Every crate (including generated NATS constants) must be a clean,
+# committed Git tree with a caller-supplied, independently reviewed SHA.
+verify_tree() {
+  local dir="$1" expected="$2" label="$3" root scope actual dirty
+  if [ -z "$expected" ]; then
+    echo "PRODUCTION_BUILD_BLOCKED: expected Git tree SHA missing for $label" >&2
     exit 42
   fi
-fi
+  dir="$(cd "$dir" && pwd -P)"
+  if ! root="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)"; then
+    echo "PRODUCTION_BUILD_BLOCKED: $label is not in a Git checkout" >&2
+    exit 42
+  fi
+  if [ "$root" = "$dir" ]; then
+    scope="."
+    actual="$(git -C "$root" rev-parse 'HEAD^{tree}')"
+  else
+    scope="$(git -C "$dir" rev-parse --show-prefix)"
+    scope="$(printf "%s" "$scope" | sed 's:/$::')"
+    if ! actual="$(git -C "$root" rev-parse "HEAD:$scope" 2>/dev/null)"; then
+      echo "PRODUCTION_BUILD_BLOCKED: $label has no committed tree" >&2
+      exit 42
+    fi
+  fi
+  if [ "$actual" != "$expected" ]; then
+    echo "PRODUCTION_BUILD_BLOCKED: $label Git tree differs: $actual" >&2
+    exit 42
+  fi
+  dirty="$(git -C "$root" status --porcelain --untracked-files=all -- "$scope")"
+  if [ -n "$dirty" ]; then
+    echo "PRODUCTION_BUILD_BLOCKED: $label contains dirty or untracked source" >&2
+    exit 42
+  fi
+}
+
+verify_tree "$service" "${EXPECTED_SERVICE_TREE_SHA:-}" "dd-build-server"
+verify_tree "$service/../../libs/telemetry-rs" "${EXPECTED_TELEMETRY_TREE_SHA:-}" "dd-telemetry"
+verify_tree "$service/../../libs/runtime-config-client-rs" "${EXPECTED_RUNTIME_CONFIG_TREE_SHA:-}" "dd-runtime-config-client"
+verify_tree "$service/../../libs/nats/subject-defs/generated/rust" "${EXPECTED_NATS_SUBJECT_TREE_SHA:-}" "dd-nats-subject-defs"
 
 # This script does not materialize crates, replace dependencies or dispatch.
 # Run it only in an authorized workspace containing the real sibling libraries.
