@@ -1,0 +1,51 @@
+name: Recovery production Cargo source preflight
+
+on:
+  pull_request:
+    paths:
+      - scripts/recovery-production-build-gate.sh
+      - .github/workflows/recovery-production-source-preflight.yml
+  push:
+    branches: [main]
+    paths:
+      - scripts/recovery-production-build-gate.sh
+      - .github/workflows/recovery-production-source-preflight.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  missing-workspace-fails-closed:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout source without retained credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          submodules: false
+      - name: Verify checked-out head and shell syntax
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          bash -n scripts/recovery-production-build-gate.sh
+      - name: Prove missing production crates cannot yield a green full build
+        run: |
+          set -euo pipefail
+          if bash scripts/recovery-production-build-gate.sh >"$RUNNER_TEMP/probe.out" 2>"$RUNNER_TEMP/probe.err"; then
+            echo 'Incomplete extracted checkout was falsely accepted as production' >&2
+            exit 1
+          else
+            code=$?
+            test "$code" -eq 42
+          fi
+          for crate in telemetry-rs runtime-config-client-rs subject-defs/generated/rust; do
+            grep -Fq "$crate" "$RUNNER_TEMP/probe.err"
+          done
+          if grep -Fq PRODUCTION_FULL_BUILD_OK "$RUNNER_TEMP/probe.out"; then
+            echo 'False production build success' >&2; exit 1
+          fi

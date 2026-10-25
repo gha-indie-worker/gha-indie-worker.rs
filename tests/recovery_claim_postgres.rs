@@ -356,4 +356,102 @@ async fn live_pg_concurrent_cas_stale_identity_and_transaction_rollback() {
         ReconcileOutcome::RequiresOperatorReview,
         "a rolled-back claim with a stray outbox must require operator review"
     );
+    // This is a real PostgreSQL backend crash, not an in-memory rollback:
+    // terminate the transaction's server session after acquiring a claim and
+    // writing an uncommitted outbox intent, then reconnect independently.
+    load(&db, 110, "verified", 1, false).await;
+    let crash_key = key(110);
+    let tx = db.begin().await.unwrap();
+    assert_eq!(
+        claim_verified(&tx, &crash_key, 1, "crash-worker")
+            .await
+            .unwrap(),
+        ClaimOutcome::Claimed {
+            version: 2,
+            fencing_token: 2
+        }
+    );
+    let inserted = tx
+        .execute(Statement::from_string(
+            DbBackend::Postgres,
+            "INSERT INTO gha_recovery_outbox (recovery_id,idempotency_key,payload)
+             SELECT id,'ci.crash-before-commit.110',
+                    '{\"dispatch_enabled\":false}'::jsonb
+             FROM gha_recovery_runs WHERE run_id=110"
+                .to_string(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(inserted.rows_affected(), 1);
+    let row = tx
+        .query_one(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT pg_backend_pid() AS pid".to_string(),
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    let backend_pid: i32 = row.try_get("", "pid").unwrap();
+
+    // A separate connection terminates exactly the transaction's backend.
+    let killer = Database::connect(url.clone()).await.unwrap();
+    let row = killer
+        .query_one(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT pg_terminate_backend($1) AS killed",
+            vec![backend_pid.into()],
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(row.try_get::<bool>("", "killed").unwrap());
+    assert!(tx.commit().await.is_err(), "dead backend cannot commit");
+
+    // PostgreSQL must roll back both writes, including the would-be outbox.
+    assert_eq!(
+        version_and_owner(&killer, 110).await,
+        ("verified".to_string(), 1, None),
+        "a killed database backend must not commit its claim"
+    );
+    let row = killer
+        .query_one(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT count(*) AS n FROM gha_recovery_outbox
+             WHERE idempotency_key='ci.crash-before-commit.110'"
+                .to_string(),
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
+
+    // An authorized retry can recover by exactly one claim+outbox commit;
+    // losing its acknowledgement thereafter cannot spawn another intent.
+    assert!(matches!(
+        stage_verified_recovery(&killer, &crash_key, 1, "recovered-worker")
+            .await
+            .unwrap(),
+        StageOutcome::Staged {
+            version: 3,
+            fencing_token: 2,
+            ..
+        }
+    ));
+    let independent = Database::connect(url.clone()).await.unwrap();
+    assert!(matches!(
+        reconcile_disabled_intent(&independent, &crash_key)
+            .await
+            .unwrap(),
+        ReconcileOutcome::ConfirmedDisabledIntent {
+            version: 3,
+            fencing_token: 2,
+            ..
+        }
+    ));
+    assert_eq!(
+        stage_verified_recovery(&independent, &crash_key, 1, "duplicate-worker")
+            .await
+            .unwrap(),
+        StageOutcome::NotAcquired
+    );
 }
