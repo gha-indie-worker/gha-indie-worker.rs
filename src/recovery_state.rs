@@ -15,6 +15,8 @@ pub(crate) struct RecoveryKey {
 }
 
 impl RecoveryKey {
+    // Used by formal/model checks; still not an execution capability.
+    #[allow(dead_code)]
     pub(crate) fn new(
         repo: impl Into<String>,
         run_id: u64,
@@ -23,9 +25,7 @@ impl RecoveryKey {
     ) -> Option<Self> {
         let repo = repo.into();
         let head_sha = head_sha.into();
-        let Some((owner, name)) = repo.split_once('/') else {
-            return None;
-        };
+        let (owner, name) = repo.split_once('/')?;
         let valid_part = |part: &str| {
             !part.is_empty()
                 && part.len() <= 100
@@ -64,6 +64,8 @@ impl RecoveryKey {
     }
 }
 
+// Forward-only dispatch/terminal states are modeled but unreachable in observe-only production.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RecoveryState {
     Observed,
@@ -77,6 +79,7 @@ pub(crate) enum RecoveryState {
 }
 
 impl RecoveryState {
+    #[allow(dead_code)]
     pub(crate) const fn terminal(self) -> bool {
         matches!(
             self,
@@ -85,6 +88,7 @@ impl RecoveryState {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RecoveryRecord {
     pub(crate) key: RecoveryKey,
@@ -94,6 +98,7 @@ pub(crate) struct RecoveryRecord {
     pub(crate) dispatch_id: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TransitionError {
     VersionMismatch,
@@ -104,6 +109,8 @@ pub(crate) enum TransitionError {
     IdentityConflict,
 }
 
+// State transition algebra is retained for formal proofs, not wired to dispatch.
+#[allow(dead_code)]
 impl RecoveryRecord {
     pub(crate) fn observed(key: RecoveryKey) -> Self {
         Self {

@@ -1,6 +1,8 @@
 //! Fail-closed identity and dispatch policy for the recovery observation seam.
 //! Compiles with rustc alone. No allow decision exists here.
 
+// Canonical identity helper retained for the deny-only model and future verified adapters.
+#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AttemptKey {
     pub(crate) repo: String,
@@ -9,6 +11,7 @@ pub(crate) struct AttemptKey {
     pub(crate) head_sha: String,
 }
 
+#[allow(dead_code)]
 impl AttemptKey {
     pub(crate) fn new(repo: &str, run_id: u64, attempt: u64, head_sha: &str) -> Option<Self> {
         let mut parts = repo.split('/');
@@ -44,6 +47,7 @@ impl AttemptKey {
     }
 }
 
+#[allow(dead_code)]
 fn valid_part(part: &str) -> bool {
     !part.is_empty()
         && part.len() <= 100
@@ -63,6 +67,7 @@ pub(crate) enum Denial {
 }
 
 impl Denial {
+    #[allow(dead_code)]
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::ExecutedSteps => "executed_steps",
