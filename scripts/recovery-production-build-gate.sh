@@ -24,12 +24,17 @@ if ! command -v git >/dev/null || ! command -v cargo >/dev/null; then
   echo "PRODUCTION_BUILD_BLOCKED: git and cargo are both required" >&2
   exit 42
 fi
+if [ -z "${EXPECTED_SERVICE_TREE_SHA:-}" ]; then
+  echo "PRODUCTION_BUILD_BLOCKED: EXPECTED_SERVICE_TREE_SHA is required" >&2
+  exit 42
+fi
 if [ -n "$EXPECTED_SERVICE_TREE_SHA" ]; then
   gitroot="$(git -C "$service" rev-parse --show-toplevel)"
   if [ "$service" = "$gitroot" ]; then
     actual_tree="$(git -C "$service" rev-parse 'HEAD^{tree}')"
   else
-    subpath="$(realpath --relative-to="$gitroot" "$service")"
+    subpath="$(git -C "$service" rev-parse --show-prefix)"
+    subpath="$(printf "%s" "$subpath" | sed 's:/$::')"
     actual_tree="$(git -C "$gitroot" rev-parse "HEAD:$subpath")"
   fi
   if [ "$actual_tree" != "$EXPECTED_SERVICE_TREE_SHA" ]; then
