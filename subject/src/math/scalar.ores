@@ -1,0 +1,60 @@
+// Pure Oreslang scalar math. No Java implementation dependency.
+
+pub fnc abs(float value): float {
+  if value < 0.0; do
+    return 0.0 - value;
+  fi
+  return value;
+}
+
+pub fnc min_value(float left, float right): float {
+  if left < right; do
+    return left;
+  fi
+  return right;
+}
+
+pub fnc max_value(float left, float right): float {
+  if left > right; do
+    return left;
+  fi
+  return right;
+}
+
+pub fnc clamp(float value, float lower, float upper): float {
+  if value < lower; do
+    return lower;
+  fi
+  if value > upper; do
+    return upper;
+  fi
+  return value;
+}
+
+// Newton-Raphson sqrt is the semantic reference implementation.
+// A future compiler intrinsic may recognize it without changing this API.
+pub fnc sqrt(float value): Result<float, String> {
+  if value < 0.0; do
+    return Err("sqrt requires a non-negative value");
+  fi
+
+  if value == 0.0; do
+    return Ok(0.0);
+  fi
+
+  let float estimate = value;
+  if estimate < 1.0; do
+    estimate = 1.0;
+  fi
+
+  let int i = 0;
+  loop {
+    if i >= 32; do
+      break;
+    fi
+    estimate = 0.5 * (estimate + (value / estimate));
+    i = i + 1;
+  }
+
+  return Ok(estimate);
+}

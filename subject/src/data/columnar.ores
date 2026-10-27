@@ -1,0 +1,97 @@
+define class FloatColumn as
+  pub val String name;
+  pub val List<float> values;
+  pub val List<bool> valid;
+end
+
+define class FloatFrame as
+  pub val List<FloatColumn> columns;
+  pub val int row_count;
+end
+
+pub fnc validate_float_column(FloatColumn column): Result<bool, String> {
+  let int value_count = 0;
+  let int validity_count = 0;
+
+  for const value of column.values do
+    value_count = value_count + 1;
+  done
+
+  for const valid of column.valid do
+    validity_count = validity_count + 1;
+  done
+
+  if value_count != validity_count; do
+    return Err("column values and validity mask must have equal length");
+  fi
+
+  return Ok(true);
+}
+
+pub fnc validate_float_frame(FloatFrame frame): Result<bool, String> {
+  if frame.row_count < 0; do
+    return Err("frame row_count must be non-negative");
+  fi
+
+  for const column of frame.columns do
+    val Result<bool, String> valid_column = validate_float_column(column);
+    if valid_column.is_err(); do
+      return Err("frame contains an invalid column");
+    fi
+
+    let int column_count = 0;
+    for const value of column.values do
+      column_count = column_count + 1;
+    done
+
+    if column_count != frame.row_count; do
+      return Err("every column must have frame.row_count values");
+    fi
+  done
+
+  return Ok(true);
+}
+
+pub fnc column_sum(FloatColumn column): Result<float, String> {
+  val Result<bool, String> valid_column = validate_float_column(column);
+  if valid_column.is_err(); do
+    return Err("invalid float column");
+  fi
+
+  let float total = 0.0;
+  let int i = 0;
+
+  for const value of column.values do
+    if column.valid[i]; do
+      total = total + value;
+    fi
+    i = i + 1;
+  done
+
+  return Ok(total);
+}
+
+pub fnc column_mean(FloatColumn column): Result<float, String> {
+  val Result<bool, String> valid_column = validate_float_column(column);
+  if valid_column.is_err(); do
+    return Err("invalid float column");
+  fi
+
+  let float total = 0.0;
+  let float count = 0.0;
+  let int i = 0;
+
+  for const value of column.values do
+    if column.valid[i]; do
+      total = total + value;
+      count = count + 1.0;
+    fi
+    i = i + 1;
+  done
+
+  if count == 0.0; do
+    return Err("column mean requires at least one valid value");
+  fi
+
+  return Ok(total / count);
+}

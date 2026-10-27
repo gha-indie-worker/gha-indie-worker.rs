@@ -1,0 +1,85 @@
+// Native Oreslang tracing primitives. No Java interop and no synchronous I/O.
+// Never write logs or perform networking in a request's hot path.
+// start_ns(false) and duration_ns(0) are allocation-free disabled fast paths.
+// Duration events are plain immutable data for a future bounded async collector.
+define module Trace as
+  pub define class Event as
+    pub val int correlation_id;
+    pub val int phase_id;
+    pub val int elapsed_ns;
+  end
+
+  pub fnc start_ns(bool enabled): int {
+    if !enabled; do
+      return 0;
+    fi
+    return process.monotonic_ns();
+  }
+
+  pub fnc duration_ns(int started_ns): int {
+    if started_ns <= 0; do
+      return 0;
+    fi
+    val int finished_ns = process.monotonic_ns();
+    if finished_ns < started_ns; do
+      return 0;
+    fi
+    return finished_ns - started_ns;
+  }
+
+
+  // Actor/supervisor-owned bounded collector shard. It performs NO I/O,
+  // logging, locking, awaits, or cross-actor mutation. One owner must
+  // serialize all calls. Events beyond capacity increment dropped_count;
+  // never block or silently expand the buffer. Drain/export is separate.
+  pub define class Buffer as
+    let mut Array<Event> items = new Array<Event>();
+    let int capacity;
+    let mut int dropped = 0;
+
+    pub constructor(int capacity) {
+      if capacity < 1 || capacity > 65536; do
+        rt fail("Trace.Buffer: capacity must be 1..65536");
+      fi
+      self.capacity = capacity;
+    }
+
+    pub record(mut self)(int correlation_id, int phase_id, int duration_ns): bool {
+      if correlation_id < 0 || phase_id <= 0 || duration_ns < 0; do
+        return false;
+      fi
+      if self.items.size >= self.capacity; do
+        if self.dropped < 2147483647; do
+          self.dropped = self.dropped + 1;
+        fi
+        return false;
+      fi
+      self.items.add(new Event(correlation_id, phase_id, duration_ns));
+      return true;
+    }
+
+    pub count(): int {
+      return self.items.size;
+    }
+
+    pub dropped_count(): int {
+      return self.dropped;
+    }
+
+    pub at(int index): Event {
+      return self.items.get(index);
+    }
+  end
+
+  // Packaged classes are constructed within their owning Oreslang module;
+  // imported modules expose this factory rather than a host-level class alias.
+  pub fnc buffer(int capacity): Buffer {
+    return new Buffer(capacity);
+  }
+
+  // Call only for enabled/sampled spans; producing an Event performs no I/O.
+  // Phase and correlation identifiers must not embed request/tenant secrets.
+  pub fnc event(int correlation_id, int phase_id, int elapsed_ns): Event {
+    return new Event(correlation_id, phase_id, elapsed_ns);
+  }
+end

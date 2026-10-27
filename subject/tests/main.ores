@@ -1,0 +1,419 @@
+import class TestCase, TestSuite, TestOptions, RunSummary, TestOutcome from '../vendor/oreslang/testing';
+import fnc fail, expect_true, expect_near_float, run_suite, require_success from '../vendor/oreslang/testing';
+
+import fnc sqrt from '../src/math/scalar';
+import fnc sum, dot, mean, variance_population, variance_sample, minimum, maximum from '../src/math/reductions';
+import fnc scale, normalize_l2 from '../src/math/vector';
+import class DenseMatrixF64 from '../src/math/matrix';
+import fnc matvec_into from '../src/math/matrix';
+import class FloatColumn from '../src/data/columnar';
+import fnc column_mean from '../src/data/columnar';
+import class ParticleSetF64 from '../src/dop/soa';
+import fnc kinetic_energy from '../src/dop/soa';
+import class BpeMerge, BpeEncoding from '../src/nlp/bpe';
+import fnc encode_utf8_bytes_into from '../src/nlp/bpe';
+
+fnc test_sqrt_nine(): TestOutcome {
+  val Result<float, String> result = sqrt(9.0);
+  if result.is_err(); do
+    return fail("sqrt(9) returned Err");
+  fi
+  return expect_near_float(result.unwrap(), 3.0, 0.000001, "sqrt(9) must be 3");
+}
+
+fnc test_sqrt_negative(): TestOutcome {
+  val Result<float, String> result = sqrt(0.0 - 1.0);
+  return expect_true(result.is_err(), "sqrt(-1) must return Err");
+}
+
+fnc test_sum(): TestOutcome {
+  val List<float> values = arr[1.0, 2.0, 3.0, 4.0];
+  return expect_near_float(sum(values), 10.0, 0.000001, "sum must equal 10");
+}
+
+fnc test_mean(): TestOutcome {
+  val List<float> values = arr[1.0, 2.0, 3.0, 4.0];
+  val Result<float, String> result = mean(values);
+  if result.is_err(); do
+    return fail("mean returned Err");
+  fi
+  return expect_near_float(result.unwrap(), 2.5, 0.000001, "mean must equal 2.5");
+}
+
+fnc test_mean_empty(): TestOutcome {
+  val List<float> values = arr[];
+  val Result<float, String> result = mean(values);
+  return expect_true(result.is_err(), "empty mean must return Err");
+}
+
+fnc test_variance(): TestOutcome {
+  val List<float> values = arr[1.0, 2.0, 3.0, 4.0];
+  val Result<float, String> population = variance_population(values);
+  if population.is_err(); do
+    return fail("population variance returned Err");
+  fi
+
+  val TestOutcome population_check = expect_near_float(
+    population.unwrap(),
+    1.25,
+    0.000001,
+    "population variance must equal 1.25"
+  );
+  if !population_check.passed; do
+    return population_check;
+  fi
+
+  val Result<float, String> sample = variance_sample(values);
+  if sample.is_err(); do
+    return fail("sample variance returned Err");
+  fi
+
+  return expect_near_float(
+    sample.unwrap(),
+    1.6666666666666667,
+    0.000001,
+    "sample variance must equal 5/3"
+  );
+}
+
+fnc test_dot_and_shape_error(): TestOutcome {
+  val List<float> left = arr[1.0, 2.0, 3.0];
+  val List<float> right = arr[4.0, 5.0, 6.0];
+  val Result<float, String> result = dot(left, right);
+  if result.is_err(); do
+    return fail("dot returned Err for equal shapes");
+  fi
+
+  val TestOutcome value_check = expect_near_float(
+    result.unwrap(),
+    32.0,
+    0.000001,
+    "dot product must equal 32"
+  );
+  if !value_check.passed; do
+    return value_check;
+  fi
+
+  val List<float> short = arr[1.0];
+  val Result<float, String> mismatch = dot(left, short);
+  return expect_true(mismatch.is_err(), "dot must reject shape mismatch");
+}
+
+fnc test_min_max(): TestOutcome {
+  val List<float> values = arr[8.0, 0.0 - 4.0, 3.0, 11.0];
+
+  val Result<float, String> min_result = minimum(values);
+  if min_result.is_err(); do
+    return fail("minimum returned Err");
+  fi
+  val TestOutcome min_check = expect_near_float(
+    min_result.unwrap(),
+    0.0 - 4.0,
+    0.000001,
+    "minimum must equal -4"
+  );
+  if !min_check.passed; do
+    return min_check;
+  fi
+
+  val Result<float, String> max_result = maximum(values);
+  if max_result.is_err(); do
+    return fail("maximum returned Err");
+  fi
+  return expect_near_float(max_result.unwrap(), 11.0, 0.000001, "maximum must equal 11");
+}
+
+fnc test_scale_and_normalize(): TestOutcome {
+  val List<float> source = arr[1.0, 2.0, 3.0];
+  val List<float> scaled = scale(source, 2.0);
+  val TestOutcome scale_check = expect_near_float(
+    sum(scaled),
+    12.0,
+    0.000001,
+    "scale must double the vector sum"
+  );
+  if !scale_check.passed; do
+    return scale_check;
+  fi
+
+  val Result<List<float>, String> normalized = normalize_l2(scaled);
+  if normalized.is_err(); do
+    return fail("normalize_l2 returned Err");
+  fi
+
+  val List<float> unit = normalized.unwrap();
+  val Result<float, String> norm_squared = dot(unit, unit);
+  if norm_squared.is_err(); do
+    return fail("dot failed for normalized vector");
+  fi
+
+  return expect_near_float(norm_squared.unwrap(), 1.0, 0.000001, "normalized vector must have unit norm");
+}
+
+fnc test_matvec(): TestOutcome {
+  val DenseMatrixF64 matrix = new DenseMatrixF64(
+    2,
+    2,
+    arr[1.0, 2.0, 3.0, 4.0]
+  );
+  val List<float> vector = arr[5.0, 6.0];
+  val List<float> output = arr[0.0, 0.0];
+
+  val Result<List<float>, String> result = matvec_into(matrix, vector, output);
+  if result.is_err(); do
+    return fail("matvec returned Err");
+  fi
+
+  val List<float> actual = result.unwrap();
+  val TestOutcome first = expect_near_float(actual[0], 17.0, 0.000001, "matvec row 0");
+  if !first.passed; do
+    return first;
+  fi
+
+  return expect_near_float(actual[1], 39.0, 0.000001, "matvec row 1");
+}
+
+fnc test_nullable_column_mean(): TestOutcome {
+  val FloatColumn column = new FloatColumn(
+    "x",
+    arr[1.0, 100.0, 3.0],
+    arr[true, false, true]
+  );
+
+  val Result<float, String> result = column_mean(column);
+  if result.is_err(); do
+    return fail("column_mean returned Err");
+  fi
+
+  return expect_near_float(result.unwrap(), 2.0, 0.000001, "column mean must ignore invalid values");
+}
+
+fnc test_particle_energy(): TestOutcome {
+  val ParticleSetF64 particles = new ParticleSetF64(
+    arr[0.0],
+    arr[0.0],
+    arr[0.0],
+    arr[3.0],
+    arr[4.0],
+    arr[0.0],
+    arr[2.0]
+  );
+
+  val Result<float, String> result = kinetic_energy(particles);
+  if result.is_err(); do
+    return fail("kinetic_energy returned Err");
+  fi
+
+  return expect_near_float(result.unwrap(), 25.0, 0.000001, "kinetic energy must equal 25");
+}
+
+
+fnc test_bpe_ascii_chain(): TestOutcome {
+  val List<int> bytes = arr[97, 98, 99];
+  val List<BpeMerge> merges = arr[
+    new BpeMerge(97, 98, 256, 0),
+    new BpeMerge(256, 99, 257, 1)
+  ];
+  val List<int> token_ids = arr[0, 0, 0];
+  val List<int> starts = arr[0, 0, 0];
+  val List<int> ends = arr[0, 0, 0];
+
+  val Result<BpeEncoding, String> result = encode_utf8_bytes_into(
+    bytes,
+    merges,
+    token_ids,
+    starts,
+    ends
+  );
+  if result.is_err(); do
+    return fail("BPE ASCII chain returned Err");
+  fi
+
+  val BpeEncoding encoded = result.unwrap();
+  val TestOutcome count_check = expect_true(
+    encoded.count == 1,
+    "BPE ASCII chain must collapse to one token"
+  );
+  if !count_check.passed; do
+    return count_check;
+  fi
+
+  val TestOutcome token_check = expect_true(
+    encoded.token_ids[0] == 257,
+    "BPE ASCII chain must produce token 257"
+  );
+  if !token_check.passed; do
+    return token_check;
+  fi
+
+  val TestOutcome start_check = expect_true(
+    encoded.byte_starts[0] == 0,
+    "BPE ASCII chain must preserve start byte offset"
+  );
+  if !start_check.passed; do
+    return start_check;
+  fi
+
+  return expect_true(
+    encoded.byte_ends[0] == 3,
+    "BPE ASCII chain must preserve end byte offset"
+  );
+}
+
+fnc test_bpe_rank_order(): TestOutcome {
+  val List<int> bytes = arr[97, 98, 97];
+  val List<BpeMerge> merges = arr[
+    new BpeMerge(97, 98, 256, 1),
+    new BpeMerge(98, 97, 257, 0)
+  ];
+  val List<int> token_ids = arr[0, 0, 0];
+  val List<int> starts = arr[0, 0, 0];
+  val List<int> ends = arr[0, 0, 0];
+
+  val Result<BpeEncoding, String> result = encode_utf8_bytes_into(
+    bytes,
+    merges,
+    token_ids,
+    starts,
+    ends
+  );
+  if result.is_err(); do
+    return fail("BPE rank-order test returned Err");
+  fi
+
+  val BpeEncoding encoded = result.unwrap();
+  val TestOutcome count_check = expect_true(
+    encoded.count == 2,
+    "BPE global rank ordering must leave two tokens"
+  );
+  if !count_check.passed; do
+    return count_check;
+  fi
+
+  val TestOutcome first_check = expect_true(
+    encoded.token_ids[0] == 97,
+    "BPE lower-ranked right pair must beat leftmost higher-ranked pair"
+  );
+  if !first_check.passed; do
+    return first_check;
+  fi
+
+  val TestOutcome second_check = expect_true(
+    encoded.token_ids[1] == 257,
+    "BPE rank-order test must produce token 257"
+  );
+  if !second_check.passed; do
+    return second_check;
+  fi
+
+  val TestOutcome start_check = expect_true(
+    encoded.byte_starts[1] == 1,
+    "BPE merged right pair must start at byte 1"
+  );
+  if !start_check.passed; do
+    return start_check;
+  fi
+
+  return expect_true(
+    encoded.byte_ends[1] == 3,
+    "BPE merged right pair must end at byte 3"
+  );
+}
+
+fnc test_bpe_utf8_span(): TestOutcome {
+  // UTF-8 for U+00E9 LATIN SMALL LETTER E WITH ACUTE is C3 A9.
+  val List<int> bytes = arr[195, 169];
+  val List<BpeMerge> merges = arr[
+    new BpeMerge(195, 169, 300, 0)
+  ];
+  val List<int> token_ids = arr[0, 0];
+  val List<int> starts = arr[0, 0];
+  val List<int> ends = arr[0, 0];
+
+  val Result<BpeEncoding, String> result = encode_utf8_bytes_into(
+    bytes,
+    merges,
+    token_ids,
+    starts,
+    ends
+  );
+  if result.is_err(); do
+    return fail("BPE UTF-8 span test returned Err");
+  fi
+
+  val BpeEncoding encoded = result.unwrap();
+  val TestOutcome count_check = expect_true(
+    encoded.count == 1,
+    "two-byte UTF-8 sequence must collapse to one token"
+  );
+  if !count_check.passed; do
+    return count_check;
+  fi
+
+  val TestOutcome token_check = expect_true(
+    encoded.token_ids[0] == 300,
+    "two-byte UTF-8 sequence must produce token 300"
+  );
+  if !token_check.passed; do
+    return token_check;
+  fi
+
+  val TestOutcome start_check = expect_true(
+    encoded.byte_starts[0] == 0,
+    "UTF-8 token span must start at byte 0"
+  );
+  if !start_check.passed; do
+    return start_check;
+  fi
+
+  return expect_true(
+    encoded.byte_ends[0] == 2,
+    "UTF-8 token span must end at byte 2"
+  );
+}
+
+fnc test_bpe_rejects_invalid_input(): TestOutcome {
+  val List<int> bytes = arr[256];
+  val List<BpeMerge> merges = arr[];
+  val List<int> token_ids = arr[0];
+  val List<int> starts = arr[0];
+  val List<int> ends = arr[0];
+
+  val Result<BpeEncoding, String> result = encode_utf8_bytes_into(
+    bytes,
+    merges,
+    token_ids,
+    starts,
+    ends
+  );
+  return expect_true(result.is_err(), "BPE must reject values larger than one byte");
+}
+
+pub routine main(): void {
+  val TestSuite suite = new TestSuite(
+    "data-science",
+    arr[
+      new TestCase("math/sqrt/nine", test_sqrt_nine, false, ""),
+      new TestCase("math/sqrt/negative", test_sqrt_negative, false, ""),
+      new TestCase("reductions/sum", test_sum, false, ""),
+      new TestCase("reductions/mean", test_mean, false, ""),
+      new TestCase("reductions/mean-empty", test_mean_empty, false, ""),
+      new TestCase("reductions/variance", test_variance, false, ""),
+      new TestCase("reductions/dot-shape", test_dot_and_shape_error, false, ""),
+      new TestCase("reductions/min-max", test_min_max, false, ""),
+      new TestCase("vector/scale-normalize", test_scale_and_normalize, false, ""),
+      new TestCase("matrix/matvec", test_matvec, false, ""),
+      new TestCase("columnar/nullable-mean", test_nullable_column_mean, false, ""),
+      new TestCase("dop/particle-energy", test_particle_energy, false, ""),
+      new TestCase("nlp/bpe-ascii-chain", test_bpe_ascii_chain, false, ""),
+      new TestCase("nlp/bpe-rank-order", test_bpe_rank_order, false, ""),
+      new TestCase("nlp/bpe-utf8-span", test_bpe_utf8_span, false, ""),
+      new TestCase("nlp/bpe-invalid-input", test_bpe_rejects_invalid_input, false, "")
+    ]
+  );
+
+  val TestOptions options = new TestOptions("", false, true);
+  val RunSummary summary = run_suite(&suite, &options);
+  require_success(&summary);
+  return;
+}

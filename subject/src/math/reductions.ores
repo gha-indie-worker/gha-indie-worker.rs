@@ -1,0 +1,151 @@
+// Stable reductions over typed Oreslang sequences.
+// Oreslang object arguments are references by default; read-only parameters do not need pointer syntax.
+
+pub fnc sum(List<float> values): float {
+  let float total = 0.0;
+  for const value of values do
+    total = total + value;
+  done
+  return total;
+}
+
+pub fnc sum_squares(List<float> values): float {
+  let float total = 0.0;
+  for const value of values do
+    total = total + (value * value);
+  done
+  return total;
+}
+
+pub fnc dot(
+  List<float> left,
+  List<float> right
+): Result<float, String> {
+  let int left_count = 0;
+  let int right_count = 0;
+
+  for const value of left do
+    left_count = left_count + 1;
+  done
+
+  for const value of right do
+    right_count = right_count + 1;
+  done
+
+  if left_count != right_count; do
+    return Err("dot requires vectors with equal length");
+  fi
+
+  let float total = 0.0;
+  let int i = 0;
+  for const value of left do
+    total = total + (value * right[i]);
+    i = i + 1;
+  done
+
+  return Ok(total);
+}
+
+pub fnc mean(List<float> values): Result<float, String> {
+  let float count = 0.0;
+  let float average = 0.0;
+
+  for const value of values do
+    count = count + 1.0;
+    average = average + ((value - average) / count);
+  done
+
+  if count == 0.0; do
+    return Err("mean requires at least one value");
+  fi
+
+  return Ok(average);
+}
+
+pub fnc variance_population(
+  List<float> values
+): Result<float, String> {
+  let float count = 0.0;
+  let float average = 0.0;
+  let float m2 = 0.0;
+
+  for const value of values do
+    count = count + 1.0;
+    val float delta = value - average;
+    average = average + (delta / count);
+    val float delta2 = value - average;
+    m2 = m2 + (delta * delta2);
+  done
+
+  if count == 0.0; do
+    return Err("population variance requires at least one value");
+  fi
+
+  return Ok(m2 / count);
+}
+
+pub fnc variance_sample(
+  List<float> values
+): Result<float, String> {
+  let float count = 0.0;
+  let float average = 0.0;
+  let float m2 = 0.0;
+
+  for const value of values do
+    count = count + 1.0;
+    val float delta = value - average;
+    average = average + (delta / count);
+    val float delta2 = value - average;
+    m2 = m2 + (delta * delta2);
+  done
+
+  if count < 2.0; do
+    return Err("sample variance requires at least two values");
+  fi
+
+  return Ok(m2 / (count - 1.0));
+}
+
+pub fnc minimum(List<float> values): Result<float, String> {
+  let bool seen = false;
+  let float current = 0.0;
+
+  for const value of values do
+    if !seen; do
+      current = value;
+      seen = true;
+    else
+      if value < current; do
+        current = value;
+      fi
+    fi
+  done
+
+  if !seen; do
+    return Err("minimum requires at least one value");
+  fi
+
+  return Ok(current);
+}
+
+pub fnc maximum(List<float> values): Result<float, String> {
+  let bool seen = false;
+  let float current = 0.0;
+
+  for const value of values do
+    if !seen; do
+      current = value;
+      seen = true;
+    else
+      if value > current; do
+        current = value;
+      fi
+    fi
+  done
+
+  if !seen; do
+    return Err("maximum requires at least one value");
+  fi
+
+  return Ok(current);
+}

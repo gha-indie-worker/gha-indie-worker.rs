@@ -1,0 +1,48 @@
+name: Java BPE native exact-subtree
+on:
+  push:
+    branches: ["validation/java-bpe-native-20261027"]
+permissions:
+  contents: read
+jobs:
+  native-bpe:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Verify exact compiler and subject Git identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD:compiler/src/main)" = "989669aaa80d0f2285dd5ce7594d8fa9c04227fb"
+          test "$(git rev-parse HEAD:compiler/stdlib)" = "711c0751213039f6d047099aad9fa9e754eb8ce6"
+          test "$(git rev-parse HEAD:compiler/pom.xml)" = "8cf5eb37b685834ba79860d2fb693efc319c51e3"
+          test "$(git rev-parse HEAD:compiler/scripts/build-native-thread.sh)" = "d7d79b3af7aae08a5277fe63ca6b6047c0da9aa6"
+          test "$(git rev-parse HEAD:subject)" = "4d90040148149f157735d6ee5d10601550acc4af"
+          git diff --quiet --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          echo "COMPILER_MAIN_TREE=$(git rev-parse HEAD:compiler/src/main)"
+          echo "COMPILER_STDLIB_TREE=$(git rev-parse HEAD:compiler/stdlib)"
+          echo "SUBJECT_TREE=$(git rev-parse HEAD:subject)"
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Build exact Java compiler closure
+        working-directory: compiler
+        run: mvn -B -ntp -DskipTests package
+      - name: Check data-science suite
+        working-directory: compiler
+        run: mvn -B -ntp -DskipTests exec:java -Dexec.args="--check ../subject/tests/main.ores"
+      - name: Execute data-science suite
+        working-directory: compiler
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -DskipTests exec:java -Dexec.args="../subject/tests/main.ores" | tee /tmp/data-science-native.out
+          grep -F "ORES_TEST|SUMMARY|total=16|passed=16|failed=0|skipped=0|filtered=0" /tmp/data-science-native.out

@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "protocol": "oreslang-ecosystem-integration",
+  "repository": "ores-truffle-oreslang/oreslang-data-science",
+  "role": "library",
+  "upstreams": [
+    "oreslang-source.java"
+  ],
+  "evidence": "not-attested",
+  "note": "Declared integration touchpoints only; no CI or runtime parity is asserted."
+}

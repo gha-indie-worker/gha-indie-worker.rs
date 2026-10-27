@@ -1,0 +1,230 @@
+// Trusted-owner database pooling building blocks, written in Oreslang.
+// This module performs no SQL, networking, authentication or cross-actor sharing.
+// Only a trusted service actor may mutate a budget or session gate. These classes
+// are local accounting tools, NOT bearer capabilities or permission checks.
+define module db_pool as
+  pub define class PoolLimits as
+    pub val int max_connections;
+    pub val int max_requests;
+    pub val int max_queued_bytes;
+    pub val int max_request_bytes;
+    pub val int pipeline_depth;
+
+    pub constructor(
+      int max_connections,
+      int max_requests,
+      int max_queued_bytes,
+      int max_request_bytes,
+      int pipeline_depth
+    ) {
+      if max_connections < 1 || max_connections > 512 ||
+         max_requests < 1 || max_requests > 65536 ||
+         max_queued_bytes < 1 || max_queued_bytes > 1073741824 ||
+         max_request_bytes < 1 || max_request_bytes > max_queued_bytes ||
+         pipeline_depth < 1 || pipeline_depth > 256; do
+        rt fail("db_pool: invalid bounded pool limits");
+      fi
+      self.max_connections = max_connections;
+      self.max_requests = max_requests;
+      self.max_queued_bytes = max_queued_bytes;
+      self.max_request_bytes = max_request_bytes;
+      self.pipeline_depth = pipeline_depth;
+    }
+  end
+
+  pub fnc limits(
+    int connections, int requests, int queued_bytes,
+    int request_bytes, int pipeline_depth
+  ): PoolLimits {
+    return new PoolLimits(connections, requests, queued_bytes,
+                          request_bytes, pipeline_depth);
+  }
+
+  // Locally owned admission budget. The physical transport must keep an
+  // independent per-request receipt table and invoke release exactly once;
+  // caller-provided release byte counts must never be trusted.
+  pub define class AdmissionBudget as
+    let int max_requests;
+    let int max_bytes;
+    let int max_request_bytes;
+    let mut int used_requests = 0;
+    let mut int used_bytes = 0;
+
+    pub constructor(int max_requests, int max_bytes, int max_request_bytes) {
+      if max_requests < 1 || max_requests > 65536 ||
+         max_bytes < 1 || max_bytes > 1073741824 ||
+         max_request_bytes < 1 || max_request_bytes > max_bytes; do
+        rt fail("db_pool: invalid admission budget");
+      fi
+      self.max_requests = max_requests;
+      self.max_bytes = max_bytes;
+      self.max_request_bytes = max_request_bytes;
+    }
+
+    pub try_acquire(mut self)(int bytes): bool {
+      if bytes < 1 || bytes > self.max_request_bytes ||
+         self.used_requests >= self.max_requests ||
+         bytes > self.max_bytes - self.used_bytes; do
+        return false;
+      fi
+      self.used_requests = self.used_requests + 1;
+      self.used_bytes = self.used_bytes + bytes;
+      return true;
+    }
+
+    // Accounting only; call after verifying a runtime-owned receipt.
+    // A false return leaves all counters unchanged.
+    pub release(mut self)(int bytes): bool {
+      if self.used_requests < 1 || bytes < 1 || bytes > self.used_bytes; do
+        return false;
+      fi
+      self.used_requests = self.used_requests - 1;
+      self.used_bytes = self.used_bytes - bytes;
+      return true;
+    }
+
+    pub active(): int {
+      return self.used_requests;
+    }
+
+    pub bytes_in_flight(): int {
+      return self.used_bytes;
+    }
+
+    pub has_capacity(): bool {
+      return self.used_requests < self.max_requests &&
+             self.used_bytes < self.max_bytes;
+    }
+  end
+
+  pub fnc admission_budget(int max_requests, int max_bytes,
+                           int max_request_bytes): AdmissionBudget {
+    return new AdmissionBudget(max_requests, max_bytes, max_request_bytes);
+  }
+
+  // A physical ordered request-response protocol session has one trusted owner.
+  // This gate handles admission order independent of driver flavor; it does
+  // not implement PostgreSQL or Redis wire protocols, TLS or session cleanup.
+  // mode: 0=idle, 1=queries, 2=exclusive transaction, 3=quarantined.
+  // In-flight queries are ordered, not parallel PostgreSQL execution.
+  pub define class SessionGate as
+    let int depth;
+    let mut int mode = 0;
+    let mut int pending = 0;
+
+    pub constructor(int depth) {
+      if depth < 1 || depth > 256; do
+        rt fail("db_pool: pipeline depth outside 1..256");
+      fi
+      self.depth = depth;
+    }
+
+    pub begin_query(mut self)(): bool {
+      if self.mode == 2 || self.mode == 3 || self.pending >= self.depth; do
+        return false;
+      fi
+      self.mode = 1;
+      self.pending = self.pending + 1;
+      return true;
+    }
+
+    // Only call after a complete protocol result has been correlated.
+    // When synchronization is unknown, quarantine instead of reusing.
+    pub complete_query(mut self)(bool protocol_synced): bool {
+      if self.mode != 1 || self.pending < 1; do
+        return false;
+      fi
+      if !protocol_synced; do
+        self.mode = 3;
+        self.pending = 0;
+        return true;
+      fi
+      self.pending = self.pending - 1;
+      if self.pending == 0; do
+        self.mode = 0;
+      fi
+      return true;
+    }
+
+    pub begin_transaction(mut self)(): bool {
+      if self.mode != 0 || self.pending != 0; do
+        return false;
+      fi
+      self.mode = 2;
+      return true;
+    }
+
+    // clean=true requires verified COMMIT/ROLLBACK completion and session reset.
+    pub end_transaction(mut self)(bool clean): bool {
+      if self.mode != 2; do
+        return false;
+      fi
+      if clean; do
+        self.mode = 0;
+      else
+        self.mode = 3;
+      fi
+      return true;
+    }
+
+    pub quarantine(mut self)(): void {
+      self.mode = 3;
+      self.pending = 0;
+      return;
+    }
+
+    pub is_quarantined(): bool {
+      return self.mode == 3;
+    }
+
+    pub is_idle(): bool {
+      return self.mode == 0 && self.pending == 0;
+    }
+
+    pub pending_queries(): int {
+      return self.pending;
+    }
+  end
+
+  // Runtime-issued receipts must be tracked by a trusted single owner.
+  // This state machine prevents duplicate settlement and stale generations.
+  // IDs are metadata, never credentials or proof of authorization.
+  pub define class RequestReceipt as
+    pub val int generation;
+    pub val int request_id;
+    pub val int reserved_bytes;
+    let mut bool settled = false;
+
+    pub constructor(int generation, int request_id, int reserved_bytes) {
+      if generation < 1 || request_id < 1 ||
+         reserved_bytes < 1 || reserved_bytes > 1073741824; do
+        rt fail("db_pool: invalid request receipt");
+      fi
+      self.generation = generation;
+      self.request_id = request_id;
+      self.reserved_bytes = reserved_bytes;
+    }
+
+    pub settle(mut self)(int generation, int request_id): bool {
+      if self.settled || generation != self.generation ||
+         request_id != self.request_id; do
+        return false;
+      fi
+      self.settled = true;
+      return true;
+    }
+
+    pub is_settled(): bool {
+      return self.settled;
+    }
+  end
+
+  pub fnc request_receipt(int generation, int request_id,
+                          int reserved_bytes): RequestReceipt {
+    return new RequestReceipt(generation, request_id, reserved_bytes);
+  }
+
+  pub fnc session_gate(int depth): SessionGate {
+    return new SessionGate(depth);
+  }
+end

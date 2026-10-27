@@ -1,0 +1,26 @@
+import fnc mean, variance_sample from '../src/math/reductions';
+import fnc scale, normalize_l2 from '../src/math/vector';
+
+pub routine main(): void {
+  val List<float> values = arr[1.0, 2.0, 3.0, 4.0];
+  val List<float> doubled = scale(values, 2.0);
+
+  val Result<float, String> average = mean(doubled);
+  val Result<float, String> variance = variance_sample(doubled);
+
+  stdio.stdout.write("mean=");
+  stdio.stdout.println(average.expect("mean failed"));
+  stdio.stdout.write("sample_variance=");
+  stdio.stdout.println(variance.expect("variance failed"));
+
+  val Result<List<float>, String> unit_result = normalize_l2(doubled);
+  val List<float> unit = unit_result.expect("normalization failed");
+
+  stdio.stdout.write("unit=");
+  for const value of unit do
+    stdio.stdout.write(value);
+    stdio.stdout.write(" ");
+  done
+  stdio.stdout.println("");
+  return;
+}

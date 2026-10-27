@@ -1,0 +1,160 @@
+// Portable heterogeneous-compute value contracts.
+//
+// This module deliberately contains no Java interop, driver calls, device
+// discovery, implicit transfers, or scheduler operations. Opaque Device,
+// Buffer<T>, Fence, and KernelContext values are compiler/runtime authority and
+// MUST NOT be source-constructible. This source module owns portable immutable
+// descriptors that both Java/Graal and LLVM backends can validate identically.
+define module compute as
+
+  pub define class DeviceCapabilities as
+    pub val String backend;
+    pub val String name;
+    pub val int address_bits;
+    pub val int max_buffer_bytes;
+    pub val int max_workgroup_size;
+    pub val bool float32;
+    pub val bool unified_memory;
+  end
+
+  pub define class BufferLayout as
+    pub val int element_bytes;
+    pub val int length;
+    pub val int alignment;
+    pub val int byte_length;
+  end
+
+  pub define class DispatchShape as
+    pub val int global_x;
+    pub val int global_y;
+    pub val int global_z;
+    pub val int local_x;
+    pub val int local_y;
+    pub val int local_z;
+  end
+
+  pub define class KernelRequirements as
+    pub val int address_bits;
+    pub val int max_workgroup_size;
+    pub val bool needs_float32;
+    pub val bool requires_unified_memory;
+  end
+
+  pub fnc valid_device_capabilities(&DeviceCapabilities caps): bool {
+    if caps.backend == ""; do
+      return false;
+    fi
+    if caps.name == ""; do
+      return false;
+    fi
+    if caps.address_bits != 32 && caps.address_bits != 64; do
+      return false;
+    fi
+    if caps.max_buffer_bytes <= 0; do
+      return false;
+    fi
+    if caps.max_workgroup_size <= 0; do
+      return false;
+    fi
+    return true;
+  }
+
+  pub fnc valid_buffer_layout(&BufferLayout layout): bool {
+    if layout.element_bytes <= 0; do
+      return false;
+    fi
+    if layout.length < 0; do
+      return false;
+    fi
+    if layout.alignment <= 0; do
+      return false;
+    fi
+    if layout.byte_length < 0; do
+      return false;
+    fi
+
+    // Avoid unchecked multiplication here. The compiler/runtime ABI validates
+    // exact checked byte-size arithmetic before allocation or transfer.
+    if layout.length == 0; do
+      return layout.byte_length == 0;
+    fi
+    return layout.byte_length > 0;
+  }
+
+
+  // Stronger *portable* arithmetic preflight than valid_buffer_layout.
+  // Neither predicate grants allocation/transfer authority; the runtime must
+  // additionally verify device limits, alignment and real handle provenance.
+  // Branch on positive length before dividing. Prove the multiplication is
+  // representable in signed i64 before ever evaluating it.
+  pub fnc valid_exact_buffer_layout(&BufferLayout layout): bool {
+    if layout.element_bytes <= 0 || layout.length < 0; do
+      return false;
+    fi
+    if layout.alignment <= 0 || layout.byte_length < 0; do
+      return false;
+    fi
+    if layout.length == 0; do
+      return layout.byte_length == 0;
+    fi
+    if layout.element_bytes > 9223372036854775807 / layout.length; do
+      return false;
+    fi
+    return layout.byte_length == layout.element_bytes * layout.length;
+  }
+
+
+  pub fnc valid_dispatch(&DispatchShape shape): bool {
+    if shape.global_x <= 0 || shape.global_y <= 0 || shape.global_z <= 0; do
+      return false;
+    fi
+    if shape.local_x <= 0 || shape.local_y <= 0 || shape.local_z <= 0; do
+      return false;
+    fi
+    if shape.local_x > shape.global_x; do
+      return false;
+    fi
+    if shape.local_y > shape.global_y; do
+      return false;
+    fi
+    if shape.local_z > shape.global_z; do
+      return false;
+    fi
+    return true;
+  }
+
+  pub fnc device_satisfies(
+    &DeviceCapabilities caps,
+    &KernelRequirements requirements
+  ): bool {
+    if caps.backend == "" || caps.name == ""; do
+      return false;
+    fi
+    if caps.address_bits != 32 && caps.address_bits != 64; do
+      return false;
+    fi
+    if caps.max_buffer_bytes <= 0 || caps.max_workgroup_size <= 0; do
+      return false;
+    fi
+    if requirements.address_bits != 32 && requirements.address_bits != 64; do
+      return false;
+    fi
+    if caps.address_bits != requirements.address_bits; do
+      return false;
+    fi
+    if requirements.max_workgroup_size <= 0; do
+      return false;
+    fi
+    if requirements.max_workgroup_size > caps.max_workgroup_size; do
+      return false;
+    fi
+    if requirements.needs_float32 && !caps.float32; do
+      return false;
+    fi
+    if requirements.requires_unified_memory && !caps.unified_memory; do
+      return false;
+    fi
+    return true;
+  }
+
+end

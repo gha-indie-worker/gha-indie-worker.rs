@@ -1,0 +1,84 @@
+// HTTP/1.1 request-head grammar, written and executed entirely in Oreslang.
+// Strict *bodyless GET/HEAD proof of concept*, not a production HTTP stack.
+// Consumes an already-complete, externally byte-bounded CRLFCRLF-terminated
+// ASCII header block. Caller MUST enforce 8192-byte head limit and strict UTF-8
+// before decoding; eventually std/net will own the socket and byte parser.
+// Fail closed on any unrecognized header, framing, or protocol feature.
+define module http_wire as
+  pub define class RequestHead as
+    pub val String method;
+    pub val String target;
+    pub val String host;
+    pub val bool keep_alive;
+  end
+
+  pub fnc parse_head(String raw): Result<RequestHead, String> {
+    if !raw.ends_with("\r\n\r\n"); do
+      return Err("incomplete HTTP request head");
+    fi
+    // An embedded bare CR or LF is never valid, even if CRLFCRLF is present.
+    val lines = raw.split_literal("\r\n");
+    if lines.size < 4 || lines.size > 8; do
+      return Err("header count out of bounds");
+    fi
+    if lines.get(lines.size - 1) != "" || lines.get(lines.size - 2) != ""; do
+      return Err("invalid HTTP header terminator");
+    fi
+
+    val request_parts = lines.get(0).split_literal(" ");
+    if request_parts.size != 3; do
+      return Err("invalid request line");
+    fi
+    val String method = request_parts.get(0);
+    val String target = request_parts.get(1);
+    val String version = request_parts.get(2);
+    if !(method == "GET" || method == "HEAD"); do
+      return Err("method unsupported by bodyless bootstrap parser");
+    fi
+    if version != "HTTP/1.1"; do
+      return Err("only HTTP/1.1 is supported");
+    fi
+    if !target.starts_with("/") || target.starts_with("//") || target.contains_literal("#") ||
+       target.contains_literal("\r") || target.contains_literal("\n") || target.contains_literal("\t"); do
+      return Err("invalid origin-form target");
+    fi
+
+    let String host = "";
+    let bool keep_alive = true;
+    let bool connection_seen = false;
+
+    for (let int i = 1; i < lines.size - 2; i = i + 1) {
+      val String line = lines.get(i);
+      if line == "" || line.contains_literal("\r") || line.contains_literal("\n") ||
+         line.contains_literal("\t") || line.contains_literal("\u0000"); do
+        return Err("invalid HTTP header line");
+      fi
+      if line.starts_with("Host: "); do
+        if host != ""; do
+          return Err("duplicate Host");
+        fi
+        val parts = line.split_literal(" ");
+        if parts.size != 2 || parts.get(1) == "" || parts.get(1).contains_literal("/") ||
+           parts.get(1).contains_literal("@") || parts.get(1).contains_literal("\\"); do
+          return Err("invalid Host");
+        fi
+        host = parts.get(1);
+      elif line == "Connection: close"; do
+        if connection_seen; do return Err("duplicate Connection"); fi
+        connection_seen = true;
+        keep_alive = false;
+      elif line == "Connection: keep-alive"; do
+        if connection_seen; do return Err("duplicate Connection"); fi
+        connection_seen = true;
+      else
+        // Reject all framing headers and unknown/case variants. This is a
+        // deliberately narrow bootstrap dialect, not a general HTTP parser.
+        return Err("unsupported request header");
+      fi
+    }
+    if host == ""; do
+      return Err("Host required");
+    fi
+    return Ok(new RequestHead(method, target, host, keep_alive));
+  }
+end

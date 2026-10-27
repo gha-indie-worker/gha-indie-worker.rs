@@ -1,0 +1,38 @@
+// Compiler-owned ores.core source.
+// This module has no OS, Java, filesystem, network, process, actor-scheduler,
+// or ambient project dependency.
+
+define module numeric as
+
+  pub fnc min_int(int left, int right): int {
+    if left < right; do
+      return left;
+    else
+      return right;
+    fi
+  }
+
+  pub fnc max_int(int left, int right): int {
+    if left > right; do
+      return left;
+    else
+      return right;
+    fi
+  }
+
+  pub fnc clamp_int(int value, int lower, int upper): int {
+    if lower > upper; do
+      return lower;
+    fi
+    if value < lower; do
+      return lower;
+    else
+      if value > upper; do
+        return upper;
+      else
+        return value;
+      fi
+    fi
+  }
+
+end

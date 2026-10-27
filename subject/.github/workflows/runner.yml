@@ -1,0 +1,30 @@
+name: Test runner contracts
+on:
+  push:
+    branches: [main, "hardening/**"]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  runner-contracts:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Check shell syntax
+        run: |
+          while IFS= read -r -d '' script; do
+            bash -n "$script"
+          done < <(find scripts -type f -name '*.sh' -print0)
+      - name: Verify runner failure and invocation contracts
+        run: bash scripts/test-runner.sh
+      - name: Verify byte-level BPE reference semantics
+        run: |
+          rustc --edition=2021 --test tests/bpe_reference.rs -o "$RUNNER_TEMP/bpe-reference"
+          "$RUNNER_TEMP/bpe-reference"

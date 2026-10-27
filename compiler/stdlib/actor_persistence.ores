@@ -1,0 +1,174 @@
+// Versioned actor snapshot coordination; no SQL and no remote I/O.
+// The actor must copy/freeze its state under its verified critical state loan,
+// release that loan, and then persist asynchronously. Only verified storage
+// acknowledgments may advance the durable watermark.
+define module actor_persistence as
+  // Values are metadata only: NOT identity or authorization capabilities.
+  // Storage and supervision must authenticate actor ownership separately.
+  pub define class WritePlan as
+    pub val String actor_id;
+    pub val int generation;
+    pub val int expected_version;
+    pub val int target_version;
+    pub val int payload_bytes;
+    pub val String operation_id;
+
+    pub constructor(String actor_id, int generation, int expected_version,
+                    int target_version, int payload_bytes, String operation_id) {
+      if actor_id == "" || operation_id == "" ||
+         generation < 1 || expected_version < 0 ||
+         target_version <= expected_version ||
+         payload_bytes < 1 || payload_bytes > 1073741824; do
+        rt fail("actor_persistence: invalid write plan");
+      fi
+      self.actor_id = actor_id;
+      self.generation = generation;
+      self.expected_version = expected_version;
+      self.target_version = target_version;
+      self.payload_bytes = payload_bytes;
+      self.operation_id = operation_id;
+    }
+  end
+
+  pub fnc plan(String actor_id, int generation, int expected_version,
+               int target_version, int payload_bytes,
+               String operation_id): WritePlan {
+    return new WritePlan(actor_id, generation, expected_version,
+                         target_version, payload_bytes, operation_id);
+  }
+
+  // One Cursor per actor incarnation; never transport or share this mutable
+  // object across actor boundaries. A new supervisor generation needs a new
+  // Cursor after separately verified durable-state recovery and fencing.
+  pub define class Cursor as
+    let int generation;
+    let mut int local_version;
+    let mut int durable_version;
+    let mut int in_flight_version = 0;
+
+    pub constructor(int generation, int restored_version) {
+      if generation < 1 || restored_version < 0 ||
+         restored_version >= 2147483647; do
+        rt fail("actor_persistence: invalid cursor incarnation");
+      fi
+      self.generation = generation;
+      self.local_version = restored_version;
+      self.durable_version = restored_version;
+    }
+
+    pub mark_changed(mut self)(): int {
+      if self.local_version >= 2147483647; do
+        rt fail("actor_persistence: revision overflow");
+      fi
+      self.local_version = self.local_version + 1;
+      return self.local_version;
+    }
+
+    // 0 means no flush needed/one already in progress.
+    // Coalesced snapshots may jump over intermediate local revisions.
+    pub begin_flush(mut self)(): int {
+      if self.in_flight_version != 0 ||
+         self.local_version <= self.durable_version; do
+        return 0;
+      fi
+      self.in_flight_version = self.local_version;
+      return self.in_flight_version;
+    }
+
+    // Storage receipt must have been authenticated and tied to the current
+    // actor generation, write plan and operation ID by the trusted adapter.
+    pub ack(mut self)(int generation, int version): bool {
+      if generation != self.generation || version == 0 ||
+         version != self.in_flight_version ||
+         version <= self.durable_version; do
+        return false;
+      fi
+      self.durable_version = version;
+      self.in_flight_version = 0;
+      return true;
+    }
+
+    // Unknown commit outcome is NOT a simple failure. Only call retry()
+    // after the storage adapter resolves outcome using an idempotency key or
+    // reconstructs durable state. Otherwise keep this flush outstanding.
+    pub retry(mut self)(int generation, int version): bool {
+      if generation != self.generation || version == 0 ||
+         version != self.in_flight_version; do
+        return false;
+      fi
+      self.in_flight_version = 0;
+      return true;
+    }
+
+    pub dirty(): bool {
+      return self.local_version > self.durable_version;
+    }
+
+    pub version(): int {
+      return self.local_version;
+    }
+
+    pub durable(): int {
+      return self.durable_version;
+    }
+
+    pub outstanding(): int {
+      return self.in_flight_version;
+    }
+
+    pub incarnation(): int {
+      return self.generation;
+    }
+  end
+
+  pub fnc cursor(int generation, int restored_version): Cursor {
+    return new Cursor(generation, restored_version);
+  }
+  // Non-durable replica progress for supervisor mirrors and caches.
+  // This watermark MUST NOT be confused with Cursor.durable().
+  // Full snapshots can skip versions; ordered deltas cannot.
+  pub define class ReplicaCursor as
+    let int generation;
+    let mut int applied_version;
+
+    pub constructor(int generation, int restored_version) {
+      if generation < 1 || restored_version < 0 ||
+         restored_version >= 2147483647; do
+        rt fail("actor_persistence: invalid replica incarnation");
+      fi
+      self.generation = generation;
+      self.applied_version = restored_version;
+    }
+
+    pub apply_snapshot(mut self)(int generation, int version): bool {
+      if generation != self.generation ||
+         version <= self.applied_version; do
+        return false;
+      fi
+      self.applied_version = version;
+      return true;
+    }
+
+    pub apply_delta(mut self)(int generation, int version): bool {
+      if generation != self.generation ||
+         self.applied_version >= 2147483647 ||
+         version != self.applied_version + 1; do
+        return false;
+      fi
+      self.applied_version = version;
+      return true;
+    }
+
+    pub applied(): int {
+      return self.applied_version;
+    }
+
+    pub incarnation(): int {
+      return self.generation;
+    }
+  end
+
+  pub fnc replica_cursor(int generation, int restored_version): ReplicaCursor {
+    return new ReplicaCursor(generation, restored_version);
+  }
+end

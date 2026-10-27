@@ -1,0 +1,167 @@
+// Driver-neutral source-level pooling POLICY, not a database driver.
+// Trusted pool actors own these objects; metadata is not an authorization grant.
+// Actual sockets, secrets, protocol parsing, retries and request receipts must
+// remain inside verified runtime/driver services.
+define module data_pool as
+
+  // Capability descriptions are supplied by the TRUSTED adapter, not clients.
+  // A connection can pipeline ordered commands without executing them in
+  // parallel. Only an adapter can decide whether a request is replay-safe.
+  pub define class DriverCapabilities as
+    pub val bool transactions;
+    pub val bool pipelining;
+    pub val bool ordered_multiplexing;
+    pub val bool blocking_operations;
+    pub val bool subscriptions;
+    pub val bool topology_routing;
+
+    pub constructor(bool transactions, bool pipelining,
+                    bool ordered_multiplexing, bool blocking_operations,
+                    bool subscriptions, bool topology_routing) {
+      self.transactions = transactions;
+      self.pipelining = pipelining;
+      self.ordered_multiplexing = ordered_multiplexing;
+      self.blocking_operations = blocking_operations;
+      self.subscriptions = subscriptions;
+      self.topology_routing = topology_routing;
+    }
+
+    // Lanes: 1=ordinary, 2=exclusive transaction, 3=blocking,
+    // 4=subscription, 5=control. No implicit permission to run SQL/commands.
+    // Transactions, blocking operations and push subscriptions use a
+    // dedicated connection path, never the ordinary multiplexed pipeline.
+    pub fnc can_serve(int lane, bool wants_pipeline): bool {
+      if lane < 1 || lane > 5; do
+        return false;
+      fi
+      if wants_pipeline && (!self.pipelining || lane != 1); do
+        return false;
+      fi
+      if lane == 2 && !self.transactions; do
+        return false;
+      fi
+      if lane == 3 && !self.blocking_operations; do
+        return false;
+      fi
+      if lane == 4 && !self.subscriptions; do
+        return false;
+      fi
+      return true;
+    }
+
+    pub fnc can_share_connection(int lane): bool {
+      return lane == 1 && self.ordered_multiplexing;
+    }
+  end
+
+  pub fnc driver_capabilities(bool transactions, bool pipelining,
+                              bool ordered_multiplexing, bool blocking_operations,
+                              bool subscriptions, bool topology_routing
+  ): DriverCapabilities {
+    return new DriverCapabilities(transactions, pipelining,
+                                  ordered_multiplexing, blocking_operations,
+                                  subscriptions, topology_routing);
+  }
+
+  // This is partition *metadata* only. Trusted bootstrap supplies stable
+  // IDs; a caller cannot mint authority by constructing this class.
+  // A real pool must isolate different credentials, TLS/ACL policies,
+  // tenant scopes, selected logical DB/protocol modes and workload lanes.
+  pub define class PoolPartition as
+    pub val String driver_id;
+    pub val String endpoint_group;
+    pub val String authority_scope_id;
+    pub val String tenant_scope_id;
+    pub val String security_profile_id;
+    pub val String protocol_scope_id;
+    pub val int lane;
+
+    pub constructor(String driver_id, String endpoint_group,
+                    String authority_scope_id, String tenant_scope_id,
+                    String security_profile_id, String protocol_scope_id,
+                    int lane) {
+      if driver_id == "" || endpoint_group == "" ||
+         authority_scope_id == "" || tenant_scope_id == "" ||
+         security_profile_id == "" || protocol_scope_id == "" ||
+         lane < 1 || lane > 5; do
+        rt fail("data_pool: invalid pool partition metadata");
+      fi
+      self.driver_id = driver_id;
+      self.endpoint_group = endpoint_group;
+      self.authority_scope_id = authority_scope_id;
+      self.tenant_scope_id = tenant_scope_id;
+      self.security_profile_id = security_profile_id;
+      self.protocol_scope_id = protocol_scope_id;
+      self.lane = lane;
+    }
+  end
+
+  pub fnc partition(String driver_id, String endpoint_group,
+                    String authority_scope_id, String tenant_scope_id,
+                    String security_profile_id, String protocol_scope_id,
+                    int lane): PoolPartition {
+    return new PoolPartition(driver_id, endpoint_group,
+                             authority_scope_id, tenant_scope_id,
+                             security_profile_id, protocol_scope_id, lane);
+  }
+
+  // Failure classification comes only from the trusted driver: known
+  // uncommitted means the previous *whole* operation definitely did not
+  // commit. False/unknown never triggers transparent replay.
+  // Replay-safe also requires no external side effects in the operation.
+  pub define class RetryPolicy as
+    pub val int max_attempts;
+    pub val int base_delay_ms;
+    pub val int max_delay_ms;
+
+    pub constructor(int max_attempts, int base_delay_ms, int max_delay_ms) {
+      if max_attempts < 1 || max_attempts > 16 ||
+         base_delay_ms < 1 || base_delay_ms > 60000 ||
+         max_delay_ms < base_delay_ms || max_delay_ms > 120000; do
+        rt fail("data_pool: invalid retry policy");
+      fi
+      self.max_attempts = max_attempts;
+      self.base_delay_ms = base_delay_ms;
+      self.max_delay_ms = max_delay_ms;
+    }
+
+    pub fnc may_retry(int completed_attempt, bool known_uncommitted,
+                      bool whole_operation_replay_safe): bool {
+      if completed_attempt < 1 || completed_attempt >= self.max_attempts; do
+        return false;
+      fi
+      return known_uncommitted && whole_operation_replay_safe;
+    }
+
+    // Deterministic ceiling. Trusted retry coordinator applies jitter
+    // and deadline checks externally, not in the connection hot path.
+    // -1: retry budget exhausted or attempt number is invalid.
+    pub fnc backoff_ms(int completed_attempt): int {
+      if completed_attempt < 1 || completed_attempt >= self.max_attempts; do
+        return -1;
+      fi
+      let int delay = self.base_delay_ms;
+      for (let int i = 1; i < completed_attempt; i = i + 1) {
+        if delay >= self.max_delay_ms - delay; do
+          return self.max_delay_ms;
+        fi
+        delay = delay + delay;
+      }
+      return delay;
+    }
+  end
+
+  pub fnc retry_policy(int max_attempts, int base_delay_ms,
+                       int max_delay_ms): RetryPolicy {
+    return new RetryPolicy(max_attempts, base_delay_ms, max_delay_ms);
+  }
+
+  // Trusted router supplies stable nonnegative affinity hash, NOT callers.
+  // This is pool-shard affinity, not Redis Cluster's CRC16 slot algorithm.
+  pub fnc shard_for(int nonnegative_hash, int shard_count): int {
+    if nonnegative_hash < 0 || shard_count < 1 || shard_count > 512; do
+      return -1;
+    fi
+    return nonnegative_hash % shard_count;
+  }
+end

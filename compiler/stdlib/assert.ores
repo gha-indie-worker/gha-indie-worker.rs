@@ -1,0 +1,65 @@
+// Core assertion predicates and ordinary, trappable assertion failures.
+// eq uses language value equality; is uses language identity equality.
+define module Assert as
+
+  pub fnc equal(Any a, Any b): bool {
+    return a eq b;
+  }
+
+  pub fnc equal_throws(Any a, Any b): bool {
+    if !(a eq b); do
+      rt fail("Assert.equal: values are not equal");
+    fi
+    return true;
+  }
+
+  pub fnc not_equal(Any a, Any b): bool {
+    return a neq b;
+  }
+
+  pub fnc not_equal_throws(Any a, Any b): bool {
+    if !(a neq b); do
+      rt fail("Assert.not_equal: values are equal");
+    fi
+    return true;
+  }
+
+  pub fnc same(Any a, Any b): bool {
+    return a is b;
+  }
+
+  pub fnc same_throws(Any a, Any b): bool {
+    if !(a is b); do
+      rt fail("Assert.same: values do not have the same identity");
+    fi
+    return true;
+  }
+
+  pub fnc true(bool actual): bool {
+    return actual;
+  }
+
+  pub fnc true_throws(bool actual): bool {
+    if !(actual); do
+      rt fail("Assert.true: expected true");
+    fi
+    return true;
+  }
+
+  pub fnc false(bool actual): bool {
+    return !actual;
+  }
+
+  pub fnc false_throws(bool actual): bool {
+    if !(!actual); do
+      rt fail("Assert.false: expected false");
+    fi
+    return true;
+  }
+
+  pub fnc fail(String message): void {
+    rt fail(message);
+    return;
+  }
+
+end
