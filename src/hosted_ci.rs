@@ -461,6 +461,4 @@ mod oreslang_inverted_index_contract {
         assert_eq!(write_receiver_count, 1);
         assert_eq!(write_index_count, 1);
         assert_eq!(write_order, vec!["value", "receiver", "index"]);
-    }
-
-}
+    }}
