@@ -33,12 +33,8 @@ mod tests {
         };
         assert!(!compatible(&wrong_order, &expected));
 
-        let record_expected_fields = [
-            ("sample", "record(ok:bool@0,x:f64@1)/9"),
-        ];
-        let record_wrong_fields = [
-            ("sample", "record(ok:bool@0,x:i64@1)/9"),
-        ];
+        let record_expected_fields = [("sample", "record(ok:bool@0,x:f64@1)/9")];
+        let record_wrong_fields = [("sample", "record(ok:bool@0,x:i64@1)/9")];
         let record_expected = Schema {
             name: "Particle",
             fields: &record_expected_fields,
