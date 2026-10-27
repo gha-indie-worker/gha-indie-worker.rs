@@ -257,3 +257,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "sourcefree_inverted_schema.rs"]
+mod sourcefree_inverted_schema;
