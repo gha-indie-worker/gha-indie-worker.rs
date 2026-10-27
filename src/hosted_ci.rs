@@ -488,9 +488,13 @@ mod oreslang_inverted_index_contract {
     #[test]
     fn nominal_row_identity_must_match_runtime_array_schema() {
         #[derive(Clone, Copy)]
-        struct Plan { row_class: u64 }
+        struct Plan {
+            row_class: u64,
+        }
         #[derive(Clone, Copy)]
-        struct Array { row_class: u64 }
+        struct Array {
+            row_class: u64,
+        }
 
         fn bind(plan: Plan, array: Array) -> Result<(), &'static str> {
             if plan.row_class != array.row_class {
