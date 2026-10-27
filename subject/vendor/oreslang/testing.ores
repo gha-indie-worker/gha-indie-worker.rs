@@ -222,7 +222,7 @@ pub fnc run_suite(&TestSuite suite, &TestOptions options): RunSummary {
           skipped_count,
           filtered_count
         );
-        emit_summary(&early, machine);
+        emit_summary(rt borrow early, machine);
         return early;
       fi
     fi
@@ -235,7 +235,7 @@ pub fnc run_suite(&TestSuite suite, &TestOptions options): RunSummary {
     skipped_count,
     filtered_count
   );
-  emit_summary(&summary, machine);
+  emit_summary(rt borrow summary, machine);
   return summary;
 }
 
