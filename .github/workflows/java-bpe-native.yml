@@ -36,6 +36,26 @@ jobs:
       - name: Build exact Java compiler closure
         working-directory: compiler
         run: mvn -B -ntp -DskipTests package
+      - name: Diagnose data-science ownership by module
+        working-directory: compiler
+        shell: bash
+        run: |
+          set +e
+          for file in \
+            ../subject/src/math/reductions.ores \
+            ../subject/src/math/vector.ores \
+            ../subject/src/math/matrix.ores \
+            ../subject/src/data/columnar.ores \
+            ../subject/src/dop/soa.ores \
+            ../subject/src/nlp/bpe.ores \
+            ../subject/vendor/oreslang/testing.ores \
+            ../subject/tests/main.ores
+          do
+            echo "=== CHECK $file ==="
+            mvn -q -DskipTests exec:java -Dexec.args="--check $file"
+            echo "=== STATUS $? $file ==="
+          done
+          exit 0
       - name: Check data-science suite
         working-directory: compiler
         run: mvn -B -ntp -DskipTests exec:java -Dexec.args="--check ../subject/tests/main.ores"
