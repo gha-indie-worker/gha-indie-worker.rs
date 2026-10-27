@@ -73,34 +73,44 @@ jobs:
           expected='${{ github.event.pull_request.head.sha || github.sha }}'
           test "$(git rev-parse HEAD)" = "$expected"
           git diff --check
-          python3 - <<'PY'
-          from pathlib import Path
-          source = Path('src/hosted_ci.rs').read_text(encoding='utf-8')
-          main = Path('src/main.rs').read_text(encoding='utf-8')
-          workflow = Path('.github/workflows/hosted-ci-classifier.yml').read_text(encoding='utf-8')
 
-          required = (
-              'ZeroStepRunnerAdmissionFailure',
-              'ZeroStepUnknown',
-              'RunnerAdmissionHint',
-              'self.step_count.unwrap_or(0) > 0',
-              'self.admission_hint.is_some()',
-              'zero_step_success_is_not_accepted_as_green',
-              'stepful_failure_stays_source_failure_even_with_admission_hint',
-          )
-          for token in required:
-              assert token in source, token
+          for required in \
+            ZeroStepRunnerAdmissionFailure \
+            ZeroStepUnknown \
+            RunnerAdmissionHint \
+            'self.step_count.unwrap_or(0) > 0' \
+            'self.admission_hint.is_some()' \
+            zero_step_success_is_not_accepted_as_green \
+            stepful_failure_stays_source_failure_even_with_admission_hint
+          do
+            grep -F -- "$required" src/hosted_ci.rs >/dev/null
+          done
 
-          for forbidden in (
-              'std::fs', 'std::process', 'Command::', 'reqwest', 'octocrab',
-              'unsafe {', 'contains("billing")', 'contains("quota")',
-          ):
-              assert forbidden not in source, forbidden
+          for forbidden in \
+            'std::fs' \
+            'std::process' \
+            'Command::' \
+            reqwest \
+            octocrab \
+            'unsafe {' \
+            'contains("billing")' \
+            'contains("quota")'
+          do
+            if grep -F -- "$forbidden" src/hosted_ci.rs >/dev/null; then
+              echo "forbidden classifier dependency or heuristic: $forbidden" >&2
+              exit 1
+            fi
+          done
 
-          assert 'mod hosted_ci;' in main
-          for job in ('  rust:\n', '  provenance:\n', '  gitleaks:\n'):
-              assert job in workflow, job
-          PY
+          grep -F 'mod hosted_ci;' src/main.rs >/dev/null
+          grep -F '  rust:' .github/workflows/hosted-ci-classifier.yml >/dev/null
+          grep -F '  provenance:' .github/workflows/hosted-ci-classifier.yml >/dev/null
+          grep -F '  gitleaks:' .github/workflows/hosted-ci-classifier.yml >/dev/null
+          interpreter="$(printf '%s%s' 'py' 'thon')"
+          if grep -REn "(^|[^[:alnum:]_])(${interpreter}|${interpreter}3)([^[:alnum:]_]|$)" .github/workflows/hosted-ci-classifier.yml; then
+            echo 'forbidden scripting interpreter in durable fleet validation workflow' >&2
+            exit 1
+          fi
           sha256sum src/hosted_ci.rs src/main.rs .github/workflows/hosted-ci-classifier.yml
 
   gitleaks:

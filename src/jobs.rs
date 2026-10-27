@@ -488,7 +488,9 @@ pub(crate) async fn run_job(state: AppState, id: String) {
             // per-command timeout inside the executors.
             let deadline = state.config.job_deadline;
             let execution = async {
-                if request_job_kind(&job.request) == "run-profile" {
+                if job.executor == "scintilla" {
+                    crate::scintilla_exec::execute(&state, &job, Path::new(&job.log_path)).await
+                } else if request_job_kind(&job.request) == "run-profile" {
                     execute_profile(&state, &job).await
                 } else if job.executor == "lambda" {
                     lambda_exec::execute(&state, &job, Path::new(&job.log_path)).await
@@ -633,7 +635,7 @@ pub(crate) async fn enqueue_build(
     let executor = request
         .executor
         .clone()
-        .unwrap_or_else(|| "local".to_string());
+        .unwrap_or_else(|| state.config.default_executor.clone());
     let counter = state.counters.submitted.fetch_add(1, Ordering::Relaxed) + 1;
     let id = job_id(counter);
     let job_dir = state.config.work_root.join(&id);
@@ -774,6 +776,12 @@ mod idempotency_tests {
             lambda_url: "http://127.0.0.1:1/unused".to_string(),
             lambda_function_id: None,
             lambda_auth_secret: None,
+            local_executor_enabled: true,
+            default_executor: "local".to_string(),
+            scintilla_executor_enabled: false,
+            scintilla_api_url: "http://127.0.0.1:1/unused".to_string(),
+            scintilla_function_id: None,
+            scintilla_auth_token: None,
         }
     }
 

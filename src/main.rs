@@ -24,6 +24,7 @@ mod hosted_ci;
 mod http;
 mod jobs;
 mod lambda_exec;
+mod scintilla_exec;
 mod nats_submit;
 mod profiles;
 mod state;

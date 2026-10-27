@@ -18,8 +18,9 @@ pub(crate) struct BuildRequest {
     pub(crate) build_args: Option<BTreeMap<String, String>>,
     pub(crate) push: Option<bool>,
     pub(crate) deploy: Option<DeployRequest>,
-    /// "local" (default: git + nerdctl + kubectl on this node) or "lambda"
-    /// (forward to the gleam-lambda-runner build function).
+    /// "local" (git + nerdctl + kubectl on this node), "lambda"
+    /// (gleam-lambda-runner), or "scintilla" (authenticated Scintilla function).
+    /// If omitted, BUILD_SERVER_DEFAULT_EXECUTOR is used.
     pub(crate) executor: Option<String>,
     /// Caller-supplied idempotency id for at-least-once transports
     /// (NATS/webhooks); duplicate ids are accepted-and-ignored.

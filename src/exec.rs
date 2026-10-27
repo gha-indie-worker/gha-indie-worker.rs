@@ -248,12 +248,32 @@ pub(crate) async fn run_logged_command_inner(
 }
 
 pub(crate) fn build_dependencies_ready(config: &Config) -> bool {
-    config.server_auth_secret.is_some()
-        && config.work_root.exists()
-        && executable_available(&config.git_bin)
-        && executable_available(&config.nerdctl_bin)
-        && executable_available(&config.tar_bin)
-        && (!config.deploy_enabled || executable_available(&config.kubectl_bin))
+    if config.server_auth_secret.is_none() || !config.work_root.exists() {
+        return false;
+    }
+
+    match config.default_executor.as_str() {
+        "local" => {
+            config.local_executor_enabled
+                && executable_available(&config.git_bin)
+                && executable_available(&config.nerdctl_bin)
+                && executable_available(&config.tar_bin)
+                && (!config.deploy_enabled || executable_available(&config.kubectl_bin))
+        }
+        "lambda" => {
+            config.lambda_executor_enabled
+                && config.lambda_function_id.is_some()
+                && (config.lambda_auth_secret.is_some() || config.server_auth_secret.is_some())
+        }
+        "scintilla" => {
+            config.scintilla_executor_enabled
+                && config.scintilla_function_id.is_some()
+                && config.scintilla_auth_token.is_some()
+                && crate::scintilla_exec::validate_scintilla_api_url(&config.scintilla_api_url)
+                    .is_ok()
+        }
+        _ => false,
+    }
 }
 
 pub(crate) fn executable_available(value: &str) -> bool {

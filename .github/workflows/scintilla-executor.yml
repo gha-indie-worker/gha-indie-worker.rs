@@ -1,0 +1,65 @@
+name: Scintilla executor contract
+
+on:
+  pull_request:
+    paths:
+      - 'src/config.rs'
+      - 'src/exec.rs'
+      - 'src/http.rs'
+      - 'src/jobs.rs'
+      - 'src/main.rs'
+      - 'src/scintilla_exec.rs'
+      - 'src/types.rs'
+      - 'src/validation.rs'
+      - '.github/workflows/scintilla-executor.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scintilla-executor-contract-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Assert exact head and clean diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected='${{ github.event.pull_request.head.sha || github.sha }}'
+          test "$(git rev-parse HEAD)" = "$expected"
+          git diff --check
+
+      - name: Scintilla execution boundary assertions
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f src/scintilla_exec.rs
+          grep -F '.no_proxy()' src/scintilla_exec.rs
+          grep -F 'Policy::none()' src/scintilla_exec.rs
+          grep -F 'MAX_RESPONSE_BYTES' src/scintilla_exec.rs
+          grep -F 'BUILD_SERVER_SCINTILLA_AUTH_TOKEN' src/scintilla_exec.rs
+          grep -F 'reuseWorkspace' src/scintilla_exec.rs
+          grep -F 'fencingToken' src/scintilla_exec.rs
+          grep -F 'ephemeral' src/scintilla_exec.rs
+          ! grep -REn 'Command::|/bin/sh|bash -c|sh -c' src/scintilla_exec.rs
+
+      - name: Assert extracted-repository build boundary is explicit
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F 'path = "../../libs/telemetry-rs"' Cargo.toml
+          grep -F 'path = "../../libs/nats/subject-defs/generated/rust"' Cargo.toml
+          grep -F 'path = "../../libs/runtime-config-client-rs"' Cargo.toml
+          echo 'Full locked Cargo build/test/clippy certification runs in gha-indie-worker-infra with the exact pinned shared-libs gitlink.'
