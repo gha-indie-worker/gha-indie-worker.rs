@@ -374,10 +374,7 @@ mod oreslang_inverted_alias_provenance_contract {
 
     #[test]
     fn alias_cycles_fail_closed_in_both_escape_and_receiver_proofs() {
-        let aliases = HashMap::from([
-            ("A", Ty::Named("B")),
-            ("B", Ty::Named("A")),
-        ]);
+        let aliases = HashMap::from([("A", Ty::Named("B")), ("B", Ty::Named("A"))]);
 
         assert_eq!(
             contains_inverted(&Ty::Named("A"), &aliases, &mut HashSet::new()),
