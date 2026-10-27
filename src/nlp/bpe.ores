@@ -36,6 +36,11 @@ fnc count_merges(List<BpeMerge> merges): int {
   return count;
 }
 
+// A byte-level BPE vocabulary must be unambiguous and rank-ordered.
+//
+// Every composite token id has exactly one producer. If a merge consumes a
+// composite token, that producer must have a strictly lower rank so the
+// dependency already exists before the consumer can become eligible.
 fnc validate_merge_table(List<BpeMerge> merges): Result<bool, String> {
   val int merge_count = count_merges(merges);
 
@@ -67,7 +72,53 @@ fnc validate_merge_table(List<BpeMerge> merges): Result<bool, String> {
       if current.rank == other.rank; do
         return Err("BPE merge table contains a duplicate rank");
       fi
+
+      if current.result_token == other.result_token; do
+        return Err("BPE merge table contains a duplicate result token");
+      fi
     done
+  done
+
+  for int i = 0; i < merge_count; i++ do
+    val BpeMerge current = merges[i];
+
+    if current.left_token >= 256; do
+      let bool producer_found = false;
+      let int producer_rank = 0;
+
+      for const producer of merges do
+        if producer.result_token == current.left_token; do
+          producer_found = true;
+          producer_rank = producer.rank;
+        fi
+      done
+
+      if !producer_found; do
+        return Err("BPE left composite token has no producer");
+      fi
+      if producer_rank >= current.rank; do
+        return Err("BPE left composite token must be produced at a lower rank");
+      fi
+    fi
+
+    if current.right_token >= 256; do
+      let bool producer_found = false;
+      let int producer_rank = 0;
+
+      for const producer of merges do
+        if producer.result_token == current.right_token; do
+          producer_found = true;
+          producer_rank = producer.rank;
+        fi
+      done
+
+      if !producer_found; do
+        return Err("BPE right composite token has no producer");
+      fi
+      if producer_rank >= current.rank; do
+        return Err("BPE right composite token must be produced at a lower rank");
+      fi
+    fi
   done
 
   return Ok(true);
@@ -78,6 +129,11 @@ fnc validate_merge_table(List<BpeMerge> merges): Result<bool, String> {
 // The first encoding.count entries in each output buffer are valid. The
 // caller may reuse the same buffers for later calls. All span offsets are
 // half-open [start, end) byte offsets into utf8_bytes.
+//
+// Validation is transactional with respect to caller-owned output buffers:
+// malformed input or an invalid merge table returns Err before any output
+// element is changed. Mutable output buffers must be distinct; compiler/runtime
+// alias checks should reject overlapping mutable arguments.
 pub fnc encode_utf8_bytes_into(
   List<int> utf8_bytes,
   List<BpeMerge> merges,
@@ -105,17 +161,18 @@ pub fnc encode_utf8_bytes_into(
     return Err("invalid BPE merge table");
   fi
 
-  for int i = 0; i < byte_count; i++ do
-    val int byte_value = utf8_bytes[i];
-
+  // Validate the complete input before touching caller-owned output buffers.
+  for const byte_value of utf8_bytes do
     if byte_value < 0; do
       return Err("BPE input contains a negative byte");
     fi
     if byte_value > 255; do
       return Err("BPE input contains a value larger than one byte");
     fi
+  done
 
-    token_ids[i] = byte_value;
+  for int i = 0; i < byte_count; i++ do
+    token_ids[i] = utf8_bytes[i];
     byte_starts[i] = i;
     byte_ends[i] = i + 1;
   done
