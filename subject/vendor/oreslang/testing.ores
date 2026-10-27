@@ -137,7 +137,7 @@ fnc emit_status(String status, String full_name, String detail, bool machine): v
   return;
 }
 
-fnc emit_summary(&RunSummary summary, bool machine): void {
+fnc emit_summary(borrow RunSummary summary, bool machine): void {
   let int total = summary.total;
   let int passed_count = summary.passed;
   let int failed_count = summary.failed;
@@ -176,7 +176,7 @@ fnc emit_summary(&RunSummary summary, bool machine): void {
   return;
 }
 
-pub fnc run_suite(&TestSuite suite, &TestOptions options): RunSummary {
+pub fnc run_suite(borrow TestSuite suite, borrow TestOptions options): RunSummary {
   let int total = 0;
   let int passed_count = 0;
   let int failed_count = 0;
@@ -239,7 +239,7 @@ pub fnc run_suite(&TestSuite suite, &TestOptions options): RunSummary {
   return summary;
 }
 
-pub fnc require_success(&RunSummary summary): void {
+pub fnc require_success(borrow RunSummary summary): void {
   let int failed_count = summary.failed;
   if failed_count > 0; do
     val Result<bool, String> failure = Err("one or more Oreslang tests failed");
