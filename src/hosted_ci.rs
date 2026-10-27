@@ -364,6 +364,54 @@ mod oreslang_inverted_alias_provenance_contract {
         );
     }
 
+    #[derive(Clone, Copy, Debug)]
+    enum Boundary {
+        Closure,
+        TaskCapture,
+        ChannelRead,
+        ChannelWrite,
+        Return,
+        TaskResult,
+        Yield,
+        OpaqueCall,
+    }
+
+    fn boundary_allows(
+        ty: &Ty,
+        aliases: &HashMap<&'static str, Ty>,
+        _boundary: Boundary,
+    ) -> Result<bool, &'static str> {
+        Ok(!contains_inverted(ty, aliases, &mut HashSet::new())?)
+    }
+
+    #[test]
+    fn inverted_storage_is_rejected_at_every_v1_escape_boundary() {
+        let aliases = HashMap::from([
+            ("HiddenStore", Ty::Inverted("Particle")),
+            (
+                "HiddenOption",
+                Ty::Option(Box::new(Ty::Named("HiddenStore"))),
+            ),
+        ]);
+        let hidden = Ty::Named("HiddenOption");
+        for boundary in [
+            Boundary::Closure,
+            Boundary::TaskCapture,
+            Boundary::ChannelRead,
+            Boundary::ChannelWrite,
+            Boundary::Return,
+            Boundary::TaskResult,
+            Boundary::Yield,
+            Boundary::OpaqueCall,
+        ] {
+            assert_eq!(boundary_allows(&hidden, &aliases, boundary), Ok(false));
+        }
+        assert_eq!(
+            boundary_allows(&Ty::Scalar, &aliases, Boundary::Return),
+            Ok(true)
+        );
+    }
+
     #[test]
     fn alias_cycles_fail_closed_in_both_escape_and_receiver_proofs() {
         let aliases = HashMap::from([("A", Ty::Named("B")), ("B", Ty::Named("A"))]);
