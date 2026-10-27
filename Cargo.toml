@@ -3,6 +3,13 @@ name = "dd-build-server"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+# Cargo test must compile the observer because the production recovery route
+# imports it. Standalone `rustc --test src/admission.rs` remains dependency-free
+# (rustc supplies no Cargo features); production builds already include it.
+default = ["admission-api-harness"]
+admission-api-harness = []
+
 [dependencies]
 dd-telemetry = { path = "../../libs/telemetry-rs" }
 tracing = "0.1"

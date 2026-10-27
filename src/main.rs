@@ -9,6 +9,7 @@ use tokio::{
     sync::{RwLock, Semaphore},
 };
 
+mod admission;
 mod config;
 mod db;
 mod ecr;
@@ -26,6 +27,8 @@ mod jobs;
 mod lambda_exec;
 mod nats_submit;
 mod profiles;
+mod recovery;
+mod recovery_policy;
 mod state;
 mod types;
 mod util;

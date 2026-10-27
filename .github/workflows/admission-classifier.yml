@@ -1,0 +1,300 @@
+name: admission classifier
+
+on:
+  pull_request:
+    paths:
+      - src/admission.rs
+      - src/admission/github_api.rs
+      - src/admission_formal.rs
+      - src/main.rs
+      - .github/workflows/admission-classifier.yml
+  push:
+    branches: [main]
+    paths:
+      - src/admission.rs
+      - src/admission/github_api.rs
+      - src/admission_formal.rs
+      - src/main.rs
+      - .github/workflows/admission-classifier.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: admission-classifier-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  admission-rust:
+    name: admission-rust
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          show-progress: false
+          submodules: false
+      - name: Assert exact head
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+      - name: Install pinned Rust 1.97.0
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: '1.97.0'
+          components: rustfmt
+      - name: Check formatting
+        run: |
+          rustfmt --edition 2021 --check \
+            src/admission.rs \
+            src/admission_formal.rs
+      - name: Compile and run the dependency-free classifier contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --edition 2021 --test -D warnings \
+            src/admission.rs \
+            -o "${RUNNER_TEMP}/admission-classifier-tests"
+          "${RUNNER_TEMP}/admission-classifier-tests"
+      - name: Exhaustively verify all bounded evidence states
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --edition 2021 --test -D warnings \
+            src/admission_formal.rs \
+            -o "${RUNNER_TEMP}/admission-classifier-formal-tests"
+          "${RUNNER_TEMP}/admission-classifier-formal-tests"
+
+  admission-provenance:
+    name: admission-provenance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          show-progress: false
+          submodules: false
+      - name: Assert exact head
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+      - name: Verify pure classifier and bounded-model inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          python3 - <<'PY'
+          from pathlib import Path
+
+          classifier = Path("src/admission.rs").read_text(encoding="utf-8")
+          model = Path("src/admission_formal.rs").read_text(encoding="utf-8")
+          observer = Path("src/admission/github_api.rs").read_text(encoding="utf-8")
+          workflow = Path(
+              ".github/workflows/admission-classifier.yml"
+          ).read_text(encoding="utf-8")
+
+          for token in (
+              "zero-step or missing-runner evidence alone is ambiguous; fail closed",
+              "PlatformDiagnosticSource::CheckRunAnnotation",
+              "PlatformDiagnosticSource::AuthorizedActionsApi",
+              "if steps_started",
+          ):
+              assert token in classifier, token
+
+          for token in (
+              "validate_consistent_snapshots(",
+              "validate_consistent_snapshots(&pages, &verification_pages, id)?",
+              "ChangedDuringObservation",
+              "double_snapshot_accepts_identical_complete_pages",
+              "detects_job_replacement_despite_unchanged_total_and_run_status",
+              "detects_step_mutation_and_runner_assignment_between_reads",
+              "rejects_truncated_or_inconsistent_second_snapshot",
+          ):
+              assert token in observer, token
+
+          for forbidden in (
+              "std::fs",
+              "std::process",
+              "Command::",
+              "reqwest",
+              "octocrab",
+              "unsafe {",
+          ):
+              assert forbidden not in classifier, forbidden
+
+          for token in (
+              "all_756_valid_evidence_states",
+              "all_108_conflicting_diagnostic_states",
+              "malformed_provider_references_never_authorize_fallback",
+              "assert!(!result.fallback_allowed)",
+          ):
+              assert token in model, token
+
+          for required_job in ("  admission-rust:\n", "  admission-provenance:\n", "  admission-credential-guard:\n"):
+              assert required_job in workflow, required_job
+          PY
+          sha256sum \
+            src/admission.rs \
+            src/admission/github_api.rs \
+            src/admission_formal.rs \
+            .github/workflows/admission-classifier.yml
+
+      - name: Reject forged provider diagnostics at compile time
+        shell: bash
+        run: |
+          set -euo pipefail
+          scratch="$(mktemp -d)"
+          cat > "$scratch/forgery.rs" <<EOF
+          #[path = "$GITHUB_WORKSPACE/src/admission.rs"]
+          mod admission;
+          fn forge() {
+              let _fake = admission::PlatformDiagnostic {
+                  source: admission::PlatformDiagnosticSource::AuthorizedActionsApi,
+                  kind: admission::PlatformDiagnosticKind::BillingOrSpending,
+                  evidence_ref: "not-a-provider-receipt",
+              };
+          }
+          EOF
+          if rustc --edition 2021 --test -A warnings --emit=metadata \
+            -o "$scratch/forgery.rmeta" "$scratch/forgery.rs" 2>"$scratch/errors"; then
+            echo "ERROR: forged provider evidence unexpectedly compiled" >&2
+            exit 1
+          fi
+          grep -q 'E0451' "$scratch/errors" || {
+            echo "ERROR: expected private-field compiler rejection" >&2
+            exit 1
+          }
+
+  admission-credential-guard:
+    name: admission-credential-guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          show-progress: false
+          submodules: false
+      - name: Assert exact head
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+      - name: Reject credential-shaped material in the classifier slice
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RqE \
+            '(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|lin_api_[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)' \
+            src/admission.rs \
+            src/admission/github_api.rs \
+            src/admission_formal.rs \
+            .github/workflows/admission-classifier.yml; then
+            echo "credential-shaped material is forbidden" >&2
+            exit 1
+          fi
+          git diff --check
+      - name: Install checksum-verified Gitleaks
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/gitleaks_8.30.1_linux_x64.tar.gz"
+          curl --fail --location --silent --show-error --retry 4 \
+            --proto '=https' --tlsv1.2 \
+            'https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz' \
+            --output "$archive"
+          printf '%s  %s\n' \
+            '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb' \
+            "$archive" | sha256sum --check --strict
+          tar -xzf "$archive" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" version
+      - name: Scan classifier source and workflow with real Gitleaks
+        shell: bash
+        run: |
+          set -euo pipefail
+          scan_dir="$RUNNER_TEMP/admission-source-scan"
+          mkdir -p "$scan_dir/src" "$scan_dir/.github/workflows"
+          cp -- src/admission.rs src/admission_formal.rs "$scan_dir/src/"
+          mkdir -p "$scan_dir/src/admission"
+          cp -- src/admission/github_api.rs "$scan_dir/src/admission/"
+          cp -- .github/workflows/admission-classifier.yml "$scan_dir/.github/workflows/"
+          "$RUNNER_TEMP/gitleaks" dir --redact --no-banner "$scan_dir"
+
+  admission-api-adapter:
+    name: admission-api-adapter
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout immutable PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          show-progress: false
+          submodules: false
+      - name: Assert exact head and source boundary
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --check
+          test -f src/admission/github_api.rs
+      - name: Install pinned Rust 1.97.0
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: '1.97.0'
+          components: rustfmt
+      - name: Validate source formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustfmt --edition 2021 --check src/admission/github_api.rs
+      - name: Compile production adapter and run adversarial API contract tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          scratch="$RUNNER_TEMP/admission-github-api"
+          mkdir -p "$scratch/src/admission"
+          cp src/admission.rs "$scratch/src/admission.rs"
+          cp src/admission/github_api.rs "$scratch/src/admission/github_api.rs"
+          cat > "$scratch/src/lib.rs" <<'EOF'
+          #[allow(dead_code)]
+          mod admission;
+          EOF
+          cat > "$scratch/Cargo.toml" <<'EOF'
+          [package]
+          name = "admission-github-api-harness"
+          version = "0.1.0"
+          edition = "2021"
+
+          [features]
+          admission-api-harness = []
+
+          [dependencies]
+          reqwest = { version = "=0.12.9", default-features = false, features = ["json", "rustls-tls"] }
+          serde_json = "1"
+          EOF
+          cargo generate-lockfile --manifest-path "$scratch/Cargo.toml"
+          cargo test --manifest-path "$scratch/Cargo.toml" --features admission-api-harness --locked -- --nocapture
+          cargo check --manifest-path "$scratch/Cargo.toml" --locked
