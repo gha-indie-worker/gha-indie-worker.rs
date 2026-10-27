@@ -18,6 +18,7 @@ struct Token {
 fn encode_utf8_bytes(data: &[i32], merges: &[Merge]) -> Result<Vec<Token>, String> {
     let mut seen_pairs = HashSet::new();
     let mut seen_ranks = HashSet::new();
+    let mut producer_ranks = HashMap::new();
     let mut table = HashMap::new();
 
     for merge in merges {
@@ -36,14 +37,34 @@ fn encode_utf8_bytes(data: &[i32], merges: &[Merge]) -> Result<Vec<Token>, Strin
         if !seen_ranks.insert(merge.rank) {
             return Err("duplicate rank".into());
         }
+        if producer_ranks.insert(merge.result, merge.rank).is_some() {
+            return Err("duplicate result token".into());
+        }
         table.insert((merge.left, merge.right), (merge.rank, merge.result));
+    }
+
+    for merge in merges {
+        for operand in [merge.left, merge.right] {
+            if operand < 256 {
+                continue;
+            }
+            let Some(&producer_rank) = producer_ranks.get(&operand) else {
+                return Err("composite token has no producer".into());
+            };
+            if producer_rank >= merge.rank {
+                return Err("composite producer must have lower rank".into());
+            }
+        }
+    }
+
+    for byte in data {
+        if !(0..=255).contains(byte) {
+            return Err("invalid byte".into());
+        }
     }
 
     let mut tokens = Vec::with_capacity(data.len());
     for (offset, byte) in data.iter().copied().enumerate() {
-        if !(0..=255).contains(&byte) {
-            return Err("invalid byte".into());
-        }
         tokens.push(Token {
             id: byte,
             start: offset,
@@ -162,4 +183,31 @@ fn rejects_duplicate_rank() {
         Merge { left: 2, right: 3, result: 257, rank: 0 },
     ];
     assert!(encode_utf8_bytes(&[1, 2, 3], &merges).is_err());
+}
+
+
+#[test]
+fn rejects_duplicate_result_token() {
+    let merges = [
+        Merge { left: 1, right: 2, result: 256, rank: 0 },
+        Merge { left: 2, right: 3, result: 256, rank: 1 },
+    ];
+    assert!(encode_utf8_bytes(&[1, 2, 3], &merges).is_err());
+}
+
+#[test]
+fn rejects_missing_composite_producer() {
+    let merges = [
+        Merge { left: 300, right: 97, result: 301, rank: 1 },
+    ];
+    assert!(encode_utf8_bytes(&[97], &merges).is_err());
+}
+
+#[test]
+fn rejects_forward_rank_dependency() {
+    let merges = [
+        Merge { left: 97, right: 98, result: 256, rank: 2 },
+        Merge { left: 256, right: 99, result: 257, rank: 1 },
+    ];
+    assert!(encode_utf8_bytes(&[97, 98, 99], &merges).is_err());
 }
