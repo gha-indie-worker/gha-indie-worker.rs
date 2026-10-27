@@ -509,21 +509,13 @@ mod oreslang_inverted_index_contract {
 
     #[test]
     fn wrapped_inverted_storage_cannot_cross_capture_or_channel_boundaries() {
-        let wrapped = AuthorityType::Option(Box::new(
-            AuthorityType::Sequence(Box::new(
-                AuthorityType::Struct(vec![
-                    AuthorityType::Scalar,
-                    AuthorityType::InvertedArray,
-                ])
-            ))
-        ));
+        let wrapped = AuthorityType::Option(Box::new(AuthorityType::Sequence(Box::new(
+            AuthorityType::Struct(vec![AuthorityType::Scalar, AuthorityType::InvertedArray]),
+        ))));
         assert!(contains_inverted_storage(&wrapped));
-        assert!(!contains_inverted_storage(
-            &AuthorityType::Struct(vec![
-                AuthorityType::Scalar,
-                AuthorityType::Option(Box::new(AuthorityType::Scalar)),
-            ])
-        ));
+        assert!(!contains_inverted_storage(&AuthorityType::Struct(vec![
+            AuthorityType::Scalar,
+            AuthorityType::Option(Box::new(AuthorityType::Scalar)),
+        ])));
     }
-
 }
