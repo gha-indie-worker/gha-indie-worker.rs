@@ -489,6 +489,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/builds/:job_id", get(get_build))
         .route("/builds/:job_id/logs", get(get_build_logs))
         .route("/builds/:job_id/artifacts", get(get_build_artifacts))
+        .route("/recovery/observe", post(crate::recovery::observe))
         .route("/webhooks/github", post(webhooks::github_webhook))
         .route("/webhooks/registry", post(webhooks::registry_webhook))
         .route("/secrets/sync", post(sync_secrets))
@@ -655,6 +656,30 @@ mod e2e {
     async fn healthz_does_not_leak_the_auth_secret() {
         let (_, body) = send(app(test_config()), get("/healthz")).await;
         assert!(!body.contains(AUTH), "healthz body leaked the auth secret");
+    }
+
+    #[tokio::test]
+    async fn recovery_observer_requires_auth_and_durable_storage() {
+        let body = json!({
+            "repo": "gha-indie-worker/gha-indie-worker.rs",
+            "run_id": 42,
+            "attempt": 1,
+            "head_sha": "a".repeat(40)
+        });
+        let (unauthorized, _) = send(
+            app(test_config()),
+            post_json("/recovery/observe", None, &body),
+        )
+        .await;
+        assert_eq!(unauthorized, StatusCode::UNAUTHORIZED);
+        let (unavailable, response) = send(
+            app(test_config()),
+            post_json("/recovery/observe", Some(AUTH), &body),
+        )
+        .await;
+        assert_eq!(unavailable, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(response.contains("fallbackAllowed"));
+        assert!(!response.contains(AUTH));
     }
 
     // ---- auth enforcement on mutating routes ----

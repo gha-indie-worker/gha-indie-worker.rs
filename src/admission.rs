@@ -11,7 +11,7 @@
 #[cfg(any(not(test), feature = "admission-api-harness"))]
 #[allow(dead_code)]
 #[path = "admission/github_api.rs"]
-mod github_api;
+pub(crate) mod github_api;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AdmissionFailureKind {
