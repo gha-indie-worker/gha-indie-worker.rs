@@ -338,11 +338,7 @@ mod oreslang_inverted_alias_provenance_contract {
             Ok(true)
         );
         assert_eq!(
-            contains_inverted(
-                &Ty::Named("HiddenOption"),
-                &aliases,
-                &mut HashSet::new(),
-            ),
+            contains_inverted(&Ty::Named("HiddenOption"), &aliases, &mut HashSet::new(),),
             Ok(true)
         );
         assert_eq!(
