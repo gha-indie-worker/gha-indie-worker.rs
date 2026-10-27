@@ -257,3 +257,135 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod oreslang_inverted_alias_provenance_contract {
+    use std::collections::{HashMap, HashSet};
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum Ty {
+        Scalar,
+        Inverted(&'static str),
+        Named(&'static str),
+        Option(Box<Ty>),
+    }
+
+    fn expand_root(
+        ty: &Ty,
+        aliases: &HashMap<&'static str, Ty>,
+        visiting: &mut HashSet<&'static str>,
+    ) -> Result<Ty, &'static str> {
+        match ty {
+            Ty::Named(name) if aliases.contains_key(name) => {
+                if !visiting.insert(name) {
+                    return Err("alias cycle");
+                }
+                let expanded = expand_root(aliases.get(name).unwrap(), aliases, visiting);
+                visiting.remove(name);
+                expanded
+            }
+            other => Ok(other.clone()),
+        }
+    }
+
+    fn contains_inverted(
+        ty: &Ty,
+        aliases: &HashMap<&'static str, Ty>,
+        visiting: &mut HashSet<&'static str>,
+    ) -> Result<bool, &'static str> {
+        match ty {
+            Ty::Named(name) if aliases.contains_key(name) => {
+                if !visiting.insert(name) {
+                    return Err("alias cycle");
+                }
+                let result = contains_inverted(aliases.get(name).unwrap(), aliases, visiting);
+                visiting.remove(name);
+                result
+            }
+            Ty::Inverted(_) => Ok(true),
+            Ty::Option(inner) => contains_inverted(inner, aliases, visiting),
+            Ty::Scalar | Ty::Named(_) => Ok(false),
+        }
+    }
+
+    fn receiver_matches(
+        ty: &Ty,
+        checked_row: &'static str,
+        aliases: &HashMap<&'static str, Ty>,
+    ) -> Result<bool, &'static str> {
+        match expand_root(ty, aliases, &mut HashSet::new())? {
+            Ty::Inverted(row) => Ok(row == checked_row),
+            _ => Ok(false),
+        }
+    }
+
+    #[test]
+    fn aliases_cannot_launder_storage_across_escape_boundaries() {
+        let aliases = HashMap::from([
+            ("HiddenStore", Ty::Inverted("Particle")),
+            (
+                "HiddenOption",
+                Ty::Option(Box::new(Ty::Named("HiddenStore"))),
+            ),
+        ]);
+
+        assert_eq!(
+            contains_inverted(
+                &Ty::Named("HiddenStore"),
+                &aliases,
+                &mut HashSet::new(),
+            ),
+            Ok(true)
+        );
+        assert_eq!(
+            contains_inverted(
+                &Ty::Named("HiddenOption"),
+                &aliases,
+                &mut HashSet::new(),
+            ),
+            Ok(true)
+        );
+        assert_eq!(
+            contains_inverted(&Ty::Scalar, &aliases, &mut HashSet::new()),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn aliased_receiver_keeps_nominal_row_identity() {
+        let aliases = HashMap::from([
+            ("HiddenStore", Ty::Inverted("Particle")),
+            ("OtherStore", Ty::Inverted("Other")),
+        ]);
+
+        assert_eq!(
+            receiver_matches(&Ty::Named("HiddenStore"), "Particle", &aliases),
+            Ok(true)
+        );
+        assert_eq!(
+            receiver_matches(&Ty::Named("HiddenStore"), "Other", &aliases),
+            Ok(false)
+        );
+        assert_eq!(
+            receiver_matches(&Ty::Named("OtherStore"), "Particle", &aliases),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn alias_cycles_fail_closed_in_both_escape_and_receiver_proofs() {
+        let aliases = HashMap::from([
+            ("A", Ty::Named("B")),
+            ("B", Ty::Named("A")),
+        ]);
+
+        assert_eq!(
+            contains_inverted(&Ty::Named("A"), &aliases, &mut HashSet::new()),
+            Err("alias cycle")
+        );
+        assert_eq!(
+            receiver_matches(&Ty::Named("A"), "Particle", &aliases),
+            Err("alias cycle")
+        );
+    }
+}
