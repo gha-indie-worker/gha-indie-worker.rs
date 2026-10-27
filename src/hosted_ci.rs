@@ -479,9 +479,7 @@ mod oreslang_inverted_index_contract {
             AuthorityType::Option(inner) | AuthorityType::Sequence(inner) => {
                 contains_inverted_storage(inner)
             }
-            AuthorityType::Struct(fields) => {
-                fields.iter().any(contains_inverted_storage)
-            }
+            AuthorityType::Struct(fields) => fields.iter().any(contains_inverted_storage),
         }
     }
 
