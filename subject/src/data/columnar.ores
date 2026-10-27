@@ -9,7 +9,7 @@ pub define class FloatFrame as
   pub val int row_count;
 end
 
-pub fnc validate_float_column(FloatColumn column): Result<bool, String> {
+pub fnc validate_float_column(borrow FloatColumn column): Result<bool, String> {
   let int value_count = 0;
   let int validity_count = 0;
 
@@ -28,13 +28,13 @@ pub fnc validate_float_column(FloatColumn column): Result<bool, String> {
   return Ok(true);
 }
 
-pub fnc validate_float_frame(FloatFrame frame): Result<bool, String> {
+pub fnc validate_float_frame(borrow FloatFrame frame): Result<bool, String> {
   if frame.row_count < 0; do
     return Err("frame row_count must be non-negative");
   fi
 
   for const column of frame.columns do
-    val Result<bool, String> valid_column = validate_float_column(column);
+    val Result<bool, String> valid_column = validate_float_column(rt borrow column);
     if valid_column.is_err(); do
       return Err("frame contains an invalid column");
     fi
@@ -52,8 +52,8 @@ pub fnc validate_float_frame(FloatFrame frame): Result<bool, String> {
   return Ok(true);
 }
 
-pub fnc column_sum(FloatColumn column): Result<float, String> {
-  val Result<bool, String> valid_column = validate_float_column(column);
+pub fnc column_sum(borrow FloatColumn column): Result<float, String> {
+  val Result<bool, String> valid_column = validate_float_column(rt borrow column);
   if valid_column.is_err(); do
     return Err("invalid float column");
   fi
@@ -71,8 +71,8 @@ pub fnc column_sum(FloatColumn column): Result<float, String> {
   return Ok(total);
 }
 
-pub fnc column_mean(FloatColumn column): Result<float, String> {
-  val Result<bool, String> valid_column = validate_float_column(column);
+pub fnc column_mean(borrow FloatColumn column): Result<float, String> {
+  val Result<bool, String> valid_column = validate_float_column(rt borrow column);
   if valid_column.is_err(); do
     return Err("invalid float column");
   fi

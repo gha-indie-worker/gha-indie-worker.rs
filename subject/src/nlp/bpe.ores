@@ -20,7 +20,7 @@ pub define class BpeEncoding as
   pub val int count;
 end
 
-fnc count_int_values(List<int> values): int {
+fnc count_int_values(borrow List<int> values): int {
   let int count = 0;
   for const value of values do
     count = count + 1;
@@ -28,7 +28,7 @@ fnc count_int_values(List<int> values): int {
   return count;
 }
 
-fnc count_merges(List<BpeMerge> merges): int {
+fnc count_merges(borrow List<BpeMerge> merges): int {
   let int count = 0;
   for const merge of merges do
     count = count + 1;
@@ -41,8 +41,8 @@ fnc count_merges(List<BpeMerge> merges): int {
 // Every composite token id has exactly one producer. If a merge consumes a
 // composite token, that producer must have a strictly lower rank so the
 // dependency already exists before the consumer can become eligible.
-fnc validate_merge_table(List<BpeMerge> merges): Result<bool, String> {
-  val int merge_count = count_merges(merges);
+fnc validate_merge_table(borrow List<BpeMerge> merges): Result<bool, String> {
+  val int merge_count = count_merges(rt borrow merges);
 
   for int i = 0; i < merge_count; i++ do
     val BpeMerge current = merges[i];
@@ -135,16 +135,16 @@ fnc validate_merge_table(List<BpeMerge> merges): Result<bool, String> {
 // element is changed. Mutable output buffers must be distinct; compiler/runtime
 // alias checks should reject overlapping mutable arguments.
 pub fnc encode_utf8_bytes_into(
-  List<int> utf8_bytes,
-  List<BpeMerge> merges,
+  borrow List<int> utf8_bytes,
+  borrow List<BpeMerge> merges,
   List<int> mut token_ids,
   List<int> mut byte_starts,
   List<int> mut byte_ends
 ): Result<BpeEncoding, String> {
-  val int byte_count = count_int_values(utf8_bytes);
-  val int token_capacity = count_int_values(token_ids);
-  val int start_capacity = count_int_values(byte_starts);
-  val int end_capacity = count_int_values(byte_ends);
+  val int byte_count = count_int_values(rt borrow utf8_bytes);
+  val int token_capacity = count_int_values(rt borrow token_ids);
+  val int start_capacity = count_int_values(rt borrow byte_starts);
+  val int end_capacity = count_int_values(rt borrow byte_ends);
 
   if token_capacity < byte_count; do
     return Err("BPE token output buffer is smaller than the input");
@@ -156,7 +156,7 @@ pub fnc encode_utf8_bytes_into(
     return Err("BPE end-span output buffer is smaller than the input");
   fi
 
-  val Result<bool, String> merge_table = validate_merge_table(merges);
+  val Result<bool, String> merge_table = validate_merge_table(rt borrow merges);
   if merge_table.is_err(); do
     return Err("invalid BPE merge table");
   fi

@@ -4,7 +4,7 @@ pub define class DenseMatrixF64 as
   pub val List<float> values;
 end
 
-fnc count_values(List<float> values): int {
+fnc count_values(borrow List<float> values): int {
   let int count = 0;
   for const value of values do
     count = count + 1;
@@ -12,7 +12,7 @@ fnc count_values(List<float> values): int {
   return count;
 }
 
-pub fnc validate_matrix(DenseMatrixF64 matrix): Result<bool, String> {
+pub fnc validate_matrix(borrow DenseMatrixF64 matrix): Result<bool, String> {
   if matrix.rows < 0; do
     return Err("matrix row count must be non-negative");
   fi
@@ -21,7 +21,7 @@ pub fnc validate_matrix(DenseMatrixF64 matrix): Result<bool, String> {
     return Err("matrix column count must be non-negative");
   fi
 
-  if count_values(matrix.values) != matrix.rows * matrix.cols; do
+  if count_values(rt borrow matrix.values) != matrix.rows * matrix.cols; do
     return Err("matrix storage length does not match rows * cols");
   fi
 
@@ -29,7 +29,7 @@ pub fnc validate_matrix(DenseMatrixF64 matrix): Result<bool, String> {
 }
 
 pub fnc matrix_index(
-  DenseMatrixF64 matrix,
+  borrow DenseMatrixF64 matrix,
   int row,
   int col
 ): Result<int, String> {
@@ -50,11 +50,11 @@ pub fnc matrix_index(
 }
 
 pub fnc matrix_get(
-  DenseMatrixF64 matrix,
+  borrow DenseMatrixF64 matrix,
   int row,
   int col
 ): Result<float, String> {
-  val Result<int, String> index_result = matrix_index(matrix, row, col);
+  val Result<int, String> index_result = matrix_index(rt borrow matrix, row, col);
   if index_result.is_err(); do
     return Err("matrix index out of bounds");
   fi
@@ -65,20 +65,20 @@ pub fnc matrix_get(
 // Allocation-free matrix-vector multiplication. The caller owns the output
 // buffer, which is reused in place and returned on success.
 pub fnc matvec_into(
-  DenseMatrixF64 matrix,
-  List<float> vector,
+  borrow DenseMatrixF64 matrix,
+  borrow List<float> vector,
   List<float> mut output
 ): Result<List<float>, String> {
-  val Result<bool, String> matrix_ok = validate_matrix(matrix);
+  val Result<bool, String> matrix_ok = validate_matrix(rt borrow matrix);
   if matrix_ok.is_err(); do
     return Err("invalid matrix");
   fi
 
-  if count_values(vector) != matrix.cols; do
+  if count_values(rt borrow vector) != matrix.cols; do
     return Err("matvec vector length must equal matrix column count");
   fi
 
-  if count_values(output) != matrix.rows; do
+  if count_values(rt borrow output) != matrix.rows; do
     return Err("matvec output buffer length must equal matrix row count");
   fi
 

@@ -18,7 +18,7 @@ pub define class ParticleSetF64 as
   pub val List<float> mass;
 end
 
-fnc count_values(List<float> values): int {
+fnc count_values(borrow List<float> values): int {
   let int count = 0;
   for const value of values do
     count = count + 1;
@@ -26,38 +26,38 @@ fnc count_values(List<float> values): int {
   return count;
 }
 
-pub fnc validate_point_cloud(PointCloud3F64 points): Result<bool, String> {
-  val int x_count = count_values(points.x);
+pub fnc validate_point_cloud(borrow PointCloud3F64 points): Result<bool, String> {
+  val int x_count = count_values(rt borrow points.x);
 
-  if count_values(points.y) != x_count; do
+  if count_values(rt borrow points.y) != x_count; do
     return Err("point-cloud SoA columns must have equal length");
   fi
-  if count_values(points.z) != x_count; do
+  if count_values(rt borrow points.z) != x_count; do
     return Err("point-cloud SoA columns must have equal length");
   fi
 
   return Ok(true);
 }
 
-pub fnc validate_particles(ParticleSetF64 particles): Result<bool, String> {
-  val int x_count = count_values(particles.x);
+pub fnc validate_particles(borrow ParticleSetF64 particles): Result<bool, String> {
+  val int x_count = count_values(rt borrow particles.x);
 
-  if count_values(particles.y) != x_count; do
+  if count_values(rt borrow particles.y) != x_count; do
     return Err("particle SoA columns must have equal length");
   fi
-  if count_values(particles.z) != x_count; do
+  if count_values(rt borrow particles.z) != x_count; do
     return Err("particle SoA columns must have equal length");
   fi
-  if count_values(particles.vx) != x_count; do
+  if count_values(rt borrow particles.vx) != x_count; do
     return Err("particle SoA columns must have equal length");
   fi
-  if count_values(particles.vy) != x_count; do
+  if count_values(rt borrow particles.vy) != x_count; do
     return Err("particle SoA columns must have equal length");
   fi
-  if count_values(particles.vz) != x_count; do
+  if count_values(rt borrow particles.vz) != x_count; do
     return Err("particle SoA columns must have equal length");
   fi
-  if count_values(particles.mass) != x_count; do
+  if count_values(rt borrow particles.mass) != x_count; do
     return Err("particle SoA columns must have equal length");
   fi
 
@@ -65,16 +65,16 @@ pub fnc validate_particles(ParticleSetF64 particles): Result<bool, String> {
 }
 
 pub fnc squared_magnitude_into(
-  PointCloud3F64 points,
+  borrow PointCloud3F64 points,
   List<float> mut output
 ): Result<List<float>, String> {
-  val Result<bool, String> valid_points = validate_point_cloud(points);
+  val Result<bool, String> valid_points = validate_point_cloud(rt borrow points);
   if valid_points.is_err(); do
     return Err("invalid point cloud");
   fi
 
-  val int point_count = count_values(points.x);
-  if count_values(output) != point_count; do
+  val int point_count = count_values(rt borrow points.x);
+  if count_values(rt borrow output) != point_count; do
     return Err("output length must equal point count");
   fi
 
@@ -89,8 +89,8 @@ pub fnc squared_magnitude_into(
   return Ok(output);
 }
 
-pub fnc kinetic_energy(ParticleSetF64 particles): Result<float, String> {
-  val Result<bool, String> valid_particles = validate_particles(particles);
+pub fnc kinetic_energy(borrow ParticleSetF64 particles): Result<float, String> {
+  val Result<bool, String> valid_particles = validate_particles(rt borrow particles);
   if valid_particles.is_err(); do
     return Err("invalid particle set");
   fi

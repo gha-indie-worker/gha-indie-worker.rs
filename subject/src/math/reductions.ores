@@ -1,7 +1,7 @@
 // Stable reductions over typed Oreslang sequences.
 // Oreslang object arguments are references by default; read-only parameters do not need pointer syntax.
 
-pub fnc sum(List<float> values): float {
+pub fnc sum(borrow List<float> values): float {
   let float total = 0.0;
   for const value of values do
     total = total + value;
@@ -9,7 +9,7 @@ pub fnc sum(List<float> values): float {
   return total;
 }
 
-pub fnc sum_squares(List<float> values): float {
+pub fnc sum_squares(borrow List<float> values): float {
   let float total = 0.0;
   for const value of values do
     total = total + (value * value);
@@ -18,8 +18,8 @@ pub fnc sum_squares(List<float> values): float {
 }
 
 pub fnc dot(
-  List<float> left,
-  List<float> right
+  borrow List<float> left,
+  borrow List<float> right
 ): Result<float, String> {
   let int left_count = 0;
   let int right_count = 0;
@@ -46,7 +46,7 @@ pub fnc dot(
   return Ok(total);
 }
 
-pub fnc mean(List<float> values): Result<float, String> {
+pub fnc mean(borrow List<float> values): Result<float, String> {
   let float count = 0.0;
   let float average = 0.0;
 
@@ -63,7 +63,7 @@ pub fnc mean(List<float> values): Result<float, String> {
 }
 
 pub fnc variance_population(
-  List<float> values
+  borrow List<float> values
 ): Result<float, String> {
   let float count = 0.0;
   let float average = 0.0;
@@ -85,7 +85,7 @@ pub fnc variance_population(
 }
 
 pub fnc variance_sample(
-  List<float> values
+  borrow List<float> values
 ): Result<float, String> {
   let float count = 0.0;
   let float average = 0.0;
@@ -106,7 +106,7 @@ pub fnc variance_sample(
   return Ok(m2 / (count - 1.0));
 }
 
-pub fnc minimum(List<float> values): Result<float, String> {
+pub fnc minimum(borrow List<float> values): Result<float, String> {
   let bool seen = false;
   let float current = 0.0;
 
@@ -128,7 +128,7 @@ pub fnc minimum(List<float> values): Result<float, String> {
   return Ok(current);
 }
 
-pub fnc maximum(List<float> values): Result<float, String> {
+pub fnc maximum(borrow List<float> values): Result<float, String> {
   let bool seen = false;
   let float current = 0.0;
 
