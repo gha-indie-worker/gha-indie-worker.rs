@@ -1,0 +1,134 @@
+import fnc sqrt from './scalar';
+import fnc dot from './reductions';
+
+type FloatMapper = (float) => float;
+
+fnc count_values(List<float> values): int {
+  let int count = 0;
+  for const value of values do
+    count = count + 1;
+  done
+  return count;
+}
+
+pub fnc map_float(List<float> mut values, FloatMapper mapper): List<float> {
+  val int value_count = count_values(values);
+  for int i = 0; i < value_count; i++ do
+    values[i] = mapper(values[i]);
+  done
+  return values;
+}
+
+pub fnc scale(List<float> mut values, float factor): List<float> {
+  val int value_count = count_values(values);
+  for int i = 0; i < value_count; i++ do
+    values[i] = values[i] * factor;
+  done
+  return values;
+}
+
+pub fnc add(
+  List<float> mut left,
+  List<float> right
+): Result<List<float>, String> {
+  let int left_count = 0;
+  let int right_count = 0;
+
+  for const value of left do
+    left_count = left_count + 1;
+  done
+
+  for const value of right do
+    right_count = right_count + 1;
+  done
+
+  if left_count != right_count; do
+    return Err("add requires vectors with equal length");
+  fi
+
+  for int i = 0; i < left_count; i++ do
+    left[i] = left[i] + right[i];
+  done
+
+  return Ok(left);
+}
+
+pub fnc hadamard(
+  List<float> mut left,
+  List<float> right
+): Result<List<float>, String> {
+  let int left_count = 0;
+  let int right_count = 0;
+
+  for const value of left do
+    left_count = left_count + 1;
+  done
+
+  for const value of right do
+    right_count = right_count + 1;
+  done
+
+  if left_count != right_count; do
+    return Err("hadamard requires vectors with equal length");
+  fi
+
+  for int i = 0; i < left_count; i++ do
+    left[i] = left[i] * right[i];
+  done
+
+  return Ok(left);
+}
+
+// BLAS-style y <- a*x + y.
+pub fnc axpy(
+  float a,
+  List<float> x,
+  List<float> mut y
+): Result<List<float>, String> {
+  let int x_count = 0;
+  let int y_count = 0;
+
+  for const value of x do
+    x_count = x_count + 1;
+  done
+
+  for const value of y do
+    y_count = y_count + 1;
+  done
+
+  if x_count != y_count; do
+    return Err("axpy requires vectors with equal length");
+  fi
+
+  for int i = 0; i < y_count; i++ do
+    y[i] = (a * x[i]) + y[i];
+  done
+
+  return Ok(y);
+}
+
+pub fnc normalize_l2(List<float> mut values): Result<List<float>, String> {
+  // Object arguments are references by default. No address-of/dereference
+  // syntax is required at this call boundary.
+  val Result<float, String> squared_result = dot(values, values);
+  if squared_result.is_err(); do
+    return Err("failed to compute vector norm");
+  fi
+
+  val Result<float, String> norm_result = sqrt(squared_result.unwrap());
+  if norm_result.is_err(); do
+    return Err("failed to compute vector norm");
+  fi
+
+  val float norm = norm_result.unwrap();
+  if norm == 0.0; do
+    return Err("cannot normalize the zero vector");
+  fi
+
+  val int value_count = count_values(values);
+  for int i = 0; i < value_count; i++ do
+    values[i] = values[i] / norm;
+  done
+
+  return Ok(values);
+}

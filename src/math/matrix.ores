@@ -1,0 +1,108 @@
+define class DenseMatrixF64 as
+  pub val int rows;
+  pub val int cols;
+  pub val List<float> values;
+end
+
+fnc count_values(List<float> values): int {
+  let int count = 0;
+  for const value of values do
+    count = count + 1;
+  done
+  return count;
+}
+
+pub fnc validate_matrix(DenseMatrixF64 matrix): Result<bool, String> {
+  if matrix.rows < 0; do
+    return Err("matrix row count must be non-negative");
+  fi
+
+  if matrix.cols < 0; do
+    return Err("matrix column count must be non-negative");
+  fi
+
+  if count_values(matrix.values) != matrix.rows * matrix.cols; do
+    return Err("matrix storage length does not match rows * cols");
+  fi
+
+  return Ok(true);
+}
+
+pub fnc matrix_index(
+  DenseMatrixF64 matrix,
+  int row,
+  int col
+): Result<int, String> {
+  if row < 0; do
+    return Err("row index out of bounds");
+  fi
+  if row >= matrix.rows; do
+    return Err("row index out of bounds");
+  fi
+  if col < 0; do
+    return Err("column index out of bounds");
+  fi
+  if col >= matrix.cols; do
+    return Err("column index out of bounds");
+  fi
+
+  return Ok((row * matrix.cols) + col);
+}
+
+pub fnc matrix_get(
+  DenseMatrixF64 matrix,
+  int row,
+  int col
+): Result<float, String> {
+  val Result<int, String> index_result = matrix_index(matrix, row, col);
+  if index_result.is_err(); do
+    return Err("matrix index out of bounds");
+  fi
+
+  return Ok(matrix.values[index_result.unwrap()]);
+}
+
+// Allocation-free matrix-vector multiplication. The caller owns the output
+// buffer, which is reused in place and returned on success.
+pub fnc matvec_into(
+  DenseMatrixF64 matrix,
+  List<float> vector,
+  List<float> mut output
+): Result<List<float>, String> {
+  val Result<bool, String> matrix_ok = validate_matrix(matrix);
+  if matrix_ok.is_err(); do
+    return Err("invalid matrix");
+  fi
+
+  if count_values(vector) != matrix.cols; do
+    return Err("matvec vector length must equal matrix column count");
+  fi
+
+  if count_values(output) != matrix.rows; do
+    return Err("matvec output buffer length must equal matrix row count");
+  fi
+
+  let int row = 0;
+  loop {
+    if row >= matrix.rows; do
+      break;
+    fi
+
+    let float total = 0.0;
+    let int col = 0;
+    loop {
+      if col >= matrix.cols; do
+        break;
+      fi
+
+      val int index = (row * matrix.cols) + col;
+      total = total + (matrix.values[index] * vector[col]);
+      col = col + 1;
+    }
+
+    output[row] = total;
+    row = row + 1;
+  }
+
+  return Ok(output);
+}

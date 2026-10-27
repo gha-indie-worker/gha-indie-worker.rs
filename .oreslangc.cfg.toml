@@ -1,0 +1,13 @@
+schema_version = "1"
+
+[project]
+name = "oreslang-data-science"
+version = "0.1.0"
+root = "."
+
+[source]
+roots = ["src", "tests", "vendor"]
+import_paths = []
+
+[entrypoints]
+main = "tests/main.ores"

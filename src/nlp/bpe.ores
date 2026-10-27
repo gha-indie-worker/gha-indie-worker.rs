@@ -1,0 +1,188 @@
+// Deterministic byte-level BPE core.
+//
+// The caller provides UTF-8 bytes and reusable output buffers. This keeps the
+// algorithm pure Oreslang and avoids allocating token strings during encoding.
+// Token spans are byte offsets into the original UTF-8 input.
+//
+// Base byte token ids are 0..255. Merge result ids must be >= 256.
+
+define class BpeMerge as
+  pub val int left_token;
+  pub val int right_token;
+  pub val int result_token;
+  pub val int rank;
+end
+
+define class BpeEncoding as
+  pub val List<int> token_ids;
+  pub val List<int> byte_starts;
+  pub val List<int> byte_ends;
+  pub val int count;
+end
+
+fnc count_int_values(List<int> values): int {
+  let int count = 0;
+  for const value of values do
+    count = count + 1;
+  done
+  return count;
+}
+
+fnc count_merges(List<BpeMerge> merges): int {
+  let int count = 0;
+  for const merge of merges do
+    count = count + 1;
+  done
+  return count;
+}
+
+fnc validate_merge_table(List<BpeMerge> merges): Result<bool, String> {
+  val int merge_count = count_merges(merges);
+
+  for int i = 0; i < merge_count; i++ do
+    val BpeMerge current = merges[i];
+
+    if current.left_token < 0; do
+      return Err("BPE merge left token must be non-negative");
+    fi
+    if current.right_token < 0; do
+      return Err("BPE merge right token must be non-negative");
+    fi
+    if current.result_token < 256; do
+      return Err("BPE merge result token must be >= 256");
+    fi
+    if current.rank < 0; do
+      return Err("BPE merge rank must be non-negative");
+    fi
+
+    for int j = i + 1; j < merge_count; j++ do
+      val BpeMerge other = merges[j];
+
+      if current.left_token == other.left_token; do
+        if current.right_token == other.right_token; do
+          return Err("BPE merge table contains a duplicate token pair");
+        fi
+      fi
+
+      if current.rank == other.rank; do
+        return Err("BPE merge table contains a duplicate rank");
+      fi
+    done
+  done
+
+  return Ok(true);
+}
+
+// Encodes one UTF-8 byte sequence using byte-level BPE.
+//
+// The first encoding.count entries in each output buffer are valid. The
+// caller may reuse the same buffers for later calls. All span offsets are
+// half-open [start, end) byte offsets into utf8_bytes.
+pub fnc encode_utf8_bytes_into(
+  List<int> utf8_bytes,
+  List<BpeMerge> merges,
+  List<int> mut token_ids,
+  List<int> mut byte_starts,
+  List<int> mut byte_ends
+): Result<BpeEncoding, String> {
+  val int byte_count = count_int_values(utf8_bytes);
+  val int token_capacity = count_int_values(token_ids);
+  val int start_capacity = count_int_values(byte_starts);
+  val int end_capacity = count_int_values(byte_ends);
+
+  if token_capacity < byte_count; do
+    return Err("BPE token output buffer is smaller than the input");
+  fi
+  if start_capacity < byte_count; do
+    return Err("BPE start-span output buffer is smaller than the input");
+  fi
+  if end_capacity < byte_count; do
+    return Err("BPE end-span output buffer is smaller than the input");
+  fi
+
+  val Result<bool, String> merge_table = validate_merge_table(merges);
+  if merge_table.is_err(); do
+    return Err("invalid BPE merge table");
+  fi
+
+  for int i = 0; i < byte_count; i++ do
+    val int byte_value = utf8_bytes[i];
+
+    if byte_value < 0; do
+      return Err("BPE input contains a negative byte");
+    fi
+    if byte_value > 255; do
+      return Err("BPE input contains a value larger than one byte");
+    fi
+
+    token_ids[i] = byte_value;
+    byte_starts[i] = i;
+    byte_ends[i] = i + 1;
+  done
+
+  let int active_count = byte_count;
+  let bool finished = false;
+
+  // At most byte_count - 1 merges can occur because every merge reduces the
+  // active token count by one. Once finished becomes true, remaining passes
+  // are deliberately no-ops so the implementation does not depend on break.
+  for int pass = 0; pass < byte_count; pass++ do
+    if !finished; do
+      let bool found = false;
+      let int best_rank = 0;
+      let int best_position = 0;
+      let int best_result_token = 0;
+
+      for int position = 0; position + 1 < active_count; position++ do
+        val int left = token_ids[position];
+        val int right = token_ids[position + 1];
+
+        for const merge of merges do
+          if merge.left_token == left; do
+            if merge.right_token == right; do
+              if !found; do
+                found = true;
+                best_rank = merge.rank;
+                best_position = position;
+                best_result_token = merge.result_token;
+              else
+                if merge.rank < best_rank; do
+                  best_rank = merge.rank;
+                  best_position = position;
+                  best_result_token = merge.result_token;
+                fi
+              fi
+            fi
+          fi
+        done
+      done
+
+      if found; do
+        token_ids[best_position] = best_result_token;
+        byte_ends[best_position] = byte_ends[best_position + 1];
+
+        for int shift = best_position + 1; shift + 1 < active_count; shift++ do
+          token_ids[shift] = token_ids[shift + 1];
+          byte_starts[shift] = byte_starts[shift + 1];
+          byte_ends[shift] = byte_ends[shift + 1];
+        done
+
+        active_count = active_count - 1;
+
+        // Deterministic tail clearing makes buffer reuse easier to inspect.
+        token_ids[active_count] = 0;
+        byte_starts[active_count] = 0;
+        byte_ends[active_count] = 0;
+      else
+        finished = true;
+      fi
+    fi
+  done
+
+  return Ok(new BpeEncoding(
+    token_ids,
+    byte_starts,
+    byte_ends,
+    active_count
+  ));
+}

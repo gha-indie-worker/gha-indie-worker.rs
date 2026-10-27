@@ -1,0 +1,110 @@
+// Data-Oriented Programming primitives.
+// These classes are data-only nominal containers on current core main.
+// Systems remain free functions and storage stays Struct-of-Arrays.
+
+define class PointCloud3F64 as
+  pub val List<float> x;
+  pub val List<float> y;
+  pub val List<float> z;
+end
+
+define class ParticleSetF64 as
+  pub val List<float> x;
+  pub val List<float> y;
+  pub val List<float> z;
+  pub val List<float> vx;
+  pub val List<float> vy;
+  pub val List<float> vz;
+  pub val List<float> mass;
+end
+
+fnc count_values(List<float> values): int {
+  let int count = 0;
+  for const value of values do
+    count = count + 1;
+  done
+  return count;
+}
+
+pub fnc validate_point_cloud(PointCloud3F64 points): Result<bool, String> {
+  val int x_count = count_values(points.x);
+
+  if count_values(points.y) != x_count; do
+    return Err("point-cloud SoA columns must have equal length");
+  fi
+  if count_values(points.z) != x_count; do
+    return Err("point-cloud SoA columns must have equal length");
+  fi
+
+  return Ok(true);
+}
+
+pub fnc validate_particles(ParticleSetF64 particles): Result<bool, String> {
+  val int x_count = count_values(particles.x);
+
+  if count_values(particles.y) != x_count; do
+    return Err("particle SoA columns must have equal length");
+  fi
+  if count_values(particles.z) != x_count; do
+    return Err("particle SoA columns must have equal length");
+  fi
+  if count_values(particles.vx) != x_count; do
+    return Err("particle SoA columns must have equal length");
+  fi
+  if count_values(particles.vy) != x_count; do
+    return Err("particle SoA columns must have equal length");
+  fi
+  if count_values(particles.vz) != x_count; do
+    return Err("particle SoA columns must have equal length");
+  fi
+  if count_values(particles.mass) != x_count; do
+    return Err("particle SoA columns must have equal length");
+  fi
+
+  return Ok(true);
+}
+
+pub fnc squared_magnitude_into(
+  PointCloud3F64 points,
+  List<float> mut output
+): Result<List<float>, String> {
+  val Result<bool, String> valid_points = validate_point_cloud(points);
+  if valid_points.is_err(); do
+    return Err("invalid point cloud");
+  fi
+
+  val int point_count = count_values(points.x);
+  if count_values(output) != point_count; do
+    return Err("output length must equal point count");
+  fi
+
+  let int i = 0;
+  for const x of points.x do
+    val float y = points.y[i];
+    val float z = points.z[i];
+    output[i] = (x * x) + (y * y) + (z * z);
+    i = i + 1;
+  done
+
+  return Ok(output);
+}
+
+pub fnc kinetic_energy(ParticleSetF64 particles): Result<float, String> {
+  val Result<bool, String> valid_particles = validate_particles(particles);
+  if valid_particles.is_err(); do
+    return Err("invalid particle set");
+  fi
+
+  let float energy = 0.0;
+  let int i = 0;
+
+  for const vx of particles.vx do
+    val float vy = particles.vy[i];
+    val float vz = particles.vz[i];
+    val float mass = particles.mass[i];
+    energy = energy + (0.5 * mass * ((vx * vx) + (vy * vy) + (vz * vz)));
+    i = i + 1;
+  done
+
+  return Ok(energy);
+}

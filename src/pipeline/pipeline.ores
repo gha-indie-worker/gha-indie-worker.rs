@@ -1,0 +1,58 @@
+// Allocation-conscious pipeline primitives.
+//
+// Current Oreslang main does not yet expose a resizable native typed Array API,
+// so hot-path transforms mutate explicitly mutable buffers or write into caller-provided
+// destination buffers. This maps cleanly to future Array/SIMD/GPU lowering.
+
+type FloatMapper = (float) => float;
+type FloatPredicate = (float) => bool;
+
+define class CompactedF64 as
+  pub val List<float> values;
+  pub val int count;
+end
+
+fnc count_float_values(List<float> values): int {
+  let int count = 0;
+  for const value of values do
+    count = count + 1;
+  done
+  return count;
+}
+
+pub fnc map_values(
+  List<float> mut input,
+  FloatMapper mapper
+): List<float> {
+  val int input_count = count_float_values(input);
+  for int i = 0; i < input_count; i++ do
+    input[i] = mapper(input[i]);
+  done
+
+  return input;
+}
+
+// Compacts matching values into the prefix of an existing output buffer.
+// CompactedF64.count identifies the valid prefix length.
+pub fnc filter_values_into(
+  List<float> input,
+  List<float> mut output,
+  FloatPredicate predicate
+): Result<CompactedF64, String> {
+  val int input_count = count_float_values(input);
+  val int output_count = count_float_values(output);
+
+  if output_count < input_count; do
+    return Err("filter output buffer must be at least input length");
+  fi
+
+  let int write_index = 0;
+  for const value of input do
+    if predicate(value); do
+      output[write_index] = value;
+      write_index = write_index + 1;
+    fi
+  done
+
+  return Ok(new CompactedF64(output, write_index));
+}
