@@ -6,14 +6,14 @@
 //
 // Base byte token ids are 0..255. Merge result ids must be >= 256.
 
-define class BpeMerge as
+pub define class BpeMerge as
   pub val int left_token;
   pub val int right_token;
   pub val int result_token;
   pub val int rank;
 end
 
-define class BpeEncoding as
+pub define class BpeEncoding as
   pub val List<int> token_ids;
   pub val List<int> byte_starts;
   pub val List<int> byte_ends;

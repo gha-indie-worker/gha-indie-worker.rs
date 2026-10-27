@@ -2,13 +2,13 @@
 // These classes are data-only nominal containers on current core main.
 // Systems remain free functions and storage stays Struct-of-Arrays.
 
-define class PointCloud3F64 as
+pub define class PointCloud3F64 as
   pub val List<float> x;
   pub val List<float> y;
   pub val List<float> z;
 end
 
-define class ParticleSetF64 as
+pub define class ParticleSetF64 as
   pub val List<float> x;
   pub val List<float> y;
   pub val List<float> z;

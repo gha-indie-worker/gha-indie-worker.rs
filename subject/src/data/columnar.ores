@@ -1,10 +1,10 @@
-define class FloatColumn as
+pub define class FloatColumn as
   pub val String name;
   pub val List<float> values;
   pub val List<bool> valid;
 end
 
-define class FloatFrame as
+pub define class FloatFrame as
   pub val List<FloatColumn> columns;
   pub val int row_count;
 end

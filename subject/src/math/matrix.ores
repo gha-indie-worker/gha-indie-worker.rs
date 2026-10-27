@@ -1,4 +1,4 @@
-define class DenseMatrixF64 as
+pub define class DenseMatrixF64 as
   pub val int rows;
   pub val int cols;
   pub val List<float> values;
