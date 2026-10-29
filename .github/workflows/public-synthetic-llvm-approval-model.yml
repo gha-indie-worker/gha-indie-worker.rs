@@ -4,6 +4,9 @@ on:
     branches:
       - ci/sourcefree-llvm-approval-contract-20261029
   workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/public-synthetic-llvm-approval-model.yml
 permissions: {}
 jobs:
   public-model-only:
