@@ -1,0 +1,195 @@
+name: Public synthetic LLVM CI authorization model
+on:
+  push:
+    branches:
+      - ci/sourcefree-llvm-approval-contract-20261029
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/public-synthetic-llvm-approval-model.yml
+permissions: {}
+jobs:
+  public-model-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Assert runner admission without checkout or credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_OS" = Linux
+          test -n "$RUNNER_NAME"
+          python3 --version
+          echo "SYNTHETIC_SOURCE_FREE_ONLY=true"
+      - name: Exercise public independent fail-closed model
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import dataclasses
+          import re
+          import unittest
+          
+          HEX40 = re.compile(r"[0-9a-f]{40}\Z")
+          REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
+          INCIDENT_IDS = (22, 77, 127, 212)
+          A = "a" * 40
+          B = "b" * 40
+          C = "c" * 40
+          D = "d" * 40
+          
+          @dataclasses.dataclass(frozen=True)
+          class SyntheticReview:
+              destination: str = "synthetic-private/isolated-ci"
+              approved_destination: str = "synthetic-private/isolated-ci"
+              visibility: str = "private"
+              repository_id: int = 12345
+              approved_repository_id: int = 12345
+              source_protected: bool = True
+              destination_protected: bool = True
+              independently_approved_source: bool = True
+              independently_approved_destination: bool = True
+              source_reviewer: str = "source-security"
+              destination_reviewer: str = "destination-security"
+              publishing_actor: str = "publisher"
+              incident_states: tuple = tuple((i, "closed", "completed") for i in INCIDENT_IDS)
+              allowlist: tuple = ("synthetic-private/isolated-ci",)
+              approved_pr: int = 466
+              candidate_pr: int = 466
+              source_head: str = A
+              approved_source_head: str = A
+              source_root_tree: str = B
+              approved_source_root_tree: str = B
+              carrier_base: str = C
+              approved_carrier_base: str = C
+              workflow_blob: str = D
+              approved_workflow_blob: str = D
+              plan_blob: str = A
+              approved_plan_blob: str = A
+          
+          def eligible(s):
+              # This independent PUBLIC model is deliberately NOT an export authorization.
+              if not isinstance(s.destination, str) or not REPO.fullmatch(s.destination):
+                  return False
+              if (s.visibility != "private" or s.destination != s.approved_destination
+                      or type(s.repository_id) is not int or s.repository_id <= 0
+                      or s.repository_id != s.approved_repository_id):
+                  return False
+              if not all(type(x) is bool and x for x in (
+                      s.source_protected, s.destination_protected,
+                      s.independently_approved_source, s.independently_approved_destination)):
+                  return False
+              if not all(isinstance(x, str) and bool(x) for x in (
+                      s.source_reviewer, s.destination_reviewer, s.publishing_actor)):
+                  return False
+              if len({s.source_reviewer.casefold(),
+                      s.destination_reviewer.casefold(), s.publishing_actor.casefold()}) != 3:
+                  return False
+              if (s.incident_states != tuple((i, "closed", "completed") for i in INCIDENT_IDS)
+                      or s.allowlist != (s.destination,)):
+                  return False
+              if (type(s.approved_pr) is not int or s.approved_pr <= 0
+                      or type(s.candidate_pr) is not int or s.candidate_pr != s.approved_pr):
+                  return False
+              for observed, expected in (
+                      (s.source_head, s.approved_source_head),
+                      (s.source_root_tree, s.approved_source_root_tree),
+                      (s.carrier_base, s.approved_carrier_base),
+                      (s.workflow_blob, s.approved_workflow_blob),
+                      (s.plan_blob, s.approved_plan_blob)):
+                  if (not isinstance(observed, str) or not HEX40.fullmatch(observed)
+                          or observed != expected):
+                      return False
+              return True
+          
+          class SourceFreeAdmissionContract(unittest.TestCase):
+              def reject(self, **changes):
+                  self.assertFalse(eligible(dataclasses.replace(SyntheticReview(), **changes)))
+          
+              def test_synthetic_positive_is_model_only(self):
+                  self.assertTrue(eligible(SyntheticReview()))
+          
+              def test_public_destination_never_eligible(self):
+                  self.reject(visibility="public")
+          
+              def test_internal_destination_never_eligible(self):
+                  self.reject(visibility="internal")
+          
+              def test_empty_allowlist_never_eligible(self):
+                  self.reject(allowlist=())
+          
+              def test_wrong_destination_never_eligible(self):
+                  self.reject(destination="other-org/other-ci")
+          
+              def test_wrong_destination_id_never_eligible(self):
+                  self.reject(repository_id=12346)
+          
+              def test_boolean_repository_id_never_eligible(self):
+                  self.reject(repository_id=True)
+          
+              def test_unprotected_source_never_eligible(self):
+                  self.reject(source_protected=False)
+          
+              def test_unprotected_carrier_never_eligible(self):
+                  self.reject(destination_protected=False)
+          
+              def test_missing_source_approval_never_eligible(self):
+                  self.reject(independently_approved_source=False)
+          
+              def test_missing_destination_approval_never_eligible(self):
+                  self.reject(independently_approved_destination=False)
+          
+              def test_self_approval_never_eligible(self):
+                  self.reject(source_reviewer="publisher")
+                  self.reject(destination_reviewer="source-security")
+          
+              def test_any_open_incident_never_eligible(self):
+                  for incident in INCIDENT_IDS:
+                      with self.subTest(incident=incident):
+                          states = tuple((i, "open" if i == incident else "closed",
+                                          None if i == incident else "completed")
+                                         for i in INCIDENT_IDS)
+                          self.reject(incident_states=states)
+          
+              def test_wrong_incident_close_reason_never_eligible(self):
+                  self.reject(incident_states=((22, "closed", "not_planned"),
+                                               (77, "closed", "completed"),
+                                               (127, "closed", "completed"),
+                                               (212, "closed", "completed")))
+          
+              def test_missing_incident_identity_never_eligible(self):
+                  self.reject(incident_states=((22, "closed", "completed"),))
+          
+              def test_wrong_source_pr_never_eligible(self):
+                  self.reject(candidate_pr=467)
+          
+              def test_changed_source_commit_never_eligible(self):
+                  self.reject(source_head=B)
+          
+              def test_changed_source_tree_never_eligible(self):
+                  self.reject(source_root_tree=A)
+          
+              def test_changed_carrier_base_never_eligible(self):
+                  self.reject(carrier_base=B)
+          
+              def test_changed_workflow_blob_never_eligible(self):
+                  self.reject(workflow_blob=C)
+          
+              def test_changed_test_plan_blob_never_eligible(self):
+                  self.reject(plan_blob=B)
+          
+              def test_malformed_hash_never_eligible(self):
+                  self.reject(source_head="not-a-sha")
+          
+              def test_duplicate_allowlist_never_eligible(self):
+                  self.reject(allowlist=(SyntheticReview().destination,) * 2)
+          
+              def test_fake_authorized_boolean_never_eligible(self):
+                  self.reject(source_protected=1)
+                  self.reject(independently_approved_source=1)
+          
+          if __name__ == "__main__":
+              print("SYNTHETIC_SOURCE_FREE_ONLY: no private source, tree, tokens or export")
+              unittest.main(verbosity=2)
+          PY
+          echo "PUBLIC_MODEL_ONLY: not the private LLVM publisher or compiler"
