@@ -1,0 +1,40 @@
+name: Source-free macOS NativeAOT toolchain proof
+on:
+  push:
+    branches:
+      - ci/source-free-aot-admission-20261102
+  workflow_dispatch:
+permissions: {}
+jobs:
+  macos-arm64-toolchain:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Prove native macOS compiler and SDK toolchain without AttoLang source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_OS" = macOS
+          test "$(uname -m)" = arm64
+          xcrun --find clang
+          dotnet --info
+          work="$(mktemp -d "${TMPDIR:-/tmp}/nativeaot-carrier.XXXXXXXX")"
+          trap 'rm -rf "$work"' EXIT
+          cd "$work"
+          dotnet new console --framework net10.0 --name Canary --no-restore
+          printf '%s\n' 'System.Console.WriteLine("SOURCE_FREE_NATIVE_AOT_42");' > Canary/Program.cs
+          dotnet publish Canary/Canary.csproj -c Release -r osx-arm64 \
+            -p:PublishAot=true -p:SelfContained=true -p:InvariantGlobalization=true \
+            -o "$work/release" -warnaserror
+          binary="$work/release/Canary"
+          test -f "$binary" && test -x "$binary"
+          file -b "$binary" | grep -Eq '^Mach-O 64-bit .*arm64.*executable|^Mach-O 64-bit .*executable.*arm64'
+          test "$(lipo -archs "$binary")" = arm64
+          for item in "$work/release"/*.dll "$work/release"/*.runtimeconfig.json "$work/release"/*.deps.json; do
+            test ! -e "$item"
+          done
+          test "$(env -i PATH=/usr/bin:/bin "$binary")" = SOURCE_FREE_NATIVE_AOT_42
+          printf 'SOURCE_FREE_NATIVE_AOT_TOOLCHAIN_EXECUTED sha256=%s os=macos arch=arm64 run=%s attempt=%s\n' "$(shasum -a 256 "$binary" | awk '{print $1}')" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
