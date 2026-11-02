@@ -1,0 +1,32 @@
+name: Source-free cross-org runner admission (NO PRIVATE SOURCE)
+on:
+  push:
+    branches:
+      - ci/source-free-aot-admission-20261102
+  workflow_dispatch:
+permissions: {}
+jobs:
+  ubuntu:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Record actual Linux runner admission
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${RUNNER_OS:-}" = Linux
+          test -n "${RUNNER_NAME:-}"
+          test -n "${GITHUB_RUN_ID:-}"
+          printf 'SOURCE_FREE_CARRIER_LINUX_EXECUTED run=%s attempt=%s runner=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_NAME"
+  macos-arm64:
+    runs-on: macos-15
+    timeout-minutes: 5
+    steps:
+      - name: Record actual native Apple Silicon admission
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${RUNNER_OS:-}" = macOS
+          test "$(uname -m)" = arm64
+          test -n "${RUNNER_NAME:-}"
+          printf 'SOURCE_FREE_CARRIER_MACOS_ARM64_EXECUTED run=%s attempt=%s runner=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_NAME"
