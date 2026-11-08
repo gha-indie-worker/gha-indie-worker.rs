@@ -32,6 +32,45 @@ jobs:
           fi
           grep -Fx 'tmp/' .gitignore
           grep -Fx 'temp/' .gitignore
+      - name: Positive and negative scratch-path admission matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          for path in \
+            tmp/guest.out \
+            tmp/worktrees/compiler-checkout \
+            temp/runner.log \
+            temp/worktrees/audit-run; do
+            git check-ignore --quiet --no-index "$path" || {
+              echo "scratch path unexpectedly tracked: $path" >&2
+              exit 1
+            }
+          done
+          for path in \
+            tmpfile \
+            temp-file \
+            src/tmp.rs \
+            .github/workflows/scratch-ignore-contract.yml \
+            Cargo.toml; do
+            if git check-ignore --quiet --no-index "$path"; then
+              echo "non-scratch source accidentally ignored: $path" >&2
+              exit 1
+            fi
+          done
+      - name: Mutation guard rejects broadening ignored source names
+        shell: bash
+        run: |
+          set -euo pipefail
+          original="$(cat .gitignore)"
+          test "$original" = "$(printf 'tmp/\ntemp/')"
+          printf 'tmpfile\n' >> .gitignore
+          git check-ignore --quiet --no-index tmpfile
+          if git diff --exit-code --quiet -- .gitignore; then
+            echo "mutated ignore policy did not appear in the worktree diff" >&2
+            exit 1
+          fi
+          git checkout -- .gitignore
+          test -z "$(git status --porcelain)"
 
   provenance:
     name: provenance
