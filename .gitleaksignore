@@ -1,0 +1,5 @@
+# Exact historical GitLeaks 8.30.1 false-positive fingerprint only.
+# Cargo.lock at 71b76373... line 434 contains the literal dependency
+# name "crypto_secretbox" under crypto_box, not an API credential.
+# Do not ignore this rule, commit, path, or any other finding globally.
+71b76373ad32d0a762329cfa2e245d3588cd7551:Cargo.lock:generic-api-key:434
