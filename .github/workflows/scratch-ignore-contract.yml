@@ -30,8 +30,8 @@ jobs:
             echo "scratch-ignore PR unexpectedly changes Rust source or Cargo metadata" >&2
             exit 1
           fi
-          grep -Fx 'tmp/' .gitignore
-          grep -Fx 'temp/' .gitignore
+          grep -Fx '/tmp/' .gitignore
+          grep -Fx '/temp/' .gitignore
       - name: Positive and negative scratch-path admission matrix
         shell: bash
         run: |
@@ -50,6 +50,9 @@ jobs:
             tmpfile \
             temp-file \
             src/tmp.rs \
+            src/tmp/compiler.rs \
+            src/temp/worktrees.rs \
+            packages/tmp/library.rs \
             .github/workflows/scratch-ignore-contract.yml \
             Cargo.toml; do
             if git check-ignore --quiet --no-index "$path"; then
@@ -62,7 +65,7 @@ jobs:
         run: |
           set -euo pipefail
           original="$(cat .gitignore)"
-          test "$original" = "$(printf 'tmp/\ntemp/')"
+          test "$original" = "$(printf '/tmp/\n/temp/')"
           printf 'tmpfile\n' >> .gitignore
           git check-ignore --quiet --no-index tmpfile
           if git diff --exit-code --quiet -- .gitignore; then
