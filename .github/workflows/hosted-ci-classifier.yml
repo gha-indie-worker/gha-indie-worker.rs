@@ -9,6 +9,7 @@ on:
       - 'imports/k8s-cluster/gha-capacity-broker-rs/**'
       - K8S_EXTRACTION_20260927.md
       - .github/workflows/capacity-import-proof.yml
+      - .gitleaksignore
   push:
     branches: [main]
     paths:
@@ -18,6 +19,7 @@ on:
       - 'imports/k8s-cluster/gha-capacity-broker-rs/**'
       - K8S_EXTRACTION_20260927.md
       - .github/workflows/capacity-import-proof.yml
+      - .gitleaksignore
   workflow_dispatch:
 
 permissions:
@@ -153,6 +155,18 @@ jobs:
             exit 1
           fi
           git diff --check
+      - name: Require one exact evidence-bound false-positive fingerprint only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          entries = [line.strip() for line in Path('.gitleaksignore').read_text().splitlines()
+                     if line.strip() and not line.lstrip().startswith('#')]
+          assert entries == [
+              '71b76373ad32d0a762329cfa2e245d3588cd7551:Cargo.lock:generic-api-key:434'
+          ], 'reject broad or unexpected secret-scan exceptions'
+          PY
       - name: Install checksum-pinned Gitleaks scanner
         shell: bash
         run: |
