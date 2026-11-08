@@ -11,13 +11,14 @@ permissions:
   contents: read
 
 jobs:
-  rust:
-    name: rust
+  scratch-ignore-validation:
+    name: scratch-ignore-validation
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
       - name: Verify metadata-only scope
         shell: bash
@@ -39,6 +40,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
       - name: Verify focused diff
         shell: bash
@@ -49,13 +51,14 @@ jobs:
           expected="$(printf '%s\n' '.github/workflows/scratch-ignore-contract.yml' '.gitignore' | sort)"
           test "$changed" = "$expected"
 
-  gitleaks:
-    name: gitleaks
+  secret-patterns:
+    name: secret-patterns
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
       - name: Reject credential-shaped material
         shell: bash
         run: |
