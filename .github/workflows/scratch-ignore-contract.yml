@@ -1,0 +1,111 @@
+name: scratch ignore contract
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - .gitignore
+      - .github/workflows/scratch-ignore-contract.yml
+
+permissions:
+  contents: read
+
+jobs:
+  scratch-ignore-validation:
+    name: scratch-ignore-validation
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Verify metadata-only scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          git diff --check "${{ github.event.pull_request.base.sha }}"...HEAD
+          if git diff --name-only "${{ github.event.pull_request.base.sha }}"...HEAD | grep -E '\.rs$|Cargo\.(toml|lock)$'; then
+            echo "scratch-ignore PR unexpectedly changes Rust source or Cargo metadata" >&2
+            exit 1
+          fi
+          grep -Fx '/tmp/' .gitignore
+          grep -Fx '/temp/' .gitignore
+      - name: Positive and negative scratch-path admission matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          for path in \
+            tmp/guest.out \
+            tmp/worktrees/compiler-checkout \
+            temp/runner.log \
+            temp/worktrees/audit-run; do
+            git check-ignore --quiet --no-index "$path" || {
+              echo "scratch path unexpectedly tracked: $path" >&2
+              exit 1
+            }
+          done
+          for path in \
+            tmpfile \
+            temp-file \
+            src/tmp.rs \
+            src/tmp/compiler.rs \
+            src/temp/worktrees.rs \
+            packages/tmp/library.rs \
+            .github/workflows/scratch-ignore-contract.yml \
+            Cargo.toml; do
+            if git check-ignore --quiet --no-index "$path"; then
+              echo "non-scratch source accidentally ignored: $path" >&2
+              exit 1
+            fi
+          done
+      - name: Mutation guard rejects broadening ignored source names
+        shell: bash
+        run: |
+          set -euo pipefail
+          original="$(cat .gitignore)"
+          test "$original" = "$(printf '/tmp/\n/temp/')"
+          printf 'tmpfile\n' >> .gitignore
+          git check-ignore --quiet --no-index tmpfile
+          if git diff --exit-code --quiet -- .gitignore; then
+            echo "mutated ignore policy did not appear in the worktree diff" >&2
+            exit 1
+          fi
+          git checkout -- .gitignore
+          test -z "$(git status --porcelain)"
+
+  provenance:
+    name: provenance
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Verify focused diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}"...HEAD | sort)"
+          expected="$(printf '%s\n' '.github/workflows/scratch-ignore-contract.yml' '.gitignore' | sort)"
+          test "$changed" = "$expected"
+
+  secret-patterns:
+    name: secret-patterns
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Reject credential-shaped material
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -E '(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)' .gitignore .github/workflows/scratch-ignore-contract.yml; then
+            echo "credential-shaped material is forbidden" >&2
+            exit 1
+          fi
