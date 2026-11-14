@@ -17,6 +17,10 @@ mod events;
 mod exec;
 mod fiducia;
 mod gh_secrets;
+// Pure classifier lands before the durable queue observer wiring. Keep it
+// compiled/tested now without pretending the observer integration exists.
+#[allow(dead_code)]
+mod hosted_ci;
 mod http;
 mod jobs;
 mod lambda_exec;
