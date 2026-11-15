@@ -146,8 +146,10 @@ def _audit_repository(runner: Runner, repository: str) -> RepositoryCapability:
         raise AuditError("GitHub repository response has invalid permissions")
     actual_name = payload.get("full_name")
     readable = isinstance(actual_name, str) and actual_name.casefold() == repository.casefold()
-    push = readable and bool(
-        permissions.get("push") or permissions.get("maintain") or permissions.get("admin")
+    # GitHub returns booleans. Values such as "false", 1, or "yes" are not proof
+    # of a permission; Python's bool() would otherwise grant a false positive.
+    push = readable and any(
+        permissions.get(key) is True for key in ("push", "maintain", "admin")
     )
     return RepositoryCapability(
         repository=repository,
@@ -155,10 +157,11 @@ def _audit_repository(runner: Runner, repository: str) -> RepositoryCapability:
         contents_write=push,
         branch_write=push,
         pull_request_write=push,
-        merge_permission=push,
+        # Repository write access never proves branch-protection/approval gates.
+        merge_permission=False,
         note=(
-            "Repository permission permits eligible merges; branch protection "
-            "and exact-head checks still govern each pull request."
+            "Repository write permission verified; merge eligibility remains "
+            "unproven pending independent reviews and protected exact-head checks."
             if push
             else (
                 "Repository identity is missing or mismatched."
@@ -221,9 +224,16 @@ def _audit_organization(runner: Runner, organization: str) -> OrganizationCapabi
     nodes = projects.get("nodes") or []
     if not isinstance(nodes, list) or any(not isinstance(node, dict) for node in nodes):
         raise AuditError("GitHub organization response has invalid project nodes")
+    count = projects.get("totalCount")
+    if type(count) is not int or count < len(nodes):
+        raise AuditError("GitHub organization response has invalid project count")
+    if count > len(nodes):
+        # GraphQL query fetches only the first 20 projects. An incomplete sample
+        # cannot establish organization-wide write authority.
+        raise AuditError("GitHub Projects enumeration incomplete; pagination required")
     project_update: bool | None
     if nodes:
-        project_update = all(bool(node.get("viewerCanUpdate")) for node in nodes)
+        project_update = all(node.get("viewerCanUpdate") is True for node in nodes)
         note = (
             "All sampled organization projects are writable."
             if project_update
@@ -236,7 +246,7 @@ def _audit_organization(runner: Runner, organization: str) -> OrganizationCapabi
     return OrganizationCapability(
         organization=organization,
         visible=True,
-        repository_create=bool(org.get("viewerCanCreateRepositories")),
+        repository_create=org.get("viewerCanCreateRepositories") is True,
         project_update=project_update,
         project_count_sampled=len(nodes),
         note=note,
@@ -267,7 +277,12 @@ def build_report(
         runner.run("gh", "auth", "status", "--hostname", "github.com")
         user = _gh_json(runner, "api", "user")
         login = user.get("login")
-        authenticated = bool(login)
+        authenticated = isinstance(login, str) and bool(
+            re.fullmatch(r"[A-Za-z0-9-]{1,39}", login)
+        )
+        if not authenticated:
+            login = None
+            blockers.append("GitHub returned missing or invalid authenticated login.")
     except AuditError as exc:
         blockers.append(str(exc))
 

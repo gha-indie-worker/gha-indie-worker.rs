@@ -289,5 +289,81 @@ class GitHubReadinessAuditTests(unittest.TestCase):
         self.assertIn("org1: GitHub organization response identity mismatch", report.blockers)
 
 
+    def test_string_and_numeric_permission_flags_are_not_writable(self) -> None:
+        for permission in ("false", "true", "yes", 1, 0, []):
+            with self.subTest(permission=permission):
+                runner = FakeRunner({
+                    ("gh", "auth", "status", "--hostname", "github.com"): "",
+                    ("gh", "api", "user"): {"login": "alex"},
+                    ("gh", "api", "repos/org/repo"): {
+                        "full_name": "org/repo",
+                        "permissions": {"push": permission},
+                    },
+                })
+                report = audit.build_report(runner, [], ["org/repo"])
+                self.assertFalse(report.ready_for_unattended_writes)
+                self.assertFalse(report.repositories[0].contents_write)
+                self.assertFalse(report.repositories[0].merge_permission)
+
+    def test_true_push_access_does_not_claim_merge_approval(self) -> None:
+        runner = FakeRunner({
+            ("gh", "auth", "status", "--hostname", "github.com"): "",
+            ("gh", "api", "user"): {"login": "alex"},
+            ("gh", "api", "repos/org/repo"): {
+                "full_name": "org/repo", "permissions": {"push": True},
+            },
+        })
+        report = audit.build_report(runner, [], ["org/repo"])
+        self.assertTrue(report.ready_for_unattended_writes)
+        self.assertTrue(report.repositories[0].contents_write)
+        self.assertFalse(report.repositories[0].merge_permission)
+
+    def test_string_organization_write_flags_are_not_accepted(self) -> None:
+        key = ("gh", "api", "graphql", "-f", f"query={audit.ORG_QUERY}", "-F", "login=org")
+        runner = FakeRunner({
+            ("gh", "auth", "status", "--hostname", "github.com"): "",
+            ("gh", "api", "user"): {"login": "alex"},
+            key: {"data": {"organization": {
+                "login": "org",
+                "viewerCanCreateRepositories": "true",
+                "projectsV2": {"totalCount": 1, "nodes": [
+                    {"id": "PVT_1", "viewerCanUpdate": "false"}
+                ]},
+            }}},
+        })
+        report = audit.build_report(runner, ["org"], [])
+        self.assertFalse(report.ready_for_unattended_writes)
+        self.assertFalse(report.organizations[0].repository_create)
+        self.assertFalse(report.organizations[0].project_update)
+
+    def test_unsampled_projects_fail_closed_instead_of_claiming_write(self) -> None:
+        key = ("gh", "api", "graphql", "-f", f"query={audit.ORG_QUERY}", "-F", "login=org")
+        runner = FakeRunner({
+            ("gh", "auth", "status", "--hostname", "github.com"): "",
+            ("gh", "api", "user"): {"login": "alex"},
+            key: {"data": {"organization": {
+                "login": "org",
+                "viewerCanCreateRepositories": True,
+                "projectsV2": {"totalCount": 21, "nodes": [
+                    {"id": f"PVT_{i}", "viewerCanUpdate": True} for i in range(20)
+                ]},
+            }}},
+        })
+        report = audit.build_report(runner, ["org"], [])
+        self.assertFalse(report.ready_for_unattended_writes)
+        self.assertTrue(any("pagination required" in x for x in report.blockers))
+
+    def test_invalid_authenticated_login_stops_capability_queries(self) -> None:
+        runner = FakeRunner({
+            ("gh", "auth", "status", "--hostname", "github.com"): "",
+            ("gh", "api", "user"): {"login": {"untrusted": "not a username"}},
+        })
+        report = audit.build_report(runner, ["org"], ["org/repo"])
+        self.assertFalse(report.authenticated)
+        self.assertFalse(report.ready_for_unattended_writes)
+        self.assertEqual(len(runner.calls), 2)
+        self.assertIn("GitHub returned missing or invalid authenticated login.", report.blockers)
+
+
 if __name__ == "__main__":
     unittest.main()
