@@ -18,9 +18,11 @@ SPEC.loader.exec_module(audit)
 class FakeRunner:
     def __init__(self, responses: dict[tuple[str, ...], object]):
         self.responses = responses
+        self.calls: list[tuple[str, ...]] = []
 
     def run(self, *args: str, input_text: str | None = None) -> str:
         key = tuple(args)
+        self.calls.append(key)
         value = self.responses.get(key)
         if isinstance(value, Exception):
             raise value
@@ -130,6 +132,93 @@ class GitHubReadinessAuditTests(unittest.TestCase):
             audit._safe_error("request failed for github_pat_secretvalue"),
             "credential-bearing error redacted",
         )
+
+
+    def test_rate_limit_detector_does_not_confuse_permissions_403(self) -> None:
+        self.assertFalse(audit._is_rate_limit_error(
+            "HTTP 403: Resource not accessible by integration"
+        ))
+        self.assertTrue(audit._is_rate_limit_error("gh: HTTP 429: Too Many Requests"))
+        self.assertTrue(audit._is_rate_limit_error(
+            "HTTP 403: You have exceeded a secondary rate limit"
+        ))
+        self.assertTrue(audit._is_rate_limit_error(
+            "HTTP 403: X-RateLimit-Remaining: 0"
+        ))
+
+    def test_subprocess_runner_classifies_429_as_rate_limited(self) -> None:
+        from unittest.mock import patch
+        outcome = audit.subprocess.CompletedProcess(
+            args=["gh"], returncode=1, stdout="", stderr="gh: HTTP 429"
+        )
+        with patch.object(audit.subprocess, "run", return_value=outcome):
+            with self.assertRaises(audit.RateLimitError):
+                audit.SubprocessRunner().run("gh", "api", "user")
+
+    def test_missing_or_wrong_repo_identity_fails_closed(self) -> None:
+        for name in (None, "example-org/not-the-service"):
+            with self.subTest(name=name):
+                payload = {"permissions": {"push": True, "admin": True}}
+                if name is not None:
+                    payload["full_name"] = name
+                runner = FakeRunner({
+                    ("gh", "auth", "status", "--hostname", "github.com"): "",
+                    ("gh", "api", "user"): {"login": "alex"},
+                    ("gh", "api", "repos/example-org/service"): payload,
+                })
+                report = audit.build_report(runner, [], ["example-org/service"])
+                self.assertFalse(report.ready_for_unattended_writes)
+                self.assertFalse(report.repositories[0].readable)
+                self.assertFalse(report.repositories[0].merge_permission)
+                self.assertIn(
+                    "example-org/service: repository identity is missing or mismatched.",
+                    report.blockers,
+                )
+
+    def test_repo_rate_limit_stops_before_next_repository(self) -> None:
+        runner = FakeRunner({
+            ("gh", "auth", "status", "--hostname", "github.com"): "",
+            ("gh", "api", "user"): {"login": "alex"},
+            ("gh", "api", "repos/org/first"): audit.RateLimitError("HTTP 429"),
+        })
+        report = audit.build_report(runner, [], ["org/first", "org/second"])
+        self.assertFalse(report.ready_for_unattended_writes)
+        self.assertEqual(
+            runner.calls,
+            [
+                ("gh", "auth", "status", "--hostname", "github.com"),
+                ("gh", "api", "user"),
+                ("gh", "api", "repos/org/first"),
+            ],
+        )
+        self.assertTrue(any("stopped remaining scan" in x for x in report.blockers))
+
+    def test_org_rate_limit_skips_remaining_orgs_and_repos(self) -> None:
+        first_query = (
+            "gh", "api", "graphql", "-f", f"query={audit.ORG_QUERY}", "-F", "login=org1"
+        )
+        runner = FakeRunner({
+            ("gh", "auth", "status", "--hostname", "github.com"): "",
+            ("gh", "api", "user"): {"login": "alex"},
+            first_query: audit.RateLimitError("secondary rate limit"),
+        })
+        report = audit.build_report(runner, ["org1", "org2"], ["org/repo"])
+        self.assertFalse(report.ready_for_unattended_writes)
+        self.assertEqual(runner.calls[-1], first_query)
+        self.assertEqual(len(runner.calls), 3)
+
+    def test_graphql_rate_limit_in_http_200_payload_stops_scan(self) -> None:
+        first_query = (
+            "gh", "api", "graphql", "-f", f"query={audit.ORG_QUERY}", "-F", "login=org1"
+        )
+        runner = FakeRunner({
+            ("gh", "auth", "status", "--hostname", "github.com"): "",
+            ("gh", "api", "user"): {"login": "alex"},
+            first_query: {"errors": [{"message": "API rate limit exceeded"}]},
+        })
+        report = audit.build_report(runner, ["org1", "org2"], ["org/repo"])
+        self.assertFalse(report.ready_for_unattended_writes)
+        self.assertEqual(len(runner.calls), 3)
 
 
 if __name__ == "__main__":

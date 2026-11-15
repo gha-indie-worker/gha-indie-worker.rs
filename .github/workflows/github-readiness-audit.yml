@@ -23,10 +23,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Check out exact revision
+      - name: Check out exact PR head or pushed revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Run readiness unit tests
         run: python3 -m unittest -v tests/test_github_readiness_audit.py
       - name: Compile Python sources
