@@ -221,5 +221,73 @@ class GitHubReadinessAuditTests(unittest.TestCase):
         self.assertEqual(len(runner.calls), 3)
 
 
+    def test_subprocess_runner_scans_both_error_streams(self) -> None:
+        from unittest.mock import patch
+        outcome = audit.subprocess.CompletedProcess(
+            args=["gh"], returncode=1,
+            stderr="warning: cli extension message",
+            stdout="HTTP 429: too many requests",
+        )
+        with patch.object(audit.subprocess, "run", return_value=outcome):
+            with self.assertRaises(audit.RateLimitError):
+                audit.SubprocessRunner().run("gh", "api", "repos/org/first")
+
+    def test_graphql_rate_limit_type_stops_remaining_calls(self) -> None:
+        key = (
+            "gh", "api", "graphql", "-f", f"query={audit.ORG_QUERY}", "-F", "login=org1"
+        )
+        runner = FakeRunner({
+            ("gh", "auth", "status", "--hostname", "github.com"): "",
+            ("gh", "api", "user"): {"login": "alex"},
+            key: {"errors": [{"type": "RATE_LIMIT", "message": "retry later"}]},
+        })
+        report = audit.build_report(runner, ["org1", "org2"], ["org/repo"])
+        self.assertFalse(report.ready_for_unattended_writes)
+        self.assertEqual(runner.calls[-1], key)
+        self.assertEqual(len(runner.calls), 3)
+
+    def test_http_200_rate_limit_message_stops_remaining_calls(self) -> None:
+        runner = FakeRunner({
+            ("gh", "auth", "status", "--hostname", "github.com"): "",
+            ("gh", "api", "user"): {"login": "alex"},
+            ("gh", "api", "repos/org/first"): {
+                "message": "API rate limit exceeded for example user"
+            },
+        })
+        report = audit.build_report(runner, [], ["org/first", "org/second"])
+        self.assertFalse(report.ready_for_unattended_writes)
+        self.assertEqual(len(runner.calls), 3)
+        self.assertTrue(any("stopped remaining scan" in x for x in report.blockers))
+
+    def test_malformed_repository_responses_fail_closed_without_crash(self) -> None:
+        for payload in ([42], {"full_name": "org/repo", "permissions": []}):
+            with self.subTest(payload=payload):
+                runner = FakeRunner({
+                    ("gh", "auth", "status", "--hostname", "github.com"): "",
+                    ("gh", "api", "user"): {"login": "alex"},
+                    ("gh", "api", "repos/org/repo"): payload,
+                })
+                report = audit.build_report(runner, [], ["org/repo"])
+                self.assertFalse(report.ready_for_unattended_writes)
+                self.assertTrue(any("org/repo:" in x for x in report.blockers))
+
+    def test_mismatched_organization_identity_fails_closed(self) -> None:
+        key = (
+            "gh", "api", "graphql", "-f", f"query={audit.ORG_QUERY}", "-F", "login=org1"
+        )
+        runner = FakeRunner({
+            ("gh", "auth", "status", "--hostname", "github.com"): "",
+            ("gh", "api", "user"): {"login": "alex"},
+            key: {"data": {"organization": {
+                "login": "other-org",
+                "viewerCanCreateRepositories": True,
+                "projectsV2": {"nodes": [{"viewerCanUpdate": True}]},
+            }}},
+        })
+        report = audit.build_report(runner, ["org1"], [])
+        self.assertFalse(report.ready_for_unattended_writes)
+        self.assertIn("org1: GitHub organization response identity mismatch", report.blockers)
+
+
 if __name__ == "__main__":
     unittest.main()

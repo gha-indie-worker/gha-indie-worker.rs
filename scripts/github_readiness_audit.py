@@ -41,6 +41,7 @@ def _is_rate_limit_error(detail: str) -> bool:
                 "abuse limit",
                 "too many requests",
                 "rate_limited",
+                "rate_limit",
             )
         )
         or bool(re.search(r"\b(?:http\s*|status(?:\s+code)?\s*[:=]?\s*|response\s+code\s*[:=]?\s*)429\b", lowered))
@@ -63,7 +64,9 @@ class SubprocessRunner:
             timeout=30,
         )
         if completed.returncode != 0:
-            error_output = completed.stderr or completed.stdout
+            # Inspect BOTH streams: gh may emit warnings to stderr while
+            # placing the actual HTTP 429 response in stdout.
+            error_output = "\n".join((completed.stderr or "", completed.stdout or ""))
             detail = _safe_error(error_output)
             if _is_rate_limit_error(error_output):
                 raise RateLimitError(f"{args[0]} rate-limited: {detail}")
@@ -121,7 +124,13 @@ def _gh_json(runner: Runner, *args: str) -> Any:
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise AuditError("GitHub CLI returned invalid JSON") from exc
-    if isinstance(payload, dict) and payload.get("errors"):
+    if not isinstance(payload, dict):
+        raise AuditError("GitHub API returned unexpected non-object JSON")
+    # Treat even HTTP-200 error envelopes as errors; never silently interpret
+    # an API throttle as missing repository or organization capability.
+    if isinstance(payload.get("message"), str) and _is_rate_limit_error(payload["message"]):
+        raise RateLimitError("GitHub API rate-limited: " + _safe_error(payload["message"]))
+    if payload.get("errors"):
         detail = json.dumps(payload["errors"])
         safe_detail = _safe_error(detail)
         if _is_rate_limit_error(detail):
@@ -132,7 +141,9 @@ def _gh_json(runner: Runner, *args: str) -> Any:
 
 def _audit_repository(runner: Runner, repository: str) -> RepositoryCapability:
     payload = _gh_json(runner, "api", f"repos/{repository}")
-    permissions = payload.get("permissions") or {}
+    permissions = payload.get("permissions")
+    if not isinstance(permissions, dict):
+        raise AuditError("GitHub repository response has invalid permissions")
     actual_name = payload.get("full_name")
     readable = isinstance(actual_name, str) and actual_name.casefold() == repository.casefold()
     push = readable and bool(
@@ -186,8 +197,11 @@ def _audit_organization(runner: Runner, organization: str) -> OrganizationCapabi
         "-F",
         f"login={organization}",
     )
-    org = (payload.get("data") or {}).get("organization")
-    if not org:
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise AuditError("GitHub organization response has invalid data")
+    org = data.get("organization")
+    if org is None:
         return OrganizationCapability(
             organization=organization,
             visible=False,
@@ -197,8 +211,16 @@ def _audit_organization(runner: Runner, organization: str) -> OrganizationCapabi
             note="Organization is not visible to the authenticated identity.",
         )
 
+    if not isinstance(org, dict) or not isinstance(org.get("login"), str):
+        raise AuditError("GitHub organization response has invalid identity")
+    if org["login"].casefold() != organization.casefold():
+        raise AuditError("GitHub organization response identity mismatch")
     projects = org.get("projectsV2") or {}
+    if not isinstance(projects, dict):
+        raise AuditError("GitHub organization response has invalid projects")
     nodes = projects.get("nodes") or []
+    if not isinstance(nodes, list) or any(not isinstance(node, dict) for node in nodes):
+        raise AuditError("GitHub organization response has invalid project nodes")
     project_update: bool | None
     if nodes:
         project_update = all(bool(node.get("viewerCanUpdate")) for node in nodes)
