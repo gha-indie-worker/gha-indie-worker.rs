@@ -6,7 +6,7 @@ publish = false
 
 [dependencies]
 async-trait = "0.1"
-aws-config = { version = "=1.10.0", features = ["behavior-version-latest"] }
+aws-config = { version = "=1.13.2", features = ["behavior-version-latest"] }
 aws-sdk-s3 = "=1.140.0"
 base64 = "0.22"
 dd-meshy-job = { path = "../meshy-job" }
