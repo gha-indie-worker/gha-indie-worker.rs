@@ -5,16 +5,20 @@ on:
     paths:
       - "src/db.rs"
       - "src/db_capabilities.rs"
+      - "src/db_pool.rs"
       - "src/main.rs"
       - "tests/database_capability_wiring.rs"
+      - "tests/db_pool_integration/**"
       - ".github/workflows/database-capability-policy.yml"
   push:
     branches: [main]
     paths:
       - "src/db.rs"
       - "src/db_capabilities.rs"
+      - "src/db_pool.rs"
       - "src/main.rs"
       - "tests/database_capability_wiring.rs"
+      - "tests/db_pool_integration/**"
       - ".github/workflows/database-capability-policy.yml"
   workflow_dispatch:
 
@@ -43,7 +47,7 @@ jobs:
           toolchain: "1.88.0"
           components: rustfmt
       - name: Rustfmt production policy and wiring tests
-        run: rustfmt --edition 2021 --check src/db_capabilities.rs tests/database_capability_wiring.rs
+        run: rustfmt --edition 2021 --check src/db_capabilities.rs src/db_pool.rs tests/database_capability_wiring.rs tests/db_pool_integration/src/lib.rs
       - name: Execute production capability policy unit tests
         shell: bash
         run: |
@@ -68,7 +72,63 @@ jobs:
           git diff --check "${BASE_SHA}...HEAD"
           git diff --name-only "${BASE_SHA}...HEAD" | while IFS= read -r path; do
             case "$path" in
-              src/db.rs|src/db_capabilities.rs|src/main.rs|tests/database_capability_wiring.rs|.github/workflows/database-capability-policy.yml) ;;
+              src/db.rs|src/db_capabilities.rs|src/db_pool.rs|src/main.rs|tests/database_capability_wiring.rs|tests/db_pool_integration/*|tests/db_pool_integration/src/*|.github/workflows/database-capability-policy.yml) ;;
               *) echo "::error::Uncovered change: $path"; exit 1 ;;
             esac
           done
+
+  database-pool-postgres:
+    name: database-pool-postgres
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        # Ephemeral isolated service and non-production DB. No password,
+        # secret, private source checkout, or untrusted third-party data.
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_USER: ci_contract
+          POSTGRES_DB: dd_build_server_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci_contract -d dd_build_server_ci"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 15
+    env:
+      TEST_DATABASE_URL: postgres://ci_contract@127.0.0.1:5432/dd_build_server_ci
+    steps:
+      - name: Check out exact candidate without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          show-progress: false
+          submodules: false
+      - name: Verify exact source HEAD and production module presence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = '${{ github.event.pull_request.head.sha || github.sha }}'
+          test -f src/db_pool.rs
+          test -f src/db_capabilities.rs
+          test -f tests/db_pool_integration/Cargo.toml
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: "1.88.0"
+          components: rustfmt
+      - name: Compile and run the real production SeaORM PostgreSQL connector
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path tests/db_pool_integration/Cargo.toml --all-targets --verbose
+      - name: Confirm tests did not mutate the checked-out source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = '${{ github.event.pull_request.head.sha || github.sha }}'
+          git diff --exit-code -- src/db_pool.rs src/db_capabilities.rs src/db.rs src/main.rs

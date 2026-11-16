@@ -12,6 +12,7 @@ use tokio::{
 mod config;
 mod db;
 mod db_capabilities;
+mod db_pool;
 mod ecr;
 mod entity;
 mod events;

@@ -1,0 +1,16 @@
+[package]
+name = "dd-build-server-db-pool-contract"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Match the production server's SeaORM driver/features without pulling
+# unavailable sibling ../../libs/* workspace crates into this test binary.
+sea-orm = { version = "1", default-features = false, features = ["macros", "runtime-tokio-rustls", "sqlx-postgres", "with-chrono", "with-json"] }
+time = "=0.3.44"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tracing = "0.1"

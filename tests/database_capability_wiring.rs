@@ -9,7 +9,9 @@ fn read(path: &str) -> String {
 
 #[test]
 fn pool_authority_gate_precedes_url_parsing_and_network_io() {
-    let db = read("src/db.rs");
+    // Compile the exact pool module in a standalone SeaORM/Postgres crate.
+    // This source-order assertion additionally guards against early network IO.
+    let db = read("src/db_pool.rs");
     let guard = db
         .find("if !profile.permits_write_pool()")
         .expect("write authority guard");
@@ -54,7 +56,9 @@ fn connection_failure_does_not_log_password_or_run_migrations() {
     assert!(main.contains("connect failed (message suppressed to avoid leaking the DSN)"));
     assert!(!main.contains("Database::migrate"));
     let db = read("src/db.rs");
+    let pool = read("src/db_pool.rs");
     assert!(!db.contains("Database::migrate"));
+    assert!(!pool.contains("Database::migrate"));
 }
 
 // Compile the production capability implementation as a sibling module, as
