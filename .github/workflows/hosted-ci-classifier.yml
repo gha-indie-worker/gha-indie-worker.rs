@@ -182,7 +182,7 @@ jobs:
           set -euo pipefail
           GOBIN="$RUNNER_TEMP" go install github.com/zricethezav/gitleaks/v8@v8.28.0
           go version -m "$RUNNER_TEMP/gitleaks" | grep -F 'github.com/zricethezav/gitleaks/v8' | grep -Fq 'v8.28.0'
-      - name: Scan PR commits and source tree with actual Gitleaks
+      - name: Scan new commits with Gitleaks and preserve baseline credential guard
         shell: bash
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -245,7 +245,7 @@ jobs:
           echo "Legacy source credential-pattern guard: passed (not full-tree Gitleaks)"
           # Canary is ephemeral, and only a genuine finding (exit 1 + JSON
           # report) demonstrates a working scanner. Unexpected failures fail.
-          printf 'aws_access_key_id=%s%s\n' 'AKIA' 'A1B2C3D4E5F6G7H8' > "$RUNNER_TEMP/gitleaks-canary"
+          printf 'aws_access_key_id=%s%s\n' 'AKIA' 'LALEMEL33243OLIB' > "$RUNNER_TEMP/gitleaks-canary"
           set +e
           "$RUNNER_TEMP/gitleaks" dir --redact --no-banner --log-level error --report-format json --report-path "$RUNNER_TEMP/canary-leaks.json" "$RUNNER_TEMP/gitleaks-canary" >/dev/null 2>&1
           rc=$?
