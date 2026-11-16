@@ -37,7 +37,7 @@ fn server_requires_explicit_profile_for_configured_database() {
         .find("first_env(&[\"BUILD_SERVER_DATABASE_PROFILE\"])")
         .expect("profile lookup");
     let parse = main
-        .find("DatabaseCapabilityProfile::parse(&profile_name)")
+        .find("DatabaseCapabilityProfile::require_writer(&profile_name)")
         .expect("profile parse");
     let connect = main
         .find("db::connect(url, profile)")
@@ -45,6 +45,21 @@ fn server_requires_explicit_profile_for_configured_database() {
     assert!(configured < env && env < parse && parse < connect);
     assert!(main.contains("BUILD_SERVER_DATABASE_PROFILE is missing"));
     assert!(main.contains("BUILD_SERVER_DATABASE_PROFILE does not permit"));
+}
+
+#[test]
+fn runtime_checks_writer_authority_before_opening_pool() {
+    let main = read("src/main.rs");
+    let check = main
+        .find("DatabaseCapabilityProfile::require_writer(&profile_name)")
+        .expect("runtime checks write authority");
+    let connect = main
+        .find("db::connect(url, profile)")
+        .expect("runtime connection");
+    assert!(check < connect, "profile gate precedes connection");
+    assert!(main.contains("DatabaseProfileError::Unknown"));
+    assert!(main.contains("DatabaseProfileError::ReadOnlyOrMigrator"));
+    assert!(!main.contains("DatabaseCapabilityProfile::parse(&profile_name)"));
 }
 
 #[test]
