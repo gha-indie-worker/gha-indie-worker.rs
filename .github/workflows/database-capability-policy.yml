@@ -1,0 +1,74 @@
+name: DEN-3040 standalone database capability policy
+
+on:
+  pull_request:
+    paths:
+      - "src/db.rs"
+      - "src/db_capabilities.rs"
+      - "src/main.rs"
+      - "tests/database_capability_wiring.rs"
+      - ".github/workflows/database-capability-policy.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/db.rs"
+      - "src/db_capabilities.rs"
+      - "src/main.rs"
+      - "tests/database_capability_wiring.rs"
+      - ".github/workflows/database-capability-policy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  database-policy-unit:
+    name: database-policy-unit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Check out exact candidate without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          show-progress: false
+          submodules: false
+      - name: Verify exact HEAD
+        run: test "$(git rev-parse HEAD)" = '${{ github.event.pull_request.head.sha || github.sha }}'
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: "1.88.0"
+          components: rustfmt
+      - name: Rustfmt production policy and wiring tests
+        run: rustfmt --edition 2021 --check src/db_capabilities.rs tests/database_capability_wiring.rs
+      - name: Execute production capability policy unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --edition 2021 --test -D warnings src/db_capabilities.rs -o "$RUNNER_TEMP/db-capability-policy-test"
+          "$RUNNER_TEMP/db-capability-policy-test" --nocapture
+      - name: Execute source-wiring regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --edition 2021 --test -D warnings tests/database_capability_wiring.rs -o "$RUNNER_TEMP/db-capability-wiring-test"
+          "$RUNNER_TEMP/db-capability-wiring-test" --nocapture
+      - name: Check committed diff and tested-file scope
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git cat-file -e "${BASE_SHA}^{commit}"
+          git diff --check "${BASE_SHA}...HEAD"
+          git diff --name-only "${BASE_SHA}...HEAD" | while IFS= read -r path; do
+            case "$path" in
+              src/db.rs|src/db_capabilities.rs|src/main.rs|tests/database_capability_wiring.rs|.github/workflows/database-capability-policy.yml) ;;
+              *) echo "::error::Uncovered change: $path"; exit 1 ;;
+            esac
+          done
