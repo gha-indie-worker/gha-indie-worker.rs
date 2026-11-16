@@ -14,7 +14,11 @@ mod integration_tests {
 
     #[tokio::test]
     async fn forbidden_profiles_reject_even_malformed_urls_before_network_io() {
-        for profile in [Profile::WebReadOnly, Profile::WorkerReadOnly, Profile::Migrator] {
+        for profile in [
+            Profile::WebReadOnly,
+            Profile::WorkerReadOnly,
+            Profile::Migrator,
+        ] {
             let result = connect("invalid:///not-a-database", profile).await;
             assert!(matches!(
                 result,
@@ -29,7 +33,10 @@ mod integration_tests {
     async fn permitted_profiles_still_reject_invalid_connection_urls() {
         for profile in [Profile::ApiReadWrite, Profile::WorkerReadWrite] {
             let result = connect("not-a-postgres-connection-url", profile).await;
-            assert!(matches!(result, Err(DatabaseConnectError::InvalidDatabaseUrl)));
+            assert!(matches!(
+                result,
+                Err(DatabaseConnectError::InvalidDatabaseUrl)
+            ));
         }
     }
 
@@ -50,7 +57,9 @@ mod integration_tests {
                 .await
                 .expect("real SQLx query")
                 .expect("application name row");
-            let app_name: String = row.try_get("", "app_name").expect("application name column");
+            let app_name: String = row
+                .try_get("", "app_name")
+                .expect("application name column");
             assert_eq!(app_name, format!("dd-build-server-{}", profile.as_str()));
         }
     }

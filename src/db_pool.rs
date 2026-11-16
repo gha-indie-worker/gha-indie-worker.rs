@@ -44,4 +44,3 @@ pub(crate) async fn connect(
     );
     Ok(db)
 }
-
