@@ -1,0 +1,126 @@
+name: hosted CI classifier
+
+on:
+  pull_request:
+    paths:
+      - src/hosted_ci.rs
+      - src/main.rs
+      - .github/workflows/hosted-ci-classifier.yml
+  push:
+    branches: [main]
+    paths:
+      - src/hosted_ci.rs
+      - src/main.rs
+      - .github/workflows/hosted-ci-classifier.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hosted-ci-classifier-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: rust
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact candidate without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          show-progress: false
+          submodules: false
+      - name: Assert exact head
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected='${{ github.event.pull_request.head.sha || github.sha }}'
+          test "$(git rev-parse HEAD)" = "$expected"
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+          components: rustfmt
+      - name: Check classifier formatting
+        run: rustfmt --edition 2021 --check src/hosted_ci.rs
+      - name: Compile and execute dependency-free classifier tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --edition 2021 --test -D warnings src/hosted_ci.rs -o "${RUNNER_TEMP}/hosted-ci-tests"
+          "${RUNNER_TEMP}/hosted-ci-tests"
+
+  provenance:
+    name: provenance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact candidate without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          show-progress: false
+          submodules: false
+      - name: Verify exact candidate and pure-classifier boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected='${{ github.event.pull_request.head.sha || github.sha }}'
+          test "$(git rev-parse HEAD)" = "$expected"
+          git diff --check
+          python3 - <<'PY'
+          from pathlib import Path
+          source = Path('src/hosted_ci.rs').read_text(encoding='utf-8')
+          main = Path('src/main.rs').read_text(encoding='utf-8')
+          workflow = Path('.github/workflows/hosted-ci-classifier.yml').read_text(encoding='utf-8')
+
+          required = (
+              'ZeroStepRunnerAdmissionFailure',
+              'ZeroStepUnknown',
+              'RunnerAdmissionHint',
+              'self.step_count.unwrap_or(0) > 0',
+              'self.admission_hint.is_some()',
+              'zero_step_success_is_not_accepted_as_green',
+              'stepful_failure_stays_source_failure_even_with_admission_hint',
+          )
+          for token in required:
+              assert token in source, token
+
+          for forbidden in (
+              'std::fs', 'std::process', 'Command::', 'reqwest', 'octocrab',
+              'unsafe {', 'contains("billing")', 'contains("quota")',
+          ):
+              assert forbidden not in source, forbidden
+
+          assert 'mod hosted_ci;' in main
+          for job in ('  rust:\n', '  provenance:\n', '  gitleaks:\n'):
+              assert job in workflow, job
+          PY
+          sha256sum src/hosted_ci.rs src/main.rs .github/workflows/hosted-ci-classifier.yml
+
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact candidate without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          show-progress: false
+          submodules: false
+      - name: Reject credential-shaped material in classifier slice
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RInE '(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|lin_api_[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)' src/hosted_ci.rs src/main.rs .github/workflows/hosted-ci-classifier.yml; then
+            echo 'credential-shaped material is forbidden' >&2
+            exit 1
+          fi
+          git diff --check
