@@ -20,7 +20,24 @@ jobs:
   rust:
     name: rust
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        # Disposable CI-only database: no real data, keys, or passwords.
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_USER: ci_contract
+          POSTGRES_DB: dd_build_server_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci_contract -d dd_build_server_ci"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 15
+    env:
+      TEST_DATABASE_URL: postgres://ci_contract@127.0.0.1:5432/dd_build_server_ci
     steps:
       - name: Check out exact candidate without persisted credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -37,25 +54,39 @@ jobs:
           expected='${{ github.event.pull_request.head.sha || github.sha }}'
           test "$(git rev-parse HEAD)" = "$expected"
       - name: Fail closed on PR changes outside material test scope
-        if: github.event_name == 'pull_request'
+        id: tested_scope
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
         shell: bash
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
-          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          git cat-file -e "${BASE_SHA}^{commit}"
-          git diff --name-only -z "${BASE_SHA}...HEAD" > "${RUNNER_TEMP}/ci-changed-paths"
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+            git cat-file -e "${BASE_SHA}^{commit}"
+            range="${BASE_SHA}...HEAD"
+          else
+            [[ "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ ]]
+            git cat-file -e "${BEFORE_SHA}^{commit}"
+            range="${BEFORE_SHA}..HEAD"
+          fi
+          git diff --name-only -z "$range" > "${RUNNER_TEMP}/ci-changed-paths"
+          db_changed=false
           while IFS= read -r -d '' path; do
             case "$path" in
               src/hosted_ci.rs|.github/workflows/hosted-ci-classifier.yml|.github/workflows/github-readiness-audit.yml|scripts/github_readiness_audit.py|tests/test_github_readiness_audit.py|docs/github-readiness-audit.md|generated/README.md)
                 ;;
+              src/db.rs|src/db_pool.rs|src/db_capabilities.rs|src/main.rs|tests/database_capability_wiring.rs|tests/db_pool_integration/*|tests/db_pool_integration/src/*|.github/workflows/database-capability-policy.yml)
+                db_changed=true
+                ;;
               *)
-                echo "::error::${path} is outside this workflow's tested scope; require separate real build/security checks before merge."
+                echo "::error::${path} is outside the substantively tested scope; require an independent full build/security suite before merge."
                 exit 1
                 ;;
             esac
           done < "${RUNNER_TEMP}/ci-changed-paths"
+          echo "db_changed=${db_changed}" >> "$GITHUB_OUTPUT"
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
@@ -69,6 +100,21 @@ jobs:
           set -euo pipefail
           rustc --edition 2021 --test -D warnings src/hosted_ci.rs -o "${RUNNER_TEMP}/hosted-ci-tests"
           "${RUNNER_TEMP}/hosted-ci-tests"
+      - name: Run real DB policy and live PostgreSQL driver tests when database code changes
+        if: steps.tested_scope.outputs.db_changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for path in src/db.rs src/db_capabilities.rs src/db_pool.rs src/main.rs tests/database_capability_wiring.rs tests/db_pool_integration/Cargo.toml tests/db_pool_integration/src/lib.rs; do
+            test -f "$path" || { echo "::error::Missing database contract file: $path"; exit 1; }
+          done
+          rustup toolchain install 1.88.0 --profile minimal -c rustfmt
+          rustfmt +1.88.0 --edition 2021 --check src/db_capabilities.rs src/db_pool.rs tests/database_capability_wiring.rs tests/db_pool_integration/src/lib.rs
+          rustc +1.88.0 --edition 2021 --test -D warnings src/db_capabilities.rs -o "$RUNNER_TEMP/db-policy-test"
+          "$RUNNER_TEMP/db-policy-test" --nocapture
+          rustc +1.88.0 --edition 2021 --test -D warnings tests/database_capability_wiring.rs -o "$RUNNER_TEMP/db-wiring-test"
+          "$RUNNER_TEMP/db-wiring-test" --nocapture
+          cargo +1.88.0 test --manifest-path tests/db_pool_integration/Cargo.toml --all-targets --verbose
       - name: Run standalone GitHub readiness audit tests if included
         shell: bash
         run: |
