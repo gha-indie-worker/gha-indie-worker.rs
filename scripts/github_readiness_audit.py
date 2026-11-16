@@ -130,7 +130,7 @@ def _safe_error(value: str) -> str:
         "client_secret=", "secret_key=", "private_key=",
     )
     if any(marker in lowered for marker in sensitive_markers) or re.search(
-        r"https?://[^\\s/@]+:[^\\s/@]+@", compact, flags=re.IGNORECASE
+        r"https?://[^\s/@]+:[^\s/@]+@", compact, flags=re.IGNORECASE
     ):
         return "credential-bearing error redacted"
     return compact[:300]
