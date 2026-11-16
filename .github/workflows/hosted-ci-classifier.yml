@@ -1,17 +1,12 @@
 name: hosted CI classifier
 
+# These three contexts are required for every pull request. Path filters
+# would leave unrelated PRs with permanently "expected" checks. The rust
+# job fails closed on changes it cannot substantively test.
 on:
   pull_request:
-    paths:
-      - src/hosted_ci.rs
-      - src/main.rs
-      - .github/workflows/hosted-ci-classifier.yml
   push:
     branches: [main]
-    paths:
-      - src/hosted_ci.rs
-      - src/main.rs
-      - .github/workflows/hosted-ci-classifier.yml
   workflow_dispatch:
 
 permissions:
@@ -34,12 +29,33 @@ jobs:
           persist-credentials: false
           show-progress: false
           submodules: false
+          fetch-depth: 0
       - name: Assert exact head
         shell: bash
         run: |
           set -euo pipefail
           expected='${{ github.event.pull_request.head.sha || github.sha }}'
           test "$(git rev-parse HEAD)" = "$expected"
+      - name: Fail closed on PR changes outside material test scope
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git cat-file -e "${BASE_SHA}^{commit}"
+          git diff --name-only -z "${BASE_SHA}...HEAD" > "${RUNNER_TEMP}/ci-changed-paths"
+          while IFS= read -r -d '' path; do
+            case "$path" in
+              src/hosted_ci.rs|.github/workflows/hosted-ci-classifier.yml|.github/workflows/github-readiness-audit.yml|scripts/github_readiness_audit.py|tests/test_github_readiness_audit.py|docs/github-readiness-audit.md|generated/README.md)
+                ;;
+              *)
+                echo "::error::${path} is outside this workflow's tested scope; require separate real build/security checks before merge."
+                exit 1
+                ;;
+            esac
+          done < "${RUNNER_TEMP}/ci-changed-paths"
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
@@ -53,6 +69,26 @@ jobs:
           set -euo pipefail
           rustc --edition 2021 --test -D warnings src/hosted_ci.rs -o "${RUNNER_TEMP}/hosted-ci-tests"
           "${RUNNER_TEMP}/hosted-ci-tests"
+      - name: Run standalone GitHub readiness audit tests if included
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -e scripts/github_readiness_audit.py ] || [ -e tests/test_github_readiness_audit.py ]; then
+            test -f scripts/github_readiness_audit.py
+            test -f tests/test_github_readiness_audit.py
+            python3 -m unittest -v tests/test_github_readiness_audit.py
+            python3 -m py_compile scripts/github_readiness_audit.py tests/test_github_readiness_audit.py
+          fi
+      - name: Validate frozen generated-file policy if included
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -e generated/README.md ]; then
+            test -f generated/README.md
+            test ! -L generated/README.md
+            grep -Fq 'Do **not** hand-edit' generated/README.md
+            grep -Fq 'Git does **not** persist the write bit' generated/README.md
+          fi
 
   provenance:
     name: provenance
@@ -100,6 +136,11 @@ jobs:
           assert 'mod hosted_ci;' in main
           for job in ('  rust:\n', '  provenance:\n', '  gitleaks:\n'):
               assert job in workflow, job
+          # Required checks must run on *all* PR paths. Runtime changes remain
+          # blocked by rust's explicit source-scope guard.
+          assert '  pull_request:\n' in workflow
+          assert '    paths:\n' not in workflow
+          assert 'Fail closed on PR changes outside material test scope' in workflow
           PY
           sha256sum src/hosted_ci.rs src/main.rs .github/workflows/hosted-ci-classifier.yml
 
@@ -115,11 +156,13 @@ jobs:
           persist-credentials: false
           show-progress: false
           submodules: false
-      - name: Reject credential-shaped material in classifier slice
+      - name: Reject credential-shaped material in tracked source without disclosing matches
         shell: bash
         run: |
           set -euo pipefail
-          if grep -RInE '(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|lin_api_[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)' src/hosted_ci.rs src/main.rs .github/workflows/hosted-ci-classifier.yml; then
+          # A conservative credential-pattern guard, not a claim that a full
+          # independent gitleaks scan or runtime audit has been performed.
+          if git grep -I -q -E '(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|lin_api_[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)' -- .; then
             echo 'credential-shaped material is forbidden' >&2
             exit 1
           fi
