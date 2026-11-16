@@ -33,6 +33,17 @@ impl DatabaseCapabilityProfile {
         }
     }
 
+    /// Validate the runtime-provided role before any database pool is created.
+    /// This is an admission contract, not proof of PostgreSQL GRANTs.
+    pub(crate) fn require_writer(value: &str) -> Result<Self, DatabaseProfileError> {
+        let profile = Self::parse(value)?;
+        if profile.permits_write_pool() {
+            Ok(profile)
+        } else {
+            Err(DatabaseProfileError::ReadOnlyOrMigrator)
+        }
+    }
+
     pub(crate) const fn permits_write_pool(self) -> bool {
         matches!(self, Self::ApiReadWrite | Self::WorkerReadWrite)
     }
@@ -116,6 +127,31 @@ mod capability_policy_tests {
             Profile::parse("worker rw"),
             Err(DatabaseProfileError::Unknown)
         );
+    }
+
+    #[test]
+    fn runtime_writer_admission_grants_only_two_profiles() {
+        for name in ["api_rw", "worker_rw"] {
+            assert_eq!(Profile::require_writer(name), Profile::parse(name));
+        }
+        for name in ["web_ro", "worker_ro", "migrator"] {
+            assert_eq!(
+                Profile::require_writer(name),
+                Err(DatabaseProfileError::ReadOnlyOrMigrator),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_writer_admission_rejects_hostile_and_unknown_names() {
+        for name in [
+            "", "admin", "root", "api_ro", "API_RW", "api_rw;DROP DATABASE",
+            "api_rw\\0", "worker_rw\\nadmin", "api_rw:superuser",
+        ] {
+            assert_eq!(Profile::require_writer(name), Err(DatabaseProfileError::Unknown));
+        }
+        assert_eq!(Profile::require_writer("  api_rw  "), Ok(Profile::ApiReadWrite));
     }
 
     #[test]
