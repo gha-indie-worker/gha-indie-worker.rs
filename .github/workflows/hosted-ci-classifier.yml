@@ -102,13 +102,27 @@ jobs:
           persist-credentials: false
           show-progress: false
           submodules: false
+          fetch-depth: 0
       - name: Verify exact candidate and pure-classifier boundary
         shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
           expected='${{ github.event.pull_request.head.sha || github.sha }}'
           test "$(git rev-parse HEAD)" = "$expected"
-          git diff --check
+          # A clean checkout does NOT make bare 'git diff --check' inspect
+          # committed changes. Test the actual PR/push delta, fail closed.
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+            git cat-file -e "${BASE_SHA}^{commit}"
+            git diff --check "${BASE_SHA}...HEAD"
+          else
+            [[ "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ ]]
+            git cat-file -e "${BEFORE_SHA}^{commit}"
+            git diff --check "${BEFORE_SHA}..HEAD"
+          fi
           python3 - <<'PY'
           from pathlib import Path
           source = Path('src/hosted_ci.rs').read_text(encoding='utf-8')
@@ -147,7 +161,7 @@ jobs:
   gitleaks:
     name: gitleaks
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - name: Check out exact candidate without persisted credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -156,14 +170,42 @@ jobs:
           persist-credentials: false
           show-progress: false
           submodules: false
-      - name: Reject credential-shaped material in tracked source without disclosing matches
+          fetch-depth: 0
+      - name: Install pinned Go toolchain
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version: '1.24.11'
+          cache: false
+      - name: Build pinned Gitleaks from verified Go module
         shell: bash
         run: |
           set -euo pipefail
-          # A conservative credential-pattern guard, not a claim that a full
-          # independent gitleaks scan or runtime audit has been performed.
-          if git grep -I -q -E '(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|lin_api_[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)' -- .; then
-            echo 'credential-shaped material is forbidden' >&2
+          GOBIN="$RUNNER_TEMP" go install github.com/zricethezav/gitleaks/v8@v8.28.0
+          go version -m "$RUNNER_TEMP/gitleaks" | grep -F 'github.com/zricethezav/gitleaks/v8' | grep -Fq 'v8.28.0'
+      - name: Scan PR commits and source tree with actual Gitleaks
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = '${{ github.event.pull_request.head.sha || github.sha }}'
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+            git cat-file -e "${BASE_SHA}^{commit}"
+            range="${BASE_SHA}..HEAD"
+          else
+            [[ "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ ]]
+            git cat-file -e "${BEFORE_SHA}^{commit}"
+            range="${BEFORE_SHA}..HEAD"
+          fi
+          "$RUNNER_TEMP/gitleaks" git --redact --no-banner --log-level error --log-opts="$range" .
+          "$RUNNER_TEMP/gitleaks" dir --redact --no-banner --log-level error .
+          # Validate the scanner is actually capable of rejecting a known
+          # credential shape. Construct the canary only in runner.temp.
+          printf 'aws_access_key_id=%s%s\n' 'AKIA' 'A1B2C3D4E5F6G7H8' > "$RUNNER_TEMP/gitleaks-canary"
+          if "$RUNNER_TEMP/gitleaks" dir --redact --no-banner --log-level error "$RUNNER_TEMP/gitleaks-canary" >/dev/null 2>&1; then
+            echo "::error::Gitleaks failed its credential-detection canary"
             exit 1
           fi
-          git diff --check
+          rm -f "$RUNNER_TEMP/gitleaks-canary"
