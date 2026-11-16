@@ -146,12 +146,25 @@ mod capability_policy_tests {
     #[test]
     fn runtime_writer_admission_rejects_hostile_and_unknown_names() {
         for name in [
-            "", "admin", "root", "api_ro", "API_RW", "api_rw;DROP DATABASE",
-            "api_rw\\0", "worker_rw\\nadmin", "api_rw:superuser",
+            "",
+            "admin",
+            "root",
+            "api_ro",
+            "API_RW",
+            "api_rw;DROP DATABASE",
+            "api_rw\\0",
+            "worker_rw\\nadmin",
+            "api_rw:superuser",
         ] {
-            assert_eq!(Profile::require_writer(name), Err(DatabaseProfileError::Unknown));
+            assert_eq!(
+                Profile::require_writer(name),
+                Err(DatabaseProfileError::Unknown)
+            );
         }
-        assert_eq!(Profile::require_writer("  api_rw  "), Ok(Profile::ApiReadWrite));
+        assert_eq!(
+            Profile::require_writer("  api_rw  "),
+            Ok(Profile::ApiReadWrite)
+        );
     }
 
     #[test]
