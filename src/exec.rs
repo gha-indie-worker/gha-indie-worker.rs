@@ -32,21 +32,18 @@ pub(crate) fn printable_command(program: &str, args: &[String]) -> String {
 }
 
 pub(crate) fn redacted_build_args(args: &[String]) -> Vec<String> {
-    let mut redacted = Vec::with_capacity(args.len());
-    let mut redact_next = false;
-    for arg in args {
-        if redact_next {
-            let key = arg.split_once('=').map(|(key, _)| key).unwrap_or(arg);
-            redacted.push(format!("{key}=<redacted>"));
-            redact_next = false;
-            continue;
-        }
-        redacted.push(arg.clone());
-        if arg == "--build-arg" {
-            redact_next = true;
-        }
-    }
-    redacted
+    args.iter()
+        .scan(false, |redact_next, arg| {
+            let entry = if *redact_next {
+                let key = arg.split_once('=').map(|(key, _)| key).unwrap_or(arg);
+                format!("{key}=<redacted>")
+            } else {
+                arg.clone()
+            };
+            *redact_next = !*redact_next && arg == "--build-arg";
+            Some(entry)
+        })
+        .collect()
 }
 
 pub(crate) async fn append_log(path: &Path, message: &str, max_bytes: u64) {
