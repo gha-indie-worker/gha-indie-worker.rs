@@ -65,11 +65,15 @@ async fn main() {
                     "BUILD_SERVER_DATABASE_URL was set but BUILD_SERVER_DATABASE_PROFILE is missing; expected api_rw or worker_rw"
                 )
             });
-            let profile = db::DatabaseCapabilityProfile::parse(&profile_name).unwrap_or_else(|_| {
-                panic!(
-                    "BUILD_SERVER_DATABASE_PROFILE is invalid; expected one of web_ro, api_rw, worker_ro, worker_rw, migrator"
-                )
-            });
+            let profile = db::DatabaseCapabilityProfile::require_writer(&profile_name)
+                .unwrap_or_else(|error| match error {
+                    db::DatabaseProfileError::Unknown => panic!(
+                        "BUILD_SERVER_DATABASE_PROFILE is invalid; expected one of web_ro, api_rw, worker_ro, worker_rw, migrator"
+                    ),
+                    db::DatabaseProfileError::ReadOnlyOrMigrator => panic!(
+                        "BUILD_SERVER_DATABASE_PROFILE does not permit this writable build-server database pool; use api_rw or worker_rw"
+                    ),
+                });
             match db::connect(url, profile).await {
                 Ok(connection) => {
                     db::fail_interrupted_jobs(&connection).await;
