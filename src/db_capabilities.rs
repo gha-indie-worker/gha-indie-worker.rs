@@ -33,7 +33,7 @@ impl DatabaseCapabilityProfile {
         }
     }
 
-    const fn permits_write_pool(self) -> bool {
+    pub(crate) const fn permits_write_pool(self) -> bool {
         matches!(self, Self::ApiReadWrite | Self::WorkerReadWrite)
     }
 }
