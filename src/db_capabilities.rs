@@ -44,7 +44,6 @@ pub(crate) enum DatabaseProfileError {
     ReadOnlyOrMigrator,
 }
 
-
 #[cfg(test)]
 mod capability_policy_tests {
     use super::{DatabaseCapabilityProfile as Profile, DatabaseProfileError};
@@ -74,7 +73,11 @@ mod capability_policy_tests {
 
     #[test]
     fn read_only_and_migrator_never_gain_write_authority() {
-        for profile in [Profile::WebReadOnly, Profile::WorkerReadOnly, Profile::Migrator] {
+        for profile in [
+            Profile::WebReadOnly,
+            Profile::WorkerReadOnly,
+            Profile::Migrator,
+        ] {
             assert!(!profile.permits_write_pool(), "{:?}", profile);
         }
     }
@@ -82,11 +85,26 @@ mod capability_policy_tests {
     #[test]
     fn unknown_or_privileged_aliases_are_rejected() {
         for value in [
-            "", "admin", "superuser", "root", "read_write", "web_rw", "worker_write",
-            "api_ro", "migrator_rw", "MIGRATOR", "Api_Rw", "api_rw:write",
-            "api_rw\0", "worker_rw\nadmin",
+            "",
+            "admin",
+            "superuser",
+            "root",
+            "read_write",
+            "web_rw",
+            "worker_write",
+            "api_ro",
+            "migrator_rw",
+            "MIGRATOR",
+            "Api_Rw",
+            "api_rw:write",
+            "api_rw\0",
+            "worker_rw\nadmin",
         ] {
-            assert_eq!(Profile::parse(value), Err(DatabaseProfileError::Unknown), "{value:?}");
+            assert_eq!(
+                Profile::parse(value),
+                Err(DatabaseProfileError::Unknown),
+                "{value:?}"
+            );
         }
     }
 
@@ -94,11 +112,17 @@ mod capability_policy_tests {
     fn trim_only_surrounding_whitespace() {
         assert_eq!(Profile::parse(" \tapi_rw\n"), Ok(Profile::ApiReadWrite));
         assert_eq!(Profile::parse("worker_rw\r"), Ok(Profile::WorkerReadWrite));
-        assert_eq!(Profile::parse("worker rw"), Err(DatabaseProfileError::Unknown));
+        assert_eq!(
+            Profile::parse("worker rw"),
+            Err(DatabaseProfileError::Unknown)
+        );
     }
 
     #[test]
     fn error_kinds_are_distinct_for_callers() {
-        assert_ne!(DatabaseProfileError::ReadOnlyOrMigrator, DatabaseProfileError::Unknown);
+        assert_ne!(
+            DatabaseProfileError::ReadOnlyOrMigrator,
+            DatabaseProfileError::Unknown
+        );
     }
 }
