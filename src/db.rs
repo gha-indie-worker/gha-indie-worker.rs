@@ -23,48 +23,7 @@ use std::time::Duration;
 use crate::entity::{build_jobs, gh_secret_sync_runs, webhook_deliveries};
 use crate::{BuildJobRecord, BuildStatus};
 
-/// Stable runtime database authority names shared with the hardened ORM fleet.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum DatabaseCapabilityProfile {
-    WebReadOnly,
-    ApiReadWrite,
-    WorkerReadOnly,
-    WorkerReadWrite,
-    Migrator,
-}
-
-impl DatabaseCapabilityProfile {
-    pub(crate) fn parse(value: &str) -> Result<Self, DatabaseProfileError> {
-        match value.trim() {
-            "web_ro" => Ok(Self::WebReadOnly),
-            "api_rw" => Ok(Self::ApiReadWrite),
-            "worker_ro" => Ok(Self::WorkerReadOnly),
-            "worker_rw" => Ok(Self::WorkerReadWrite),
-            "migrator" => Ok(Self::Migrator),
-            _ => Err(DatabaseProfileError::Unknown),
-        }
-    }
-
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::WebReadOnly => "web_ro",
-            Self::ApiReadWrite => "api_rw",
-            Self::WorkerReadOnly => "worker_ro",
-            Self::WorkerReadWrite => "worker_rw",
-            Self::Migrator => "migrator",
-        }
-    }
-
-    const fn permits_write_pool(self) -> bool {
-        matches!(self, Self::ApiReadWrite | Self::WorkerReadWrite)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum DatabaseProfileError {
-    Unknown,
-    ReadOnlyOrMigrator,
-}
+pub(crate) use crate::db_capabilities::{DatabaseCapabilityProfile, DatabaseProfileError};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DatabaseConnectError {
