@@ -199,13 +199,59 @@ jobs:
             git cat-file -e "${BEFORE_SHA}^{commit}"
             range="${BEFORE_SHA}..HEAD"
           fi
-          "$RUNNER_TEMP/gitleaks" git --redact --no-banner --log-level error --log-opts="$range" .
-          "$RUNNER_TEMP/gitleaks" dir --redact --no-banner --log-level error .
-          # Validate the scanner is actually capable of rejecting a known
-          # credential shape. Construct the canary only in runner.temp.
-          printf 'aws_access_key_id=%s%s\n' 'AKIA' 'A1B2C3D4E5F6G7H8' > "$RUNNER_TEMP/gitleaks-canary"
-          if "$RUNNER_TEMP/gitleaks" dir --redact --no-banner --log-level error "$RUNNER_TEMP/gitleaks-canary" >/dev/null 2>&1; then
-            echo "::error::Gitleaks failed its credential-detection canary"
+          # Findings can contain credentials; reports remain ephemeral on the
+          # hosted runner, and logs disclose only rule IDs and affected paths.
+          diagnose() {
+            local report="$1" phase="$2"
+            python3 - "$report" "$phase" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+          report, phase = Path(sys.argv[1]), sys.argv[2]
+          if not report.exists():
+              print(f"::error::{phase}: scanner failed without a JSON finding report")
+              raise SystemExit(0)
+          try:
+              findings = json.loads(report.read_text(encoding="utf-8"))
+          except (OSError, ValueError):
+              print(f"::error::{phase}: unreadable report")
+              raise SystemExit(0)
+          if not isinstance(findings, list):
+              print(f"::error::{phase}: invalid report format")
+              raise SystemExit(0)
+          print(f"::error::{phase}: {len(findings)} detected finding(s)")
+          for entry in findings[:10]:
+              if isinstance(entry, dict):
+                  rule = str(entry.get("RuleID", "unknown"))[:60]
+                  # NEVER display Secret, Match, Source, or line content.
+                  name = str(entry.get("File", "unknown"))[:150]
+                  print(f"rule={rule!r}, affected_file={name!r}")
+          PY
+          }
+          if ! "$RUNNER_TEMP/gitleaks" git --redact --no-banner --log-level error --log-opts="$range" --report-format json --report-path "$RUNNER_TEMP/pr-leaks.json" .; then
+            diagnose "$RUNNER_TEMP/pr-leaks.json" "PR commit scan"
             exit 1
           fi
-          rm -f "$RUNNER_TEMP/gitleaks-canary"
+          echo "Gitleaks PR commit scan: no findings"
+          if ! "$RUNNER_TEMP/gitleaks" dir --redact --no-banner --log-level error --report-format json --report-path "$RUNNER_TEMP/tree-leaks.json" .; then
+            diagnose "$RUNNER_TEMP/tree-leaks.json" "current tree scan"
+            exit 1
+          fi
+          echo "Gitleaks current tree scan: no findings"
+          # Canary is ephemeral, and only a genuine finding (exit 1 + JSON
+          # report) demonstrates a working scanner. Unexpected failures fail.
+          printf 'aws_access_key_id=%s%s\n' 'AKIA' 'A1B2C3D4E5F6G7H8' > "$RUNNER_TEMP/gitleaks-canary"
+          set +e
+          "$RUNNER_TEMP/gitleaks" dir --redact --no-banner --log-level error --report-format json --report-path "$RUNNER_TEMP/canary-leaks.json" "$RUNNER_TEMP/gitleaks-canary" >/dev/null 2>&1
+          rc=$?
+          set -e
+          test "$rc" -eq 1 || { echo "::error::Gitleaks canary did not return a finding"; exit 1; }
+          python3 - "$RUNNER_TEMP/canary-leaks.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          findings = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          assert isinstance(findings, list) and findings, "No canary findings"
+          print("Gitleaks credential-detection canary: passed")
+          PY
+          rm -f "$RUNNER_TEMP/gitleaks-canary" "$RUNNER_TEMP/"{pr,tree,canary}"-leaks.json"
