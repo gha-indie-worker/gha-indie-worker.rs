@@ -56,3 +56,38 @@ fn connection_failure_does_not_log_password_or_run_migrations() {
     let db = read("src/db.rs");
     assert!(!db.contains("Database::migrate"));
 }
+
+// Compile the production capability implementation as a sibling module, as
+// src/db.rs imports it. A test compiled inside db_capabilities.rs alone cannot
+// detect accidental private visibility on permits_write_pool().
+#[path = "../src/db_capabilities.rs"]
+mod db_capabilities;
+
+mod sibling_database_caller {
+    use super::db_capabilities::DatabaseCapabilityProfile;
+
+    pub(super) fn permits_write_pool(profile: DatabaseCapabilityProfile) -> bool {
+        profile.permits_write_pool()
+    }
+}
+
+#[test]
+fn database_sibling_module_can_call_capability_guard() {
+    use db_capabilities::DatabaseCapabilityProfile as Profile;
+
+    assert!(sibling_database_caller::permits_write_pool(
+        Profile::ApiReadWrite
+    ));
+    assert!(sibling_database_caller::permits_write_pool(
+        Profile::WorkerReadWrite
+    ));
+    assert!(!sibling_database_caller::permits_write_pool(
+        Profile::WebReadOnly
+    ));
+    assert!(!sibling_database_caller::permits_write_pool(
+        Profile::WorkerReadOnly
+    ));
+    assert!(!sibling_database_caller::permits_write_pool(
+        Profile::Migrator
+    ));
+}
