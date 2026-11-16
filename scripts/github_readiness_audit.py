@@ -55,14 +55,21 @@ class Runner(Protocol):
 
 class SubprocessRunner:
     def run(self, *args: str, input_text: str | None = None) -> str:
-        completed = subprocess.run(
-            list(args),
-            input=input_text,
-            capture_output=True,
-            check=False,
-            text=True,
-            timeout=30,
-        )
+        try:
+            completed = subprocess.run(
+                list(args),
+                input=input_text,
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired as exc:
+            # A timeout is not evidence of either a code failure or Actions
+            # budget exhaustion, and must not expose subprocess arguments.
+            raise AuditError(f"{args[0]} command timed out without an API result") from exc
+        except OSError as exc:
+            raise AuditError(f"{args[0]} command could not be executed") from exc
         if completed.returncode != 0:
             # Inspect BOTH streams: gh may emit warnings to stderr while
             # placing the actual HTTP 429 response in stdout.
@@ -112,9 +119,20 @@ def _safe_error(value: str) -> str:
     if not compact:
         return "unknown error"
     lowered = compact.lower()
-    for marker in ("ghp_", "github_pat_", "gho_", "ghu_", "ghs_", "ghr_"):
-        if marker in lowered:
-            return "credential-bearing error redacted"
+    # Credential material is not always a GitHub PAT. HTTP clients and
+    # integrations may echo generic bearer/basic headers, URL userinfo,
+    # passwords, and API-key assignments in an error response.
+    sensitive_markers = (
+        "ghp_", "github_pat_", "gho_", "ghu_", "ghs_", "ghr_",
+        "authorization:", "bearer ", "basic ", "x-api-key:",
+        "api_key=", "api_key:", "apikey=", "access_token=",
+        "github_token=", "gh_token=", "token=", "password=",
+        "client_secret=", "secret_key=", "private_key=",
+    )
+    if any(marker in lowered for marker in sensitive_markers) or re.search(
+        r"https?://[^\\s/@]+:[^\\s/@]+@", compact, flags=re.IGNORECASE
+    ):
+        return "credential-bearing error redacted"
     return compact[:300]
 
 

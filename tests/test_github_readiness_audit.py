@@ -134,6 +134,36 @@ class GitHubReadinessAuditTests(unittest.TestCase):
         )
 
 
+    def test_generic_credentials_and_url_userinfo_are_redacted(self) -> None:
+        examples = (
+            "Authorization: Bearer opaque-value",
+            "basic Zm9vOmJhcg==",
+            "GitHub token=abcdef",
+            "request https://alice:password@example.com/resource failed",
+            "x-api-key: secret-data",
+            "client_secret=shhh",
+        )
+        for raw in examples:
+            with self.subTest(raw=raw):
+                self.assertEqual(audit._safe_error(raw), "credential-bearing error redacted")
+        self.assertEqual(
+            audit._safe_error("HTTP 403: Resource not accessible by integration"),
+            "HTTP 403: Resource not accessible by integration",
+        )
+
+    def test_subprocess_timeout_and_spawn_errors_fail_closed(self) -> None:
+        from unittest.mock import patch
+        with patch.object(
+            audit.subprocess, "run",
+            side_effect=audit.subprocess.TimeoutExpired("gh", 30),
+        ):
+            with self.assertRaisesRegex(audit.AuditError, "timed out"):
+                audit.SubprocessRunner().run("gh", "api", "repos/example/repo")
+        with patch.object(audit.subprocess, "run", side_effect=OSError("secret=untrusted")):
+            with self.assertRaisesRegex(audit.AuditError, "could not be executed") as caught:
+                audit.SubprocessRunner().run("gh", "api", "repos/example/repo")
+            self.assertNotIn("untrusted", str(caught.exception))
+
     def test_rate_limit_detector_does_not_confuse_permissions_403(self) -> None:
         self.assertFalse(audit._is_rate_limit_error(
             "HTTP 403: Resource not accessible by integration"
