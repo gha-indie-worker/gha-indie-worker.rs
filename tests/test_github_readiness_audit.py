@@ -127,6 +127,274 @@ class GitHubReadinessAuditTests(unittest.TestCase):
         self.assertIsNone(report.organizations[0].project_update)
         self.assertIn("new-org: GitHub Projects write access is unproven.", report.blockers)
 
+    def test_credential_bearing_errors_are_redacted(self) -> None:
+        self.assertEqual(
+            audit._safe_error("request failed for github_pat_secretvalue"),
+            "credential-bearing error redacted",
+        )
+
+
+    def test_generic_credentials_and_url_userinfo_are_redacted(self) -> None:
+        examples = (
+            "Authorization: Bearer opaque-value",
+            "basic Zm9vOmJhcg==",
+            "GitHub token=abcdef",
+            "request https://alice:password@example.com/resource failed",
+            "x-api-key: secret-data",
+            "client_secret=shhh",
+        )
+        for raw in examples:
+            with self.subTest(raw=raw):
+                self.assertEqual(audit._safe_error(raw), "credential-bearing error redacted")
+        self.assertEqual(
+            audit._safe_error("HTTP 403: Resource not accessible by integration"),
+            "HTTP 403: Resource not accessible by integration",
+        )
+
+    def test_subprocess_timeout_and_spawn_errors_fail_closed(self) -> None:
+        from unittest.mock import patch
+        with patch.object(
+            audit.subprocess, "run",
+            side_effect=audit.subprocess.TimeoutExpired("gh", 30),
+        ):
+            with self.assertRaisesRegex(audit.AuditError, "timed out"):
+                audit.SubprocessRunner().run("gh", "api", "repos/example/repo")
+        with patch.object(audit.subprocess, "run", side_effect=OSError("secret=untrusted")):
+            with self.assertRaisesRegex(audit.AuditError, "could not be executed") as caught:
+                audit.SubprocessRunner().run("gh", "api", "repos/example/repo")
+            self.assertNotIn("untrusted", str(caught.exception))
+
+    def test_rate_limit_detector_does_not_confuse_permissions_403(self) -> None:
+        self.assertFalse(audit._is_rate_limit_error(
+            "HTTP 403: Resource not accessible by integration"
+        ))
+        self.assertTrue(audit._is_rate_limit_error("gh: HTTP 429: Too Many Requests"))
+        self.assertTrue(audit._is_rate_limit_error(
+            "HTTP 403: You have exceeded a secondary rate limit"
+        ))
+        self.assertTrue(audit._is_rate_limit_error(
+            "HTTP 403: X-RateLimit-Remaining: 0"
+        ))
+
+    def test_subprocess_runner_classifies_429_as_rate_limited(self) -> None:
+        from unittest.mock import patch
+        outcome = audit.subprocess.CompletedProcess(
+            args=["gh"], returncode=1, stdout="", stderr="gh: HTTP 429"
+        )
+        with patch.object(audit.subprocess, "run", return_value=outcome):
+            with self.assertRaises(audit.RateLimitError):
+                audit.SubprocessRunner().run("gh", "api", "user")
+
+    def test_missing_or_wrong_repo_identity_fails_closed(self) -> None:
+        for name in (None, "example-org/not-the-service"):
+            with self.subTest(name=name):
+                payload = {"permissions": {"push": True, "admin": True}}
+                if name is not None:
+                    payload["full_name"] = name
+                runner = FakeRunner({
+                    ("gh", "auth", "status", "--hostname", "github.com"): "",
+                    ("gh", "api", "user"): {"login": "alex"},
+                    ("gh", "api", "repos/example-org/service"): payload,
+                })
+                report = audit.build_report(runner, [], ["example-org/service"])
+                self.assertFalse(report.ready_for_unattended_writes)
+                self.assertFalse(report.repositories[0].readable)
+                self.assertFalse(report.repositories[0].merge_permission)
+                self.assertIn(
+                    "example-org/service: repository identity is missing or mismatched.",
+                    report.blockers,
+                )
+
+    def test_repo_rate_limit_stops_before_next_repository(self) -> None:
+        runner = FakeRunner({
+            ("gh", "auth", "status", "--hostname", "github.com"): "",
+            ("gh", "api", "user"): {"login": "alex"},
+            ("gh", "api", "repos/org/first"): audit.RateLimitError("HTTP 429"),
+        })
+        report = audit.build_report(runner, [], ["org/first", "org/second"])
+        self.assertFalse(report.ready_for_unattended_writes)
+        self.assertEqual(
+            runner.calls,
+            [
+                ("gh", "auth", "status", "--hostname", "github.com"),
+                ("gh", "api", "user"),
+                ("gh", "api", "repos/org/first"),
+            ],
+        )
+        self.assertTrue(any("stopped remaining scan" in x for x in report.blockers))
+
+    def test_org_rate_limit_skips_remaining_orgs_and_repos(self) -> None:
+        first_query = (
+            "gh", "api", "graphql", "-f", f"query={audit.ORG_QUERY}", "-F", "login=org1"
+        )
+        runner = FakeRunner({
+            ("gh", "auth", "status", "--hostname", "github.com"): "",
+            ("gh", "api", "user"): {"login": "alex"},
+            first_query: audit.RateLimitError("secondary rate limit"),
+        })
+        report = audit.build_report(runner, ["org1", "org2"], ["org/repo"])
+        self.assertFalse(report.ready_for_unattended_writes)
+        self.assertEqual(runner.calls[-1], first_query)
+        self.assertEqual(len(runner.calls), 3)
+
+    def test_graphql_rate_limit_in_http_200_payload_stops_scan(self) -> None:
+        first_query = (
+            "gh", "api", "graphql", "-f", f"query={audit.ORG_QUERY}", "-F", "login=org1"
+        )
+        runner = FakeRunner({
+            ("gh", "auth", "status", "--hostname", "github.com"): "",
+            ("gh", "api", "user"): {"login": "alex"},
+            first_query: {"errors": [{"message": "API rate limit exceeded"}]},
+        })
+        report = audit.build_report(runner, ["org1", "org2"], ["org/repo"])
+        self.assertFalse(report.ready_for_unattended_writes)
+        self.assertEqual(len(runner.calls), 3)
+
+
+    def test_subprocess_runner_scans_both_error_streams(self) -> None:
+        from unittest.mock import patch
+        outcome = audit.subprocess.CompletedProcess(
+            args=["gh"], returncode=1,
+            stderr="warning: cli extension message",
+            stdout="HTTP 429: too many requests",
+        )
+        with patch.object(audit.subprocess, "run", return_value=outcome):
+            with self.assertRaises(audit.RateLimitError):
+                audit.SubprocessRunner().run("gh", "api", "repos/org/first")
+
+    def test_graphql_rate_limit_type_stops_remaining_calls(self) -> None:
+        key = (
+            "gh", "api", "graphql", "-f", f"query={audit.ORG_QUERY}", "-F", "login=org1"
+        )
+        runner = FakeRunner({
+            ("gh", "auth", "status", "--hostname", "github.com"): "",
+            ("gh", "api", "user"): {"login": "alex"},
+            key: {"errors": [{"type": "RATE_LIMIT", "message": "retry later"}]},
+        })
+        report = audit.build_report(runner, ["org1", "org2"], ["org/repo"])
+        self.assertFalse(report.ready_for_unattended_writes)
+        self.assertEqual(runner.calls[-1], key)
+        self.assertEqual(len(runner.calls), 3)
+
+    def test_http_200_rate_limit_message_stops_remaining_calls(self) -> None:
+        runner = FakeRunner({
+            ("gh", "auth", "status", "--hostname", "github.com"): "",
+            ("gh", "api", "user"): {"login": "alex"},
+            ("gh", "api", "repos/org/first"): {
+                "message": "API rate limit exceeded for example user"
+            },
+        })
+        report = audit.build_report(runner, [], ["org/first", "org/second"])
+        self.assertFalse(report.ready_for_unattended_writes)
+        self.assertEqual(len(runner.calls), 3)
+        self.assertTrue(any("stopped remaining scan" in x for x in report.blockers))
+
+    def test_malformed_repository_responses_fail_closed_without_crash(self) -> None:
+        for payload in ([42], {"full_name": "org/repo", "permissions": []}):
+            with self.subTest(payload=payload):
+                runner = FakeRunner({
+                    ("gh", "auth", "status", "--hostname", "github.com"): "",
+                    ("gh", "api", "user"): {"login": "alex"},
+                    ("gh", "api", "repos/org/repo"): payload,
+                })
+                report = audit.build_report(runner, [], ["org/repo"])
+                self.assertFalse(report.ready_for_unattended_writes)
+                self.assertTrue(any("org/repo:" in x for x in report.blockers))
+
+    def test_mismatched_organization_identity_fails_closed(self) -> None:
+        key = (
+            "gh", "api", "graphql", "-f", f"query={audit.ORG_QUERY}", "-F", "login=org1"
+        )
+        runner = FakeRunner({
+            ("gh", "auth", "status", "--hostname", "github.com"): "",
+            ("gh", "api", "user"): {"login": "alex"},
+            key: {"data": {"organization": {
+                "login": "other-org",
+                "viewerCanCreateRepositories": True,
+                "projectsV2": {"nodes": [{"viewerCanUpdate": True}]},
+            }}},
+        })
+        report = audit.build_report(runner, ["org1"], [])
+        self.assertFalse(report.ready_for_unattended_writes)
+        self.assertIn("org1: GitHub organization response identity mismatch", report.blockers)
+
+
+    def test_string_and_numeric_permission_flags_are_not_writable(self) -> None:
+        for permission in ("false", "true", "yes", 1, 0, []):
+            with self.subTest(permission=permission):
+                runner = FakeRunner({
+                    ("gh", "auth", "status", "--hostname", "github.com"): "",
+                    ("gh", "api", "user"): {"login": "alex"},
+                    ("gh", "api", "repos/org/repo"): {
+                        "full_name": "org/repo",
+                        "permissions": {"push": permission},
+                    },
+                })
+                report = audit.build_report(runner, [], ["org/repo"])
+                self.assertFalse(report.ready_for_unattended_writes)
+                self.assertFalse(report.repositories[0].contents_write)
+                self.assertFalse(report.repositories[0].merge_permission)
+
+    def test_true_push_access_does_not_claim_merge_approval(self) -> None:
+        runner = FakeRunner({
+            ("gh", "auth", "status", "--hostname", "github.com"): "",
+            ("gh", "api", "user"): {"login": "alex"},
+            ("gh", "api", "repos/org/repo"): {
+                "full_name": "org/repo", "permissions": {"push": True},
+            },
+        })
+        report = audit.build_report(runner, [], ["org/repo"])
+        self.assertTrue(report.ready_for_unattended_writes)
+        self.assertTrue(report.repositories[0].contents_write)
+        self.assertFalse(report.repositories[0].merge_permission)
+
+    def test_string_organization_write_flags_are_not_accepted(self) -> None:
+        key = ("gh", "api", "graphql", "-f", f"query={audit.ORG_QUERY}", "-F", "login=org")
+        runner = FakeRunner({
+            ("gh", "auth", "status", "--hostname", "github.com"): "",
+            ("gh", "api", "user"): {"login": "alex"},
+            key: {"data": {"organization": {
+                "login": "org",
+                "viewerCanCreateRepositories": "true",
+                "projectsV2": {"totalCount": 1, "nodes": [
+                    {"id": "PVT_1", "viewerCanUpdate": "false"}
+                ]},
+            }}},
+        })
+        report = audit.build_report(runner, ["org"], [])
+        self.assertFalse(report.ready_for_unattended_writes)
+        self.assertFalse(report.organizations[0].repository_create)
+        self.assertFalse(report.organizations[0].project_update)
+
+    def test_unsampled_projects_fail_closed_instead_of_claiming_write(self) -> None:
+        key = ("gh", "api", "graphql", "-f", f"query={audit.ORG_QUERY}", "-F", "login=org")
+        runner = FakeRunner({
+            ("gh", "auth", "status", "--hostname", "github.com"): "",
+            ("gh", "api", "user"): {"login": "alex"},
+            key: {"data": {"organization": {
+                "login": "org",
+                "viewerCanCreateRepositories": True,
+                "projectsV2": {"totalCount": 21, "nodes": [
+                    {"id": f"PVT_{i}", "viewerCanUpdate": True} for i in range(20)
+                ]},
+            }}},
+        })
+        report = audit.build_report(runner, ["org"], [])
+        self.assertFalse(report.ready_for_unattended_writes)
+        self.assertTrue(any("pagination required" in x for x in report.blockers))
+
+    def test_invalid_authenticated_login_stops_capability_queries(self) -> None:
+        runner = FakeRunner({
+            ("gh", "auth", "status", "--hostname", "github.com"): "",
+            ("gh", "api", "user"): {"login": {"untrusted": "not a username"}},
+        })
+        report = audit.build_report(runner, ["org"], ["org/repo"])
+        self.assertFalse(report.authenticated)
+        self.assertFalse(report.ready_for_unattended_writes)
+        self.assertEqual(len(runner.calls), 2)
+        self.assertIn("GitHub returned missing or invalid authenticated login.", report.blockers)
+
+
     def test_missing_or_mismatched_repository_identity_cannot_grant_writes(self) -> None:
         auth = ("gh", "auth", "status", "--hostname", "github.com")
         user = ("gh", "api", "user")
@@ -199,14 +467,6 @@ class GitHubReadinessAuditTests(unittest.TestCase):
         report = audit.build_report(runner, [], ["org/forbidden", "org/allowed"])
         self.assertFalse(report.ready_for_unattended_writes)
         self.assertEqual(runner.calls, [auth, user, forbidden, following])
-
-
-    def test_credential_bearing_errors_are_redacted(self) -> None:
-        self.assertEqual(
-            audit._safe_error("request failed for github_pat_secretvalue"),
-            "credential-bearing error redacted",
-        )
-
 
 if __name__ == "__main__":
     unittest.main()
