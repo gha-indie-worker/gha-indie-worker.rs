@@ -1,0 +1,33 @@
+name: GitHub readiness audit tests
+
+on:
+  pull_request:
+    paths:
+      - "scripts/github_readiness_audit.py"
+      - "tests/test_github_readiness_audit.py"
+      - "docs/github-readiness-audit.md"
+      - ".github/workflows/github-readiness-audit.yml"
+  push:
+    branches: [main]
+    paths:
+      - "scripts/github_readiness_audit.py"
+      - "tests/test_github_readiness_audit.py"
+      - "docs/github-readiness-audit.md"
+      - ".github/workflows/github-readiness-audit.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run readiness unit tests
+        run: python3 -m unittest -v tests/test_github_readiness_audit.py
+      - name: Compile Python sources
+        run: python3 -m py_compile scripts/github_readiness_audit.py tests/test_github_readiness_audit.py
