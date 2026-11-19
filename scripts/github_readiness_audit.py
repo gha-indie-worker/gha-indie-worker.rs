@@ -325,6 +325,10 @@ def build_report(
                 rate_limited = True
                 break
             except AuditError as exc:
+                if _is_rate_limit_error(str(exc)):
+                    blockers.append(f"{org}: API rate limit; stopped remaining scan: {exc}")
+                    rate_limited = True
+                    break
                 blockers.append(f"{org}: {exc}")
 
         for repository in ([] if rate_limited else repositories):
@@ -340,6 +344,10 @@ def build_report(
                 rate_limited = True
                 break
             except AuditError as exc:
+                if _is_rate_limit_error(str(exc)):
+                    blockers.append(f"{repository}: API rate limit; stopped remaining scan: {exc}")
+                    rate_limited = True
+                    break
                 blockers.append(f"{repository}: {exc}")
 
     return AuditReport(
