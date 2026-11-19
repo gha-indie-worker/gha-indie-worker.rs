@@ -18,9 +18,11 @@ SPEC.loader.exec_module(audit)
 class FakeRunner:
     def __init__(self, responses: dict[tuple[str, ...], object]):
         self.responses = responses
+        self.calls: list[tuple[str, ...]] = []
 
     def run(self, *args: str, input_text: str | None = None) -> str:
         key = tuple(args)
+        self.calls.append(key)
         value = self.responses.get(key)
         if isinstance(value, Exception):
             raise value
@@ -124,6 +126,80 @@ class GitHubReadinessAuditTests(unittest.TestCase):
 
         self.assertIsNone(report.organizations[0].project_update)
         self.assertIn("new-org: GitHub Projects write access is unproven.", report.blockers)
+
+    def test_missing_or_mismatched_repository_identity_cannot_grant_writes(self) -> None:
+        auth = ("gh", "auth", "status", "--hostname", "github.com")
+        user = ("gh", "api", "user")
+        request = ("gh", "api", "repos/Example-Org/service")
+        for observed in (None, "different-org/service", "Example-Org/other"):
+            response = {"permissions": {"push": True, "admin": True}}
+            if observed is not None:
+                response["full_name"] = observed
+            runner = FakeRunner({auth: "", user: {"login": "alex"}, request: response})
+            report = audit.build_report(runner, [], ["Example-Org/service"])
+            self.assertFalse(report.ready_for_unattended_writes)
+            self.assertFalse(report.repositories[0].readable)
+            self.assertFalse(report.repositories[0].contents_write)
+            self.assertFalse(report.repositories[0].merge_permission)
+            self.assertTrue(any("repository identity" in b for b in report.blockers))
+
+    def test_repository_identity_matching_is_case_insensitive(self) -> None:
+        runner = FakeRunner({
+            ("gh", "auth", "status", "--hostname", "github.com"): "",
+            ("gh", "api", "user"): {"login": "alex"},
+            ("gh", "api", "repos/example-org/SERVICE"): {
+                "full_name": "Example-Org/service", "permissions": {"push": True},
+            },
+        })
+        report = audit.build_report(runner, [], ["example-org/SERVICE"])
+        self.assertTrue(report.ready_for_unattended_writes)
+
+    def test_secondary_limit_stops_org_and_repo_queries_immediately(self) -> None:
+        auth = ("gh", "auth", "status", "--hostname", "github.com")
+        user = ("gh", "api", "user")
+        limited = ("gh", "api", "graphql", "-f", f"query={audit.ORG_QUERY}", "-F", "login=limited-org")
+        runner = FakeRunner({
+            auth: "",
+            user: {"login": "alex"},
+            limited: audit.AuditError("GitHub API error 403: You have exceeded a secondary rate limit."),
+        })
+        report = audit.build_report(runner, ["limited-org", "never-org"], ["org/never"])
+        self.assertFalse(report.ready_for_unattended_writes)
+        self.assertTrue(any("secondary rate limit" in b for b in report.blockers))
+        self.assertEqual(runner.calls, [auth, user, limited])
+
+    def test_http_429_stops_remaining_repositories_immediately(self) -> None:
+        auth = ("gh", "auth", "status", "--hostname", "github.com")
+        user = ("gh", "api", "user")
+        limited = ("gh", "api", "repos/org/limited")
+        runner = FakeRunner({
+            auth: "",
+            user: {"login": "alex"},
+            limited: audit.AuditError("GitHub API error 429: Too Many Requests"),
+        })
+        report = audit.build_report(runner, [], ["org/limited", "org/never"])
+        self.assertFalse(report.ready_for_unattended_writes)
+        self.assertEqual(runner.calls, [auth, user, limited])
+
+    def test_generic_permission_403_is_not_api_throttling(self) -> None:
+        self.assertFalse(audit._is_rate_limit_error("HTTP 403: Resource not accessible by integration"))
+        self.assertTrue(audit._is_rate_limit_error("HTTP 429: Too Many Requests"))
+        self.assertTrue(audit._is_rate_limit_error("GitHub API error 403: secondary rate limit"))
+        self.assertTrue(audit._is_rate_limit_error("GitHub API rate limit exceeded"))
+        auth = ("gh", "auth", "status", "--hostname", "github.com")
+        user = ("gh", "api", "user")
+        forbidden = ("gh", "api", "repos/org/forbidden")
+        following = ("gh", "api", "repos/org/allowed")
+        runner = FakeRunner({
+            auth: "",
+            user: {"login": "alex"},
+            forbidden: audit.AuditError("HTTP 403: Resource not accessible by integration"),
+            following: {"full_name": "org/allowed", "permissions": {"push": True}},
+        })
+        report = audit.build_report(runner, [], ["org/forbidden", "org/allowed"])
+        self.assertFalse(report.ready_for_unattended_writes)
+        self.assertEqual(runner.calls, [auth, user, forbidden, following])
+
 
     def test_credential_bearing_errors_are_redacted(self) -> None:
         self.assertEqual(

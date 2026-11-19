@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,10 @@ from typing import Any, Protocol
 
 class AuditError(RuntimeError):
     """A bounded, user-safe audit failure."""
+
+
+class RateLimitError(AuditError):
+    """Stop all further GitHub API requests on primary/secondary limits."""
 
 
 class Runner(Protocol):
@@ -36,8 +41,10 @@ class SubprocessRunner:
             timeout=30,
         )
         if completed.returncode != 0:
-            detail = _safe_error(completed.stderr or completed.stdout)
-            raise AuditError(f"{args[0]} command failed: {detail}")
+            raw_error = completed.stderr or completed.stdout
+            detail = _safe_error(raw_error)
+            error_type = RateLimitError if _is_rate_limit_error(raw_error) else AuditError
+            raise error_type(f"{args[0]} command failed: {detail}")
         return completed.stdout
 
 
@@ -85,6 +92,22 @@ def _safe_error(value: str) -> str:
     return compact[:300]
 
 
+def _is_rate_limit_error(detail: str) -> bool:
+    """Treat explicit API throttling as terminal, but not ordinary 403s."""
+    lowered = detail.casefold()
+    return (
+        "secondary rate limit" in lowered
+        or "api rate limit exceeded" in lowered
+        or "rate limit exceeded" in lowered
+        or "abuse detection" in lowered
+        or "too many requests" in lowered
+        or re.search(
+            r"\b(?:http(?:/\d(?:\.\d)?)?\s*|status[:\s]+|code[:\s]+|error[:\s]+)429\b",
+            lowered,
+        ) is not None
+    )
+
+
 def _gh_json(runner: Runner, *args: str) -> Any:
     raw = runner.run("gh", *args)
     try:
@@ -95,9 +118,14 @@ def _gh_json(runner: Runner, *args: str) -> Any:
 
 def _audit_repository(runner: Runner, repository: str) -> RepositoryCapability:
     payload = _gh_json(runner, "api", f"repos/{repository}")
+    if not isinstance(payload, dict):
+        raise AuditError("GitHub API returned invalid repository metadata")
     permissions = payload.get("permissions") or {}
-    readable = bool(payload.get("full_name"))
-    push = bool(permissions.get("push") or permissions.get("maintain") or permissions.get("admin"))
+    observed = payload.get("full_name")
+    readable = isinstance(observed, str) and observed.casefold() == repository.casefold()
+    push = readable and bool(
+        permissions.get("push") or permissions.get("maintain") or permissions.get("admin")
+    )
     return RepositoryCapability(
         repository=repository,
         readable=readable,
@@ -207,6 +235,7 @@ def build_report(
 
     org_results: list[OrganizationCapability] = []
     repo_results: list[RepositoryCapability] = []
+    rate_limited = False
     if authenticated:
         for org in organizations:
             try:
@@ -222,15 +251,25 @@ def build_report(
                     blockers.append(f"{org}: GitHub Projects write access is unproven.")
             except AuditError as exc:
                 blockers.append(f"{org}: {exc}")
+                if isinstance(exc, RateLimitError) or _is_rate_limit_error(str(exc)):
+                    rate_limited = True
+                    break
 
-        for repository in repositories:
-            try:
-                result = _audit_repository(runner, repository)
-                repo_results.append(result)
-                if not result.contents_write:
-                    blockers.append(f"{repository}: repository contents are not writable.")
-            except AuditError as exc:
-                blockers.append(f"{repository}: {exc}")
+        if not rate_limited:
+            for repository in repositories:
+                try:
+                    result = _audit_repository(runner, repository)
+                    repo_results.append(result)
+                    if not result.readable:
+                        blockers.append(
+                            f"{repository}: GitHub returned a missing or mismatched repository identity."
+                        )
+                    if not result.contents_write:
+                        blockers.append(f"{repository}: repository contents are not writable.")
+                except AuditError as exc:
+                    blockers.append(f"{repository}: {exc}")
+                    if isinstance(exc, RateLimitError) or _is_rate_limit_error(str(exc)):
+                        break
 
     return AuditReport(
         schema_version="gha-indie-worker.github-readiness.v1",
