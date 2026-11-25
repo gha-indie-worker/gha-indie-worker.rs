@@ -1,0 +1,23 @@
+[package]
+name = "dd-meshy-worker"
+version = "0.1.0"
+edition = "2021"
+description = "Standalone Fiducia-fenced durable worker for Daedalus Meshy image-to-3D jobs."
+license = "UNLICENSED"
+publish = false
+
+[[bin]]
+name = "meshy-job-worker"
+path = "src/main.rs"
+
+[dependencies]
+async-nats = "=0.38.0"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+dd-meshy-job = { path = "../meshy-job" }
+dd-meshy-r2-archive = { path = "../meshy-r2-archive" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+sea-orm = { version = "1.1", default-features = false, features = ["macros", "runtime-tokio-rustls", "sqlx-postgres", "with-chrono", "with-json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+uuid = { version = "1", features = ["v4"] }
